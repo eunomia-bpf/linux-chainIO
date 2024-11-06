@@ -15946,6 +15946,9 @@ static int check_return_code(struct bpf_verifier_env *env, int regno, const char
 	case BPF_PROG_TYPE_NETFILTER:
 		range = retval_range(NF_DROP, NF_ACCEPT);
 		break;
+	case BPF_PROG_TYPE_IOURING:
+		range = retval_range(IOU_BPF_RET_OK, __IOU_BPF_RET_MAX - 1);
+		break;
 	case BPF_PROG_TYPE_EXT:
 		/* freplace program can return anything as its return value
 		 * depends on the to-be-replaced kernel func or bpf program.
@@ -22209,7 +22212,8 @@ static bool can_be_sleepable(struct bpf_prog *prog)
 	}
 	return prog->type == BPF_PROG_TYPE_LSM ||
 	       prog->type == BPF_PROG_TYPE_KPROBE /* only for uprobes */ ||
-	       prog->type == BPF_PROG_TYPE_STRUCT_OPS;
+	       prog->type == BPF_PROG_TYPE_STRUCT_OPS ||
+	       prog->type == BPF_PROG_TYPE_IOURING;
 }
 
 static int check_attach_btf_id(struct bpf_verifier_env *env)
@@ -22227,6 +22231,10 @@ static int check_attach_btf_id(struct bpf_verifier_env *env)
 			/* attach_btf_id checked to be zero already */
 			return 0;
 		verbose(env, "Syscall programs can only be sleepable\n");
+		return -EINVAL;
+	}
+	if (prog->type == BPF_PROG_TYPE_IOURING && !prog->sleepable) {
+		verbose(env, "io_uring programs can only be sleepable\n");
 		return -EINVAL;
 	}
 

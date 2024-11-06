@@ -2571,6 +2571,7 @@ bpf_prog_load_check_attach(enum bpf_prog_type prog_type,
 		return -EINVAL;
 	case BPF_PROG_TYPE_SYSCALL:
 	case BPF_PROG_TYPE_EXT:
+	case BPF_PROG_TYPE_IOURING:
 		if (expected_attach_type)
 			return -EINVAL;
 		fallthrough;
