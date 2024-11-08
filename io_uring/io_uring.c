@@ -104,6 +104,7 @@
 #include "rw.h"
 #include "alloc_cache.h"
 #include "eventfd.h"
+#include "bpf.h"
 
 #define SQE_COMMON_FLAGS (IOSQE_FIXED_FILE | IOSQE_IO_LINK | \
 			  IOSQE_IO_HARDLINK | IOSQE_ASYNC)
@@ -2834,6 +2835,12 @@ static int io_cqring_wait(struct io_ring_ctx *ctx, int min_events, u32 flags,
 
 	io_napi_busy_loop(ctx, &iowq);
 
+	if (io_bpf_enabled(ctx)) {
+		ret = io_run_bpf(ctx);
+		if (ret == IOU_BPF_RET_STOP)
+			return 0;
+	}
+
 	trace_io_uring_cqring_wait(ctx, min_events);
 	do {
 		unsigned long check_cq;
@@ -2878,6 +2885,13 @@ static int io_cqring_wait(struct io_ring_ctx *ctx, int min_events, u32 flags,
 		 */
 		if (ret < 0)
 			break;
+
+		if (io_bpf_enabled(ctx)) {
+			ret = io_run_bpf(ctx);
+			if (ret == IOU_BPF_RET_STOP)
+				break;
+			continue;
+		}
 
 		check_cq = READ_ONCE(ctx->check_cq);
 		if (unlikely(check_cq)) {
@@ -3009,6 +3023,7 @@ static __cold void io_ring_ctx_free(struct io_ring_ctx *ctx)
 	io_futex_cache_free(ctx);
 	io_destroy_buffers(ctx);
 	io_unregister_cqwait_reg(ctx);
+	io_unregister_bpf(ctx);
 	mutex_unlock(&ctx->uring_lock);
 	if (ctx->sq_creds)
 		put_cred(ctx->sq_creds);

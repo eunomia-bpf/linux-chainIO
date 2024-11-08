@@ -634,6 +634,8 @@ enum io_uring_register_op {
 	/* register fixed io_uring_reg_wait arguments */
 	IORING_REGISTER_CQWAIT_REG		= 34,
 
+	IORING_REGISTER_BPF			= 35,
+
 	/* this goes last */
 	IORING_REGISTER_LAST,
 
@@ -903,6 +905,13 @@ enum io_uring_socket_op {
 	SOCKET_URING_OP_SIOCOUTQ,
 	SOCKET_URING_OP_GETSOCKOPT,
 	SOCKET_URING_OP_SETSOCKOPT,
+};
+
+struct io_uring_bpf_reg {
+	__u64		prog_fd;
+	__u32		flags;
+	__u32		resv1;
+	__u64		resv2[2];
 };
 
 #ifdef __cplusplus

@@ -8,6 +8,8 @@
 #include <linux/llist.h>
 #include <uapi/linux/io_uring.h>
 
+struct io_bpf_ctx;
+
 enum {
 	/*
 	 * A hint to not wake right away but delay until there are enough of
@@ -246,6 +248,8 @@ struct io_ring_ctx {
 
 		enum task_work_notify_mode	notify_method;
 		unsigned			sq_thread_idle;
+
+		struct io_bpf_ctx		*bpf_ctx;
 	} ____cacheline_aligned_in_smp;
 
 	/* submission data */

@@ -30,6 +30,7 @@
 #include "eventfd.h"
 #include "msg_ring.h"
 #include "memmap.h"
+#include "bpf.h"
 
 #define IORING_MAX_RESTRICTIONS	(IORING_RESTRICTION_LAST + \
 				 IORING_REGISTER_LAST + IORING_OP_LAST)
@@ -845,6 +846,12 @@ static int __io_uring_register(struct io_ring_ctx *ctx, unsigned opcode,
 		if (!arg || nr_args != 1)
 			break;
 		ret = io_register_cqwait_reg(ctx, arg);
+		break;
+	case IORING_REGISTER_BPF:
+		ret = -EINVAL;
+		if (!arg)
+			break;
+		ret = io_register_bpf(ctx, arg, nr_args);
 		break;
 	default:
 		ret = -EINVAL;
