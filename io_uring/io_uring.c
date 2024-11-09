@@ -2836,6 +2836,7 @@ static int io_cqring_wait(struct io_ring_ctx *ctx, int min_events, u32 flags,
 	io_napi_busy_loop(ctx, &iowq);
 
 	if (io_bpf_enabled(ctx)) {
+		ctx->bpf_ctx->waitq = &iowq;
 		ret = io_run_bpf(ctx);
 		if (ret == IOU_BPF_RET_STOP)
 			return 0;

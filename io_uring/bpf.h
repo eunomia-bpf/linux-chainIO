@@ -9,6 +9,8 @@ struct bpf_prog;
 
 struct io_bpf_ctx {
 	struct io_bpf_ctx_kern kern;
+	struct io_ring_ctx *ctx;
+	struct io_wait_queue *waitq;
 	struct bpf_prog *prog;
 };
 
