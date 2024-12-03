@@ -73,6 +73,16 @@ static inline unsigned int net_iov_idx(const struct net_iov *niov)
 	return niov - net_iov_owner(niov)->niovs;
 }
 
+static inline void net_iov_ref_get(struct net_iov *niov)
+{
+	atomic_long_inc(&niov->pp_ref_count);
+}
+
+static inline bool net_iov_ref_put(struct net_iov *niov)
+{
+	return atomic_long_dec_and_test(&niov->pp_ref_count);
+}
+
 /* netmem */
 
 /**
