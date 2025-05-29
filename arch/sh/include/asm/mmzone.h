@@ -2,11 +2,8 @@
 #ifndef __ASM_SH_MMZONE_H
 #define __ASM_SH_MMZONE_H
 
-#ifdef CONFIG_NEED_MULTIPLE_NODES
+#ifdef CONFIG_NUMA
 #include <linux/numa.h>
-
-extern struct pglist_data *node_data[];
-#define NODE_DATA(nid)		(node_data[nid])
 
 static inline int pfn_to_nid(unsigned long pfn)
 {
@@ -31,7 +28,7 @@ static inline void
 setup_bootmem_node(int nid, unsigned long start, unsigned long end)
 {
 }
-#endif /* CONFIG_NEED_MULTIPLE_NODES */
+#endif /* CONFIG_NUMA */
 
 /* Platform specific mem init */
 void __init plat_mem_setup(void);

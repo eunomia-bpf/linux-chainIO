@@ -161,8 +161,18 @@ static int gpio_nand_exec_op(struct nand_chip *chip,
 	return ret;
 }
 
+static int gpio_nand_attach_chip(struct nand_chip *chip)
+{
+	if (chip->ecc.engine_type == NAND_ECC_ENGINE_TYPE_SOFT &&
+	    chip->ecc.algo == NAND_ECC_ALGO_UNKNOWN)
+		chip->ecc.algo = NAND_ECC_ALGO_HAMMING;
+
+	return 0;
+}
+
 static const struct nand_controller_ops gpio_nand_ops = {
 	.exec_op = gpio_nand_exec_op,
+	.attach_chip = gpio_nand_attach_chip,
 };
 
 #ifdef CONFIG_OF
@@ -255,7 +265,7 @@ gpio_nand_get_io_sync(struct platform_device *pdev)
 	return platform_get_resource(pdev, IORESOURCE_MEM, 1);
 }
 
-static int gpio_nand_remove(struct platform_device *pdev)
+static void gpio_nand_remove(struct platform_device *pdev)
 {
 	struct gpiomtd *gpiomtd = platform_get_drvdata(pdev);
 	struct nand_chip *chip = &gpiomtd->nand_chip;
@@ -270,8 +280,6 @@ static int gpio_nand_remove(struct platform_device *pdev)
 		gpiod_set_value(gpiomtd->nwp, 0);
 	if (gpiomtd->nce && !IS_ERR(gpiomtd->nce))
 		gpiod_set_value(gpiomtd->nce, 0);
-
-	return 0;
 }
 
 static int gpio_nand_probe(struct platform_device *pdev)
@@ -292,8 +300,7 @@ static int gpio_nand_probe(struct platform_device *pdev)
 
 	chip = &gpiomtd->nand_chip;
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	gpiomtd->io = devm_ioremap_resource(dev, res);
+	gpiomtd->io = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(gpiomtd->io))
 		return PTR_ERR(gpiomtd->io);
 
@@ -342,8 +349,6 @@ static int gpio_nand_probe(struct platform_device *pdev)
 	gpiomtd->base.ops = &gpio_nand_ops;
 
 	nand_set_flash_node(chip, pdev->dev.of_node);
-	chip->ecc.engine_type	= NAND_ECC_ENGINE_TYPE_SOFT;
-	chip->ecc.algo		= NAND_ECC_ALGO_HAMMING;
 	chip->options		= gpiomtd->plat.options;
 	chip->controller	= &gpiomtd->base;
 
@@ -355,6 +360,13 @@ static int gpio_nand_probe(struct platform_device *pdev)
 	/* Disable write protection, if wired up */
 	if (gpiomtd->nwp && !IS_ERR(gpiomtd->nwp))
 		gpiod_direction_output(gpiomtd->nwp, 1);
+
+	/*
+	 * This driver assumes that the default ECC engine should be TYPE_SOFT.
+	 * Set ->engine_type before registering the NAND devices in order to
+	 * provide a driver specific default value.
+	 */
+	chip->ecc.engine_type = NAND_ECC_ENGINE_TYPE_SOFT;
 
 	ret = nand_scan(chip, 1);
 	if (ret)

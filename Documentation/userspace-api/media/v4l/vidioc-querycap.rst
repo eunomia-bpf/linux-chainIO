@@ -38,9 +38,11 @@ pointer to a struct :c:type:`v4l2_capability` which is
 filled by the driver. When the driver is not compatible with this
 specification the ioctl returns an ``EINVAL`` error code.
 
-.. tabularcolumns:: |p{1.5cm}|p{2.5cm}|p{13cm}|
-
 .. c:type:: v4l2_capability
+
+.. tabularcolumns:: |p{1.4cm}|p{2.8cm}|p{13.1cm}|
+
+.. cssclass:: longtable
 
 .. flat-table:: struct v4l2_capability
     :header-rows:  0
@@ -130,7 +132,7 @@ specification the ioctl returns an ``EINVAL`` error code.
 	zero.
 
 
-.. tabularcolumns:: |p{6.1cm}|p{2.2cm}|p{8.7cm}|
+.. tabularcolumns:: |p{7.0cm}|p{2.6cm}|p{7.7cm}|
 
 .. _device-capabilities:
 
@@ -242,9 +244,17 @@ specification the ioctl returns an ``EINVAL`` error code.
       - 0x01000000
       - The device supports the :c:func:`read()` and/or
 	:c:func:`write()` I/O methods.
-    * - ``V4L2_CAP_ASYNCIO``
+    * - ``V4L2_CAP_EDID``
       - 0x02000000
-      - The device supports the :ref:`asynchronous <async>` I/O methods.
+      - The device stores the EDID for a video input, or retrieves the EDID for a video
+        output. It is a standalone EDID device, so no video streaming etc. will take place.
+
+        For a video input this is typically an eeprom that supports the
+        :ref:`VESA Enhanced Display Data Channel Standard <vesaeddc>`. It can be something
+        else as well, for example a micro controller.
+
+        For a video output this is typically read from an external device such as an
+        HDMI splitter accessed by a serial port.
     * - ``V4L2_CAP_STREAMING``
       - 0x04000000
       - The device supports the :ref:`streaming <mmap>` I/O method.

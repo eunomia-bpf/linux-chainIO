@@ -14,9 +14,9 @@
 #include <linux/module.h>
 #include <linux/err.h>
 #include <linux/usb/composite.h>
+#include <linux/usb/func_utils.h>
 
 #include "g_zero.h"
-#include "u_f.h"
 
 /*
  * LOOPBACK FUNCTION ... a testing vehicle for USB peripherals,
@@ -207,13 +207,11 @@ autoconf_fail:
 	ss_loop_sink_desc.bEndpointAddress = fs_loop_sink_desc.bEndpointAddress;
 
 	ret = usb_assign_descriptors(f, fs_loopback_descs, hs_loopback_descs,
-			ss_loopback_descs, NULL);
+			ss_loopback_descs, ss_loopback_descs);
 	if (ret)
 		return ret;
 
-	DBG(cdev, "%s speed %s: IN/%s, OUT/%s\n",
-	    (gadget_is_superspeed(c->cdev->gadget) ? "super" :
-	     (gadget_is_dualspeed(c->cdev->gadget) ? "dual" : "full")),
+	DBG(cdev, "%s: IN/%s, OUT/%s\n",
 			f->name, loop->in_ep->name, loop->out_ep->name);
 	return 0;
 }
@@ -274,7 +272,7 @@ static void loopback_complete(struct usb_ep *ep, struct usb_request *req)
 	default:
 		ERROR(cdev, "%s loop complete --> %d, %d/%d\n", ep->name,
 				status, req->actual, req->length);
-		/* FALLTHROUGH */
+		fallthrough;
 
 	/* NOTE:  since this driver doesn't maintain an explicit record
 	 * of requests it submitted (just maintains qlen count), we
@@ -595,4 +593,5 @@ void __exit lb_modexit(void)
 	usb_function_unregister(&Loopbackusb_func);
 }
 
+MODULE_DESCRIPTION("USB peripheral loopback configuration driver");
 MODULE_LICENSE("GPL");

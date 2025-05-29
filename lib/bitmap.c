@@ -3,22 +3,13 @@
  * lib/bitmap.c
  * Helper functions for bitmap.h.
  */
-#include <linux/export.h>
-#include <linux/thread_info.h>
-#include <linux/ctype.h>
-#include <linux/errno.h>
+
 #include <linux/bitmap.h>
 #include <linux/bitops.h>
-#include <linux/bug.h>
-#include <linux/kernel.h>
-#include <linux/mm.h>
+#include <linux/ctype.h>
+#include <linux/device.h>
+#include <linux/export.h>
 #include <linux/slab.h>
-#include <linux/string.h>
-#include <linux/uaccess.h>
-
-#include <asm/page.h>
-
-#include "kstrtox.h"
 
 /**
  * DOC: bitmap introduction
@@ -43,19 +34,19 @@
  * for the best explanations of this ordering.
  */
 
-int __bitmap_equal(const unsigned long *bitmap1,
-		const unsigned long *bitmap2, unsigned int bits)
+bool __bitmap_equal(const unsigned long *bitmap1,
+		    const unsigned long *bitmap2, unsigned int bits)
 {
 	unsigned int k, lim = bits/BITS_PER_LONG;
 	for (k = 0; k < lim; ++k)
 		if (bitmap1[k] != bitmap2[k])
-			return 0;
+			return false;
 
 	if (bits % BITS_PER_LONG)
 		if ((bitmap1[k] ^ bitmap2[k]) & BITMAP_LAST_WORD_MASK(bits))
-			return 0;
+			return false;
 
-	return 1;
+	return true;
 }
 EXPORT_SYMBOL(__bitmap_equal);
 
@@ -235,7 +226,7 @@ void bitmap_cut(unsigned long *dst, const unsigned long *src,
 }
 EXPORT_SYMBOL(bitmap_cut);
 
-int __bitmap_and(unsigned long *dst, const unsigned long *bitmap1,
+bool __bitmap_and(unsigned long *dst, const unsigned long *bitmap1,
 				const unsigned long *bitmap2, unsigned int bits)
 {
 	unsigned int k;
@@ -273,7 +264,7 @@ void __bitmap_xor(unsigned long *dst, const unsigned long *bitmap1,
 }
 EXPORT_SYMBOL(__bitmap_xor);
 
-int __bitmap_andnot(unsigned long *dst, const unsigned long *bitmap1,
+bool __bitmap_andnot(unsigned long *dst, const unsigned long *bitmap1,
 				const unsigned long *bitmap2, unsigned int bits)
 {
 	unsigned int k;
@@ -301,50 +292,68 @@ void __bitmap_replace(unsigned long *dst,
 }
 EXPORT_SYMBOL(__bitmap_replace);
 
-int __bitmap_intersects(const unsigned long *bitmap1,
-			const unsigned long *bitmap2, unsigned int bits)
+bool __bitmap_intersects(const unsigned long *bitmap1,
+			 const unsigned long *bitmap2, unsigned int bits)
 {
 	unsigned int k, lim = bits/BITS_PER_LONG;
 	for (k = 0; k < lim; ++k)
 		if (bitmap1[k] & bitmap2[k])
-			return 1;
+			return true;
 
 	if (bits % BITS_PER_LONG)
 		if ((bitmap1[k] & bitmap2[k]) & BITMAP_LAST_WORD_MASK(bits))
-			return 1;
-	return 0;
+			return true;
+	return false;
 }
 EXPORT_SYMBOL(__bitmap_intersects);
 
-int __bitmap_subset(const unsigned long *bitmap1,
-		    const unsigned long *bitmap2, unsigned int bits)
+bool __bitmap_subset(const unsigned long *bitmap1,
+		     const unsigned long *bitmap2, unsigned int bits)
 {
 	unsigned int k, lim = bits/BITS_PER_LONG;
 	for (k = 0; k < lim; ++k)
 		if (bitmap1[k] & ~bitmap2[k])
-			return 0;
+			return false;
 
 	if (bits % BITS_PER_LONG)
 		if ((bitmap1[k] & ~bitmap2[k]) & BITMAP_LAST_WORD_MASK(bits))
-			return 0;
-	return 1;
+			return false;
+	return true;
 }
 EXPORT_SYMBOL(__bitmap_subset);
 
-int __bitmap_weight(const unsigned long *bitmap, unsigned int bits)
+#define BITMAP_WEIGHT(FETCH, bits)	\
+({										\
+	unsigned int __bits = (bits), idx, w = 0;				\
+										\
+	for (idx = 0; idx < __bits / BITS_PER_LONG; idx++)			\
+		w += hweight_long(FETCH);					\
+										\
+	if (__bits % BITS_PER_LONG)						\
+		w += hweight_long((FETCH) & BITMAP_LAST_WORD_MASK(__bits));	\
+										\
+	w;									\
+})
+
+unsigned int __bitmap_weight(const unsigned long *bitmap, unsigned int bits)
 {
-	unsigned int k, lim = bits/BITS_PER_LONG;
-	int w = 0;
-
-	for (k = 0; k < lim; k++)
-		w += hweight_long(bitmap[k]);
-
-	if (bits % BITS_PER_LONG)
-		w += hweight_long(bitmap[k] & BITMAP_LAST_WORD_MASK(bits));
-
-	return w;
+	return BITMAP_WEIGHT(bitmap[idx], bits);
 }
 EXPORT_SYMBOL(__bitmap_weight);
+
+unsigned int __bitmap_weight_and(const unsigned long *bitmap1,
+				const unsigned long *bitmap2, unsigned int bits)
+{
+	return BITMAP_WEIGHT(bitmap1[idx] & bitmap2[idx], bits);
+}
+EXPORT_SYMBOL(__bitmap_weight_and);
+
+unsigned int __bitmap_weight_andnot(const unsigned long *bitmap1,
+				const unsigned long *bitmap2, unsigned int bits)
+{
+	return BITMAP_WEIGHT(bitmap1[idx] & ~bitmap2[idx], bits);
+}
+EXPORT_SYMBOL(__bitmap_weight_andnot);
 
 void __bitmap_set(unsigned long *map, unsigned int start, int len)
 {
@@ -427,354 +436,6 @@ again:
 }
 EXPORT_SYMBOL(bitmap_find_next_zero_area_off);
 
-/*
- * Bitmap printing & parsing functions: first version by Nadia Yvette Chambers,
- * second version by Paul Jackson, third by Joe Korty.
- */
-
-/**
- * bitmap_parse_user - convert an ASCII hex string in a user buffer into a bitmap
- *
- * @ubuf: pointer to user buffer containing string.
- * @ulen: buffer size in bytes.  If string is smaller than this
- *    then it must be terminated with a \0.
- * @maskp: pointer to bitmap array that will contain result.
- * @nmaskbits: size of bitmap, in bits.
- */
-int bitmap_parse_user(const char __user *ubuf,
-			unsigned int ulen, unsigned long *maskp,
-			int nmaskbits)
-{
-	char *buf;
-	int ret;
-
-	buf = memdup_user_nul(ubuf, ulen);
-	if (IS_ERR(buf))
-		return PTR_ERR(buf);
-
-	ret = bitmap_parse(buf, UINT_MAX, maskp, nmaskbits);
-
-	kfree(buf);
-	return ret;
-}
-EXPORT_SYMBOL(bitmap_parse_user);
-
-/**
- * bitmap_print_to_pagebuf - convert bitmap to list or hex format ASCII string
- * @list: indicates whether the bitmap must be list
- * @buf: page aligned buffer into which string is placed
- * @maskp: pointer to bitmap to convert
- * @nmaskbits: size of bitmap, in bits
- *
- * Output format is a comma-separated list of decimal numbers and
- * ranges if list is specified or hex digits grouped into comma-separated
- * sets of 8 digits/set. Returns the number of characters written to buf.
- *
- * It is assumed that @buf is a pointer into a PAGE_SIZE, page-aligned
- * area and that sufficient storage remains at @buf to accommodate the
- * bitmap_print_to_pagebuf() output. Returns the number of characters
- * actually printed to @buf, excluding terminating '\0'.
- */
-int bitmap_print_to_pagebuf(bool list, char *buf, const unsigned long *maskp,
-			    int nmaskbits)
-{
-	ptrdiff_t len = PAGE_SIZE - offset_in_page(buf);
-
-	return list ? scnprintf(buf, len, "%*pbl\n", nmaskbits, maskp) :
-		      scnprintf(buf, len, "%*pb\n", nmaskbits, maskp);
-}
-EXPORT_SYMBOL(bitmap_print_to_pagebuf);
-
-/*
- * Region 9-38:4/10 describes the following bitmap structure:
- * 0	   9  12    18			38
- * .........****......****......****......
- *	    ^  ^     ^			 ^
- *      start  off   group_len	       end
- */
-struct region {
-	unsigned int start;
-	unsigned int off;
-	unsigned int group_len;
-	unsigned int end;
-};
-
-static int bitmap_set_region(const struct region *r,
-				unsigned long *bitmap, int nbits)
-{
-	unsigned int start;
-
-	if (r->end >= nbits)
-		return -ERANGE;
-
-	for (start = r->start; start <= r->end; start += r->group_len)
-		bitmap_set(bitmap, start, min(r->end - start + 1, r->off));
-
-	return 0;
-}
-
-static int bitmap_check_region(const struct region *r)
-{
-	if (r->start > r->end || r->group_len == 0 || r->off > r->group_len)
-		return -EINVAL;
-
-	return 0;
-}
-
-static const char *bitmap_getnum(const char *str, unsigned int *num)
-{
-	unsigned long long n;
-	unsigned int len;
-
-	len = _parse_integer(str, 10, &n);
-	if (!len)
-		return ERR_PTR(-EINVAL);
-	if (len & KSTRTOX_OVERFLOW || n != (unsigned int)n)
-		return ERR_PTR(-EOVERFLOW);
-
-	*num = n;
-	return str + len;
-}
-
-static inline bool end_of_str(char c)
-{
-	return c == '\0' || c == '\n';
-}
-
-static inline bool __end_of_region(char c)
-{
-	return isspace(c) || c == ',';
-}
-
-static inline bool end_of_region(char c)
-{
-	return __end_of_region(c) || end_of_str(c);
-}
-
-/*
- * The format allows commas and whitespaces at the beginning
- * of the region.
- */
-static const char *bitmap_find_region(const char *str)
-{
-	while (__end_of_region(*str))
-		str++;
-
-	return end_of_str(*str) ? NULL : str;
-}
-
-static const char *bitmap_find_region_reverse(const char *start, const char *end)
-{
-	while (start <= end && __end_of_region(*end))
-		end--;
-
-	return end;
-}
-
-static const char *bitmap_parse_region(const char *str, struct region *r)
-{
-	str = bitmap_getnum(str, &r->start);
-	if (IS_ERR(str))
-		return str;
-
-	if (end_of_region(*str))
-		goto no_end;
-
-	if (*str != '-')
-		return ERR_PTR(-EINVAL);
-
-	str = bitmap_getnum(str + 1, &r->end);
-	if (IS_ERR(str))
-		return str;
-
-	if (end_of_region(*str))
-		goto no_pattern;
-
-	if (*str != ':')
-		return ERR_PTR(-EINVAL);
-
-	str = bitmap_getnum(str + 1, &r->off);
-	if (IS_ERR(str))
-		return str;
-
-	if (*str != '/')
-		return ERR_PTR(-EINVAL);
-
-	return bitmap_getnum(str + 1, &r->group_len);
-
-no_end:
-	r->end = r->start;
-no_pattern:
-	r->off = r->end + 1;
-	r->group_len = r->end + 1;
-
-	return end_of_str(*str) ? NULL : str;
-}
-
-/**
- * bitmap_parselist - convert list format ASCII string to bitmap
- * @buf: read user string from this buffer; must be terminated
- *    with a \0 or \n.
- * @maskp: write resulting mask here
- * @nmaskbits: number of bits in mask to be written
- *
- * Input format is a comma-separated list of decimal numbers and
- * ranges.  Consecutively set bits are shown as two hyphen-separated
- * decimal numbers, the smallest and largest bit numbers set in
- * the range.
- * Optionally each range can be postfixed to denote that only parts of it
- * should be set. The range will divided to groups of specific size.
- * From each group will be used only defined amount of bits.
- * Syntax: range:used_size/group_size
- * Example: 0-1023:2/256 ==> 0,1,256,257,512,513,768,769
- *
- * Returns: 0 on success, -errno on invalid input strings. Error values:
- *
- *   - ``-EINVAL``: wrong region format
- *   - ``-EINVAL``: invalid character in string
- *   - ``-ERANGE``: bit number specified too large for mask
- *   - ``-EOVERFLOW``: integer overflow in the input parameters
- */
-int bitmap_parselist(const char *buf, unsigned long *maskp, int nmaskbits)
-{
-	struct region r;
-	long ret;
-
-	bitmap_zero(maskp, nmaskbits);
-
-	while (buf) {
-		buf = bitmap_find_region(buf);
-		if (buf == NULL)
-			return 0;
-
-		buf = bitmap_parse_region(buf, &r);
-		if (IS_ERR(buf))
-			return PTR_ERR(buf);
-
-		ret = bitmap_check_region(&r);
-		if (ret)
-			return ret;
-
-		ret = bitmap_set_region(&r, maskp, nmaskbits);
-		if (ret)
-			return ret;
-	}
-
-	return 0;
-}
-EXPORT_SYMBOL(bitmap_parselist);
-
-
-/**
- * bitmap_parselist_user()
- *
- * @ubuf: pointer to user buffer containing string.
- * @ulen: buffer size in bytes.  If string is smaller than this
- *    then it must be terminated with a \0.
- * @maskp: pointer to bitmap array that will contain result.
- * @nmaskbits: size of bitmap, in bits.
- *
- * Wrapper for bitmap_parselist(), providing it with user buffer.
- */
-int bitmap_parselist_user(const char __user *ubuf,
-			unsigned int ulen, unsigned long *maskp,
-			int nmaskbits)
-{
-	char *buf;
-	int ret;
-
-	buf = memdup_user_nul(ubuf, ulen);
-	if (IS_ERR(buf))
-		return PTR_ERR(buf);
-
-	ret = bitmap_parselist(buf, maskp, nmaskbits);
-
-	kfree(buf);
-	return ret;
-}
-EXPORT_SYMBOL(bitmap_parselist_user);
-
-static const char *bitmap_get_x32_reverse(const char *start,
-					const char *end, u32 *num)
-{
-	u32 ret = 0;
-	int c, i;
-
-	for (i = 0; i < 32; i += 4) {
-		c = hex_to_bin(*end--);
-		if (c < 0)
-			return ERR_PTR(-EINVAL);
-
-		ret |= c << i;
-
-		if (start > end || __end_of_region(*end))
-			goto out;
-	}
-
-	if (hex_to_bin(*end--) >= 0)
-		return ERR_PTR(-EOVERFLOW);
-out:
-	*num = ret;
-	return end;
-}
-
-/**
- * bitmap_parse - convert an ASCII hex string into a bitmap.
- * @start: pointer to buffer containing string.
- * @buflen: buffer size in bytes.  If string is smaller than this
- *    then it must be terminated with a \0 or \n. In that case,
- *    UINT_MAX may be provided instead of string length.
- * @maskp: pointer to bitmap array that will contain result.
- * @nmaskbits: size of bitmap, in bits.
- *
- * Commas group hex digits into chunks.  Each chunk defines exactly 32
- * bits of the resultant bitmask.  No chunk may specify a value larger
- * than 32 bits (%-EOVERFLOW), and if a chunk specifies a smaller value
- * then leading 0-bits are prepended.  %-EINVAL is returned for illegal
- * characters. Grouping such as "1,,5", ",44", "," or "" is allowed.
- * Leading, embedded and trailing whitespace accepted.
- */
-int bitmap_parse(const char *start, unsigned int buflen,
-		unsigned long *maskp, int nmaskbits)
-{
-	const char *end = strnchrnul(start, buflen, '\n') - 1;
-	int chunks = BITS_TO_U32(nmaskbits);
-	u32 *bitmap = (u32 *)maskp;
-	int unset_bit;
-	int chunk;
-
-	for (chunk = 0; ; chunk++) {
-		end = bitmap_find_region_reverse(start, end);
-		if (start > end)
-			break;
-
-		if (!chunks--)
-			return -EOVERFLOW;
-
-#if defined(CONFIG_64BIT) && defined(__BIG_ENDIAN)
-		end = bitmap_get_x32_reverse(start, end, &bitmap[chunk ^ 1]);
-#else
-		end = bitmap_get_x32_reverse(start, end, &bitmap[chunk]);
-#endif
-		if (IS_ERR(end))
-			return PTR_ERR(end);
-	}
-
-	unset_bit = (BITS_TO_U32(nmaskbits) - chunks) * 32;
-	if (unset_bit < nmaskbits) {
-		bitmap_clear(maskp, unset_bit, nmaskbits - unset_bit);
-		return 0;
-	}
-
-	if (find_next_bit(maskp, unset_bit, nmaskbits) != unset_bit)
-		return -EOVERFLOW;
-
-	return 0;
-}
-EXPORT_SYMBOL(bitmap_parse);
-
-
-#ifdef CONFIG_NUMA
 /**
  * bitmap_pos_to_ord - find ordinal of set bit at given position in bitmap
  *	@buf: pointer to a bitmap
@@ -798,37 +459,7 @@ static int bitmap_pos_to_ord(const unsigned long *buf, unsigned int pos, unsigne
 	if (pos >= nbits || !test_bit(pos, buf))
 		return -1;
 
-	return __bitmap_weight(buf, pos);
-}
-
-/**
- * bitmap_ord_to_pos - find position of n-th set bit in bitmap
- *	@buf: pointer to bitmap
- *	@ord: ordinal bit position (n-th set bit, n >= 0)
- *	@nbits: number of valid bit positions in @buf
- *
- * Map the ordinal offset of bit @ord in @buf to its position in @buf.
- * Value of @ord should be in range 0 <= @ord < weight(buf). If @ord
- * >= weight(buf), returns @nbits.
- *
- * If for example, just bits 4 through 7 are set in @buf, then @ord
- * values 0 through 3 will get mapped to 4 through 7, respectively,
- * and all other @ord values returns @nbits.  When @ord value 3
- * gets mapped to (returns) @pos value 7 in this example, that means
- * that the 3rd set bit (starting with 0th) is at position 7 in @buf.
- *
- * The bit positions 0 through @nbits-1 are valid positions in @buf.
- */
-unsigned int bitmap_ord_to_pos(const unsigned long *buf, unsigned int ord, unsigned int nbits)
-{
-	unsigned int pos;
-
-	for (pos = find_first_bit(buf, nbits);
-	     pos < nbits && ord;
-	     pos = find_next_bit(buf, nbits, pos + 1))
-		ord--;
-
-	return pos;
+	return bitmap_weight(buf, pos);
 }
 
 /**
@@ -851,7 +482,7 @@ unsigned int bitmap_ord_to_pos(const unsigned long *buf, unsigned int ord, unsig
  * to @dst.
  *
  * The positions of unset bits in @old are mapped to themselves
- * (the identify map).
+ * (the identity map).
  *
  * Apply the above specified mapping to @src, placing the result in
  * @dst, clearing any bits previously set in @dst.
@@ -880,9 +511,10 @@ void bitmap_remap(unsigned long *dst, const unsigned long *src,
 		if (n < 0 || w == 0)
 			set_bit(oldbit, dst);	/* identity map */
 		else
-			set_bit(bitmap_ord_to_pos(new, n % w, nbits), dst);
+			set_bit(find_nth_bit(new, nbits, n % w), dst);
 	}
 }
+EXPORT_SYMBOL(bitmap_remap);
 
 /**
  * bitmap_bitremap - Apply map defined by a pair of bitmaps to a single bit
@@ -899,7 +531,7 @@ void bitmap_remap(unsigned long *dst, const unsigned long *src,
  * the position of the m-th set bit in @new, where m == n % w.
  *
  * The positions of unset bits in @old are mapped to themselves
- * (the identify map).
+ * (the identity map).
  *
  * Apply the above specified mapping to bit position @oldbit, returning
  * the new bit position.
@@ -918,9 +550,11 @@ int bitmap_bitremap(int oldbit, const unsigned long *old,
 	if (n < 0 || w == 0)
 		return oldbit;
 	else
-		return bitmap_ord_to_pos(new, n % w, bits);
+		return find_nth_bit(new, bits, n % w);
 }
+EXPORT_SYMBOL(bitmap_bitremap);
 
+#ifdef CONFIG_NUMA
 /**
  * bitmap_onto - translate one bitmap relative to another
  *	@dst: resulting translated bitmap
@@ -1040,7 +674,7 @@ void bitmap_onto(unsigned long *dst, const unsigned long *orig,
 	 * The following code is a more efficient, but less
 	 * obvious, equivalent to the loop:
 	 *	for (m = 0; m < bitmap_weight(relmap, bits); m++) {
-	 *		n = bitmap_ord_to_pos(orig, m, bits);
+	 *		n = find_nth_bit(orig, bits, m);
 	 *		if (test_bit(m, orig))
 	 *			set_bit(n, dst);
 	 *	}
@@ -1080,169 +714,6 @@ void bitmap_fold(unsigned long *dst, const unsigned long *orig,
 }
 #endif /* CONFIG_NUMA */
 
-/*
- * Common code for bitmap_*_region() routines.
- *	bitmap: array of unsigned longs corresponding to the bitmap
- *	pos: the beginning of the region
- *	order: region size (log base 2 of number of bits)
- *	reg_op: operation(s) to perform on that region of bitmap
- *
- * Can set, verify and/or release a region of bits in a bitmap,
- * depending on which combination of REG_OP_* flag bits is set.
- *
- * A region of a bitmap is a sequence of bits in the bitmap, of
- * some size '1 << order' (a power of two), aligned to that same
- * '1 << order' power of two.
- *
- * Returns 1 if REG_OP_ISFREE succeeds (region is all zero bits).
- * Returns 0 in all other cases and reg_ops.
- */
-
-enum {
-	REG_OP_ISFREE,		/* true if region is all zero bits */
-	REG_OP_ALLOC,		/* set all bits in region */
-	REG_OP_RELEASE,		/* clear all bits in region */
-};
-
-static int __reg_op(unsigned long *bitmap, unsigned int pos, int order, int reg_op)
-{
-	int nbits_reg;		/* number of bits in region */
-	int index;		/* index first long of region in bitmap */
-	int offset;		/* bit offset region in bitmap[index] */
-	int nlongs_reg;		/* num longs spanned by region in bitmap */
-	int nbitsinlong;	/* num bits of region in each spanned long */
-	unsigned long mask;	/* bitmask for one long of region */
-	int i;			/* scans bitmap by longs */
-	int ret = 0;		/* return value */
-
-	/*
-	 * Either nlongs_reg == 1 (for small orders that fit in one long)
-	 * or (offset == 0 && mask == ~0UL) (for larger multiword orders.)
-	 */
-	nbits_reg = 1 << order;
-	index = pos / BITS_PER_LONG;
-	offset = pos - (index * BITS_PER_LONG);
-	nlongs_reg = BITS_TO_LONGS(nbits_reg);
-	nbitsinlong = min(nbits_reg,  BITS_PER_LONG);
-
-	/*
-	 * Can't do "mask = (1UL << nbitsinlong) - 1", as that
-	 * overflows if nbitsinlong == BITS_PER_LONG.
-	 */
-	mask = (1UL << (nbitsinlong - 1));
-	mask += mask - 1;
-	mask <<= offset;
-
-	switch (reg_op) {
-	case REG_OP_ISFREE:
-		for (i = 0; i < nlongs_reg; i++) {
-			if (bitmap[index + i] & mask)
-				goto done;
-		}
-		ret = 1;	/* all bits in region free (zero) */
-		break;
-
-	case REG_OP_ALLOC:
-		for (i = 0; i < nlongs_reg; i++)
-			bitmap[index + i] |= mask;
-		break;
-
-	case REG_OP_RELEASE:
-		for (i = 0; i < nlongs_reg; i++)
-			bitmap[index + i] &= ~mask;
-		break;
-	}
-done:
-	return ret;
-}
-
-/**
- * bitmap_find_free_region - find a contiguous aligned mem region
- *	@bitmap: array of unsigned longs corresponding to the bitmap
- *	@bits: number of bits in the bitmap
- *	@order: region size (log base 2 of number of bits) to find
- *
- * Find a region of free (zero) bits in a @bitmap of @bits bits and
- * allocate them (set them to one).  Only consider regions of length
- * a power (@order) of two, aligned to that power of two, which
- * makes the search algorithm much faster.
- *
- * Return the bit offset in bitmap of the allocated region,
- * or -errno on failure.
- */
-int bitmap_find_free_region(unsigned long *bitmap, unsigned int bits, int order)
-{
-	unsigned int pos, end;		/* scans bitmap by regions of size order */
-
-	for (pos = 0 ; (end = pos + (1U << order)) <= bits; pos = end) {
-		if (!__reg_op(bitmap, pos, order, REG_OP_ISFREE))
-			continue;
-		__reg_op(bitmap, pos, order, REG_OP_ALLOC);
-		return pos;
-	}
-	return -ENOMEM;
-}
-EXPORT_SYMBOL(bitmap_find_free_region);
-
-/**
- * bitmap_release_region - release allocated bitmap region
- *	@bitmap: array of unsigned longs corresponding to the bitmap
- *	@pos: beginning of bit region to release
- *	@order: region size (log base 2 of number of bits) to release
- *
- * This is the complement to __bitmap_find_free_region() and releases
- * the found region (by clearing it in the bitmap).
- *
- * No return value.
- */
-void bitmap_release_region(unsigned long *bitmap, unsigned int pos, int order)
-{
-	__reg_op(bitmap, pos, order, REG_OP_RELEASE);
-}
-EXPORT_SYMBOL(bitmap_release_region);
-
-/**
- * bitmap_allocate_region - allocate bitmap region
- *	@bitmap: array of unsigned longs corresponding to the bitmap
- *	@pos: beginning of bit region to allocate
- *	@order: region size (log base 2 of number of bits) to allocate
- *
- * Allocate (set bits in) a specified region of a bitmap.
- *
- * Return 0 on success, or %-EBUSY if specified region wasn't
- * free (not all bits were zero).
- */
-int bitmap_allocate_region(unsigned long *bitmap, unsigned int pos, int order)
-{
-	if (!__reg_op(bitmap, pos, order, REG_OP_ISFREE))
-		return -EBUSY;
-	return __reg_op(bitmap, pos, order, REG_OP_ALLOC);
-}
-EXPORT_SYMBOL(bitmap_allocate_region);
-
-/**
- * bitmap_copy_le - copy a bitmap, putting the bits into little-endian order.
- * @dst:   destination buffer
- * @src:   bitmap to copy
- * @nbits: number of bits in the bitmap
- *
- * Require nbits % BITS_PER_LONG == 0.
- */
-#ifdef __BIG_ENDIAN
-void bitmap_copy_le(unsigned long *dst, const unsigned long *src, unsigned int nbits)
-{
-	unsigned int i;
-
-	for (i = 0; i < nbits/BITS_PER_LONG; i++) {
-		if (BITS_PER_LONG == 64)
-			dst[i] = cpu_to_le64(src[i]);
-		else
-			dst[i] = cpu_to_le32(src[i]);
-	}
-}
-EXPORT_SYMBOL(bitmap_copy_le);
-#endif
-
 unsigned long *bitmap_alloc(unsigned int nbits, gfp_t flags)
 {
 	return kmalloc_array(BITS_TO_LONGS(nbits), sizeof(unsigned long),
@@ -1256,11 +727,56 @@ unsigned long *bitmap_zalloc(unsigned int nbits, gfp_t flags)
 }
 EXPORT_SYMBOL(bitmap_zalloc);
 
+unsigned long *bitmap_alloc_node(unsigned int nbits, gfp_t flags, int node)
+{
+	return kmalloc_array_node(BITS_TO_LONGS(nbits), sizeof(unsigned long),
+				  flags, node);
+}
+EXPORT_SYMBOL(bitmap_alloc_node);
+
+unsigned long *bitmap_zalloc_node(unsigned int nbits, gfp_t flags, int node)
+{
+	return bitmap_alloc_node(nbits, flags | __GFP_ZERO, node);
+}
+EXPORT_SYMBOL(bitmap_zalloc_node);
+
 void bitmap_free(const unsigned long *bitmap)
 {
 	kfree(bitmap);
 }
 EXPORT_SYMBOL(bitmap_free);
+
+static void devm_bitmap_free(void *data)
+{
+	unsigned long *bitmap = data;
+
+	bitmap_free(bitmap);
+}
+
+unsigned long *devm_bitmap_alloc(struct device *dev,
+				 unsigned int nbits, gfp_t flags)
+{
+	unsigned long *bitmap;
+	int ret;
+
+	bitmap = bitmap_alloc(nbits, flags);
+	if (!bitmap)
+		return NULL;
+
+	ret = devm_add_action_or_reset(dev, devm_bitmap_free, bitmap);
+	if (ret)
+		return NULL;
+
+	return bitmap;
+}
+EXPORT_SYMBOL_GPL(devm_bitmap_alloc);
+
+unsigned long *devm_bitmap_zalloc(struct device *dev,
+				  unsigned int nbits, gfp_t flags)
+{
+	return devm_bitmap_alloc(dev, nbits, flags | __GFP_ZERO);
+}
+EXPORT_SYMBOL_GPL(devm_bitmap_zalloc);
 
 #if BITS_PER_LONG == 64
 /**
@@ -1308,5 +824,59 @@ void bitmap_to_arr32(u32 *buf, const unsigned long *bitmap, unsigned int nbits)
 		buf[halfwords - 1] &= (u32) (UINT_MAX >> ((-nbits) & 31));
 }
 EXPORT_SYMBOL(bitmap_to_arr32);
+#endif
 
+#if BITS_PER_LONG == 32
+/**
+ * bitmap_from_arr64 - copy the contents of u64 array of bits to bitmap
+ *	@bitmap: array of unsigned longs, the destination bitmap
+ *	@buf: array of u64 (in host byte order), the source bitmap
+ *	@nbits: number of bits in @bitmap
+ */
+void bitmap_from_arr64(unsigned long *bitmap, const u64 *buf, unsigned int nbits)
+{
+	int n;
+
+	for (n = nbits; n > 0; n -= 64) {
+		u64 val = *buf++;
+
+		*bitmap++ = val;
+		if (n > 32)
+			*bitmap++ = val >> 32;
+	}
+
+	/*
+	 * Clear tail bits in the last word beyond nbits.
+	 *
+	 * Negative index is OK because here we point to the word next
+	 * to the last word of the bitmap, except for nbits == 0, which
+	 * is tested implicitly.
+	 */
+	if (nbits % BITS_PER_LONG)
+		bitmap[-1] &= BITMAP_LAST_WORD_MASK(nbits);
+}
+EXPORT_SYMBOL(bitmap_from_arr64);
+
+/**
+ * bitmap_to_arr64 - copy the contents of bitmap to a u64 array of bits
+ *	@buf: array of u64 (in host byte order), the dest bitmap
+ *	@bitmap: array of unsigned longs, the source bitmap
+ *	@nbits: number of bits in @bitmap
+ */
+void bitmap_to_arr64(u64 *buf, const unsigned long *bitmap, unsigned int nbits)
+{
+	const unsigned long *end = bitmap + BITS_TO_LONGS(nbits);
+
+	while (bitmap < end) {
+		*buf = *bitmap++;
+		if (bitmap < end)
+			*buf |= (u64)(*bitmap++) << 32;
+		buf++;
+	}
+
+	/* Clear tail bits in the last element of array beyond nbits. */
+	if (nbits % 64)
+		buf[-1] &= GENMASK_ULL((nbits - 1) % 64, 0);
+}
+EXPORT_SYMBOL(bitmap_to_arr64);
 #endif

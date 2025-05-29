@@ -33,6 +33,7 @@ static int pcspkr_event(struct input_dev *dev, unsigned int type,
 	case SND_BELL:
 		if (value)
 			value = 1000;
+		break;
 	case SND_TONE:
 		break;
 	default:
@@ -94,15 +95,13 @@ static int pcspkr_probe(struct platform_device *dev)
 	return 0;
 }
 
-static int pcspkr_remove(struct platform_device *dev)
+static void pcspkr_remove(struct platform_device *dev)
 {
 	struct input_dev *pcspkr_dev = platform_get_drvdata(dev);
 
 	input_unregister_device(pcspkr_dev);
 	/* turn off the speaker */
 	pcspkr_event(NULL, EV_SND, SND_BELL, 0);
-
-	return 0;
 }
 
 static int pcspkr_suspend(struct device *dev)

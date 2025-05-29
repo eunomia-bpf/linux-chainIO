@@ -10,9 +10,11 @@
 #include <unistd.h>
 #include <string.h>
 #include <errno.h>
+#include <endian.h>
 
-#include <linux/kernel.h>
 #include <linux/bootconfig.h>
+
+#define pr_err(fmt, ...) fprintf(stderr, fmt, ##__VA_ARGS__)
 
 static int xbc_show_value(struct xbc_node *node, bool semicolon)
 {
@@ -26,7 +28,7 @@ static int xbc_show_value(struct xbc_node *node, bool semicolon)
 			q = '\'';
 		else
 			q = '"';
-		printf("%c%s%c%s", q, val, q, node->next ? ", " : eol);
+		printf("%c%s%c%s", q, val, q, xbc_node_is_array(node) ? ", " : eol);
 		i++;
 	}
 	return i;
@@ -34,30 +36,55 @@ static int xbc_show_value(struct xbc_node *node, bool semicolon)
 
 static void xbc_show_compact_tree(void)
 {
-	struct xbc_node *node, *cnode;
+	struct xbc_node *node, *cnode = NULL, *vnode;
 	int depth = 0, i;
 
 	node = xbc_root_node();
 	while (node && xbc_node_is_key(node)) {
 		for (i = 0; i < depth; i++)
 			printf("\t");
-		cnode = xbc_node_get_child(node);
+		if (!cnode)
+			cnode = xbc_node_get_child(node);
 		while (cnode && xbc_node_is_key(cnode) && !cnode->next) {
+			vnode = xbc_node_get_child(cnode);
+			/*
+			 * If @cnode has value and subkeys, this
+			 * should show it as below.
+			 *
+			 * key(@node) {
+			 *      key(@cnode) = value;
+			 *      key(@cnode) {
+			 *          subkeys;
+			 *      }
+			 * }
+			 */
+			if (vnode && xbc_node_is_value(vnode) && vnode->next)
+				break;
 			printf("%s.", xbc_node_get_data(node));
 			node = cnode;
-			cnode = xbc_node_get_child(node);
+			cnode = vnode;
 		}
 		if (cnode && xbc_node_is_key(cnode)) {
 			printf("%s {\n", xbc_node_get_data(node));
 			depth++;
 			node = cnode;
+			cnode = NULL;
 			continue;
 		} else if (cnode && xbc_node_is_value(cnode)) {
 			printf("%s = ", xbc_node_get_data(node));
 			xbc_show_value(cnode, true);
+			/*
+			 * If @node has value and subkeys, continue
+			 * looping on subkeys with same node.
+			 */
+			if (cnode->next) {
+				cnode = xbc_node_get_next(cnode);
+				continue;
+			}
 		} else {
 			printf("%s;\n", xbc_node_get_data(node));
 		}
+		cnode = NULL;
 
 		if (node->next) {
 			node = xbc_node_get_next(node);
@@ -69,10 +96,12 @@ static void xbc_show_compact_tree(void)
 				return;
 			if (!xbc_node_get_child(node)->next)
 				continue;
-			depth--;
-			for (i = 0; i < depth; i++)
-				printf("\t");
-			printf("}\n");
+			if (depth) {
+				depth--;
+				for (i = 0; i < depth; i++)
+					printf("\t");
+				printf("}\n");
+			}
 		}
 		node = xbc_node_get_next(node);
 	}
@@ -83,12 +112,14 @@ static void xbc_show_list(void)
 	char key[XBC_KEYLEN_MAX];
 	struct xbc_node *leaf;
 	const char *val;
-	int ret = 0;
+	int ret;
 
 	xbc_for_each_key_value(leaf, val) {
 		ret = xbc_node_compose_key(leaf, key, XBC_KEYLEN_MAX);
-		if (ret < 0)
+		if (ret < 0) {
+			fprintf(stderr, "Failed to compose key %d\n", ret);
 			break;
+		}
 		printf("%s = ", key);
 		if (!val || val[0] == '\0') {
 			printf("\"\"\n");
@@ -96,17 +127,6 @@ static void xbc_show_list(void)
 		}
 		xbc_show_value(xbc_node_get_child(leaf), false);
 	}
-}
-
-/* Simple real checksum */
-static int checksum(unsigned char *buf, int len)
-{
-	int i, sum = 0;
-
-	for (i = 0; i < len; i++)
-		sum += buf[i];
-
-	return sum;
 }
 
 #define PAGE_SIZE	4096
@@ -147,11 +167,17 @@ static int load_xbc_file(const char *path, char **buf)
 	return ret;
 }
 
+static int pr_errno(const char *msg, int err)
+{
+	pr_err("%s: %d\n", msg, err);
+	return err;
+}
+
 static int load_xbc_from_initrd(int fd, char **buf)
 {
 	struct stat stat;
 	int ret;
-	u32 size = 0, csum = 0, rcsum;
+	uint32_t size = 0, csum = 0, rcsum;
 	char magic[BOOTCONFIG_MAGIC_LEN];
 	const char *msg;
 
@@ -162,26 +188,26 @@ static int load_xbc_from_initrd(int fd, char **buf)
 	if (stat.st_size < 8 + BOOTCONFIG_MAGIC_LEN)
 		return 0;
 
-	if (lseek(fd, -BOOTCONFIG_MAGIC_LEN, SEEK_END) < 0) {
-		pr_err("Failed to lseek: %d\n", -errno);
-		return -errno;
-	}
+	if (lseek(fd, -BOOTCONFIG_MAGIC_LEN, SEEK_END) < 0)
+		return pr_errno("Failed to lseek for magic", -errno);
+
 	if (read(fd, magic, BOOTCONFIG_MAGIC_LEN) < 0)
-		return -errno;
+		return pr_errno("Failed to read", -errno);
+
 	/* Check the bootconfig magic bytes */
 	if (memcmp(magic, BOOTCONFIG_MAGIC, BOOTCONFIG_MAGIC_LEN) != 0)
 		return 0;
 
-	if (lseek(fd, -(8 + BOOTCONFIG_MAGIC_LEN), SEEK_END) < 0) {
-		pr_err("Failed to lseek: %d\n", -errno);
-		return -errno;
-	}
+	if (lseek(fd, -(8 + BOOTCONFIG_MAGIC_LEN), SEEK_END) < 0)
+		return pr_errno("Failed to lseek for size", -errno);
 
-	if (read(fd, &size, sizeof(u32)) < 0)
-		return -errno;
+	if (read(fd, &size, sizeof(uint32_t)) < 0)
+		return pr_errno("Failed to read size", -errno);
+	size = le32toh(size);
 
-	if (read(fd, &csum, sizeof(u32)) < 0)
-		return -errno;
+	if (read(fd, &csum, sizeof(uint32_t)) < 0)
+		return pr_errno("Failed to read checksum", -errno);
+	csum = le32toh(csum);
 
 	/* Wrong size error  */
 	if (stat.st_size < size + 8 + BOOTCONFIG_MAGIC_LEN) {
@@ -190,23 +216,21 @@ static int load_xbc_from_initrd(int fd, char **buf)
 	}
 
 	if (lseek(fd, stat.st_size - (size + 8 + BOOTCONFIG_MAGIC_LEN),
-		  SEEK_SET) < 0) {
-		pr_err("Failed to lseek: %d\n", -errno);
-		return -errno;
-	}
+		  SEEK_SET) < 0)
+		return pr_errno("Failed to lseek", -errno);
 
 	ret = load_xbc_fd(fd, buf, size);
 	if (ret < 0)
 		return ret;
 
 	/* Wrong Checksum */
-	rcsum = checksum((unsigned char *)*buf, size);
+	rcsum = xbc_calc_checksum(*buf, size);
 	if (csum != rcsum) {
 		pr_err("checksum error: %d != %d\n", csum, rcsum);
 		return -EINVAL;
 	}
 
-	ret = xbc_init(*buf, &msg, NULL);
+	ret = xbc_init(*buf, size, &msg, NULL);
 	/* Wrong data */
 	if (ret < 0) {
 		pr_err("parse error: %s.\n", msg);
@@ -246,7 +270,7 @@ static int init_xbc_with_error(char *buf, int len)
 	if (!copy)
 		return -ENOMEM;
 
-	ret = xbc_init(buf, &msg, &pos);
+	ret = xbc_init(buf, len, &msg, &pos);
 	if (ret < 0)
 		show_xbc_error(copy, msg, pos);
 	free(copy);
@@ -262,14 +286,16 @@ static int show_xbc(const char *path, bool list)
 
 	ret = stat(path, &st);
 	if (ret < 0) {
-		pr_err("Failed to stat %s: %d\n", path, -errno);
-		return -errno;
+		ret = -errno;
+		pr_err("Failed to stat %s: %d\n", path, ret);
+		return ret;
 	}
 
 	fd = open(path, O_RDONLY);
 	if (fd < 0) {
-		pr_err("Failed to open initrd %s: %d\n", path, fd);
-		return -errno;
+		ret = -errno;
+		pr_err("Failed to open initrd %s: %d\n", path, ret);
+		return ret;
 	}
 
 	ret = load_xbc_from_initrd(fd, &buf);
@@ -307,8 +333,9 @@ static int delete_xbc(const char *path)
 
 	fd = open(path, O_RDWR);
 	if (fd < 0) {
-		pr_err("Failed to open initrd %s: %d\n", path, fd);
-		return -errno;
+		ret = -errno;
+		pr_err("Failed to open initrd %s: %d\n", path, ret);
+		return ret;
 	}
 
 	size = load_xbc_from_initrd(fd, &buf);
@@ -332,11 +359,13 @@ static int delete_xbc(const char *path)
 
 static int apply_xbc(const char *path, const char *xbc_path)
 {
-	u32 size, csum;
-	char *buf, *data;
-	int ret, fd;
+	char *buf, *data, *p;
+	size_t total_size;
+	struct stat stat;
 	const char *msg;
-	int pos;
+	uint32_t size, csum;
+	int pos, pad;
+	int ret, fd;
 
 	ret = load_xbc_file(xbc_path, &buf);
 	if (ret < 0) {
@@ -344,18 +373,17 @@ static int apply_xbc(const char *path, const char *xbc_path)
 		return ret;
 	}
 	size = strlen(buf) + 1;
-	csum = checksum((unsigned char *)buf, size);
+	csum = xbc_calc_checksum(buf, size);
 
-	/* Prepare xbc_path data */
-	data = malloc(size + 8);
+	/* Backup the bootconfig data */
+	data = calloc(size + BOOTCONFIG_ALIGN +
+		      sizeof(uint32_t) + sizeof(uint32_t) + BOOTCONFIG_MAGIC_LEN, 1);
 	if (!data)
 		return -ENOMEM;
-	strcpy(data, buf);
-	*(u32 *)(data + size) = size;
-	*(u32 *)(data + size + 4) = csum;
+	memcpy(data, buf, size);
 
 	/* Check the data format */
-	ret = xbc_init(buf, &msg, &pos);
+	ret = xbc_init(buf, size, &msg, &pos);
 	if (ret < 0) {
 		show_xbc_error(data, msg, pos);
 		free(data);
@@ -364,12 +392,13 @@ static int apply_xbc(const char *path, const char *xbc_path)
 		return ret;
 	}
 	printf("Apply %s to %s\n", xbc_path, path);
+	xbc_get_info(&ret, NULL);
 	printf("\tNumber of nodes: %d\n", ret);
 	printf("\tSize: %u bytes\n", (unsigned int)size);
 	printf("\tChecksum: %d\n", (unsigned int)csum);
 
 	/* TODO: Check the options by schema */
-	xbc_destroy_all();
+	xbc_exit();
 	free(buf);
 
 	/* Remove old boot config if exists */
@@ -383,28 +412,62 @@ static int apply_xbc(const char *path, const char *xbc_path)
 	/* Apply new one */
 	fd = open(path, O_RDWR | O_APPEND);
 	if (fd < 0) {
-		pr_err("Failed to open %s: %d\n", path, fd);
+		ret = -errno;
+		pr_err("Failed to open %s: %d\n", path, ret);
 		free(data);
-		return fd;
+		return ret;
 	}
 	/* TODO: Ensure the @path is initramfs/initrd image */
-	ret = write(fd, data, size + 8);
-	if (ret < 0) {
+	if (fstat(fd, &stat) < 0) {
+		ret = -errno;
+		pr_err("Failed to get the size of %s\n", path);
+		goto out;
+	}
+
+	/* To align up the total size to BOOTCONFIG_ALIGN, get padding size */
+	total_size = stat.st_size + size + sizeof(uint32_t) * 2 + BOOTCONFIG_MAGIC_LEN;
+	pad = ((total_size + BOOTCONFIG_ALIGN - 1) & (~BOOTCONFIG_ALIGN_MASK)) - total_size;
+	size += pad;
+
+	/* Add a footer */
+	p = data + size;
+	*(uint32_t *)p = htole32(size);
+	p += sizeof(uint32_t);
+
+	*(uint32_t *)p = htole32(csum);
+	p += sizeof(uint32_t);
+
+	memcpy(p, BOOTCONFIG_MAGIC, BOOTCONFIG_MAGIC_LEN);
+	p += BOOTCONFIG_MAGIC_LEN;
+
+	total_size = p - data;
+
+	ret = write(fd, data, total_size);
+	if (ret < total_size) {
+		if (ret < 0)
+			ret = -errno;
 		pr_err("Failed to apply a boot config: %d\n", ret);
-		goto out;
-	}
-	/* Write a magic word of the bootconfig */
-	ret = write(fd, BOOTCONFIG_MAGIC, BOOTCONFIG_MAGIC_LEN);
-	if (ret < 0) {
-		pr_err("Failed to apply a boot config magic: %d\n", ret);
-		goto out;
-	}
-	ret = 0;
+		if (ret >= 0)
+			goto out_rollback;
+	} else
+		ret = 0;
+
 out:
 	close(fd);
 	free(data);
 
 	return ret;
+
+out_rollback:
+	/* Map the partial write to -ENOSPC */
+	if (ret >= 0)
+		ret = -ENOSPC;
+	if (ftruncate(fd, stat.st_size) < 0) {
+		ret = -errno;
+		pr_err("Failed to rollback the write error: %d\n", ret);
+		pr_err("The initrd %s may be corrupted. Recommend to rebuild.\n", path);
+	}
+	goto out;
 }
 
 static int usage(void)

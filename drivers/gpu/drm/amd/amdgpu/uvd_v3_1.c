@@ -80,7 +80,9 @@ static void uvd_v3_1_ring_set_wptr(struct amdgpu_ring *ring)
  * uvd_v3_1_ring_emit_ib - execute indirect buffer
  *
  * @ring: amdgpu_ring pointer
+ * @job: iob associated with the indirect buffer
  * @ib: indirect buffer to execute
+ * @flags: flags associated with the indirect buffer
  *
  * Write ring commands to execute the indirect buffer
  */
@@ -99,7 +101,9 @@ static void uvd_v3_1_ring_emit_ib(struct amdgpu_ring *ring,
  * uvd_v3_1_ring_emit_fence - emit an fence & trap command
  *
  * @ring: amdgpu_ring pointer
- * @fence: fence to emit
+ * @addr: address
+ * @seq: sequence number
+ * @flags: fence related flags
  *
  * Write a fence and a trap command to the ring.
  */
@@ -277,15 +281,8 @@ static void uvd_v3_1_mc_resume(struct amdgpu_device *adev)
  */
 static int uvd_v3_1_fw_validate(struct amdgpu_device *adev)
 {
-	void *ptr;
-	uint32_t ucode_len, i;
-	uint32_t keysel;
-
-	ptr = adev->uvd.inst[0].cpu_addr;
-	ptr += 192 + 16;
-	memcpy(&ucode_len, ptr, 4);
-	ptr += ucode_len;
-	memcpy(&keysel, ptr, 4);
+	int i;
+	uint32_t keysel = adev->uvd.keyselect;
 
 	WREG32(mmUVD_FW_START, keysel);
 
@@ -343,7 +340,7 @@ static int uvd_v3_1_start(struct amdgpu_device *adev)
 	/* enable VCPU clock */
 	WREG32(mmUVD_VCPU_CNTL,  1 << 9);
 
-	/* disable interupt */
+	/* disable interrupt */
 	WREG32_P(mmUVD_MASTINT_EN, 0, ~(1 << 1));
 
 #ifdef __BIG_ENDIAN
@@ -408,7 +405,7 @@ static int uvd_v3_1_start(struct amdgpu_device *adev)
 		return r;
 	}
 
-	/* enable interupt */
+	/* enable interrupt */
 	WREG32_P(mmUVD_MASTINT_EN, 3<<1, ~(3 << 1));
 
 	WREG32_P(mmUVD_STATUS, 0, ~(1<<2));
@@ -534,9 +531,9 @@ static void uvd_v3_1_set_irq_funcs(struct amdgpu_device *adev)
 }
 
 
-static int uvd_v3_1_early_init(void *handle)
+static int uvd_v3_1_early_init(struct amdgpu_ip_block *ip_block)
 {
-	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
+	struct amdgpu_device *adev = ip_block->adev;
 	adev->uvd.num_uvd_inst = 1;
 
 	uvd_v3_1_set_ring_funcs(adev);
@@ -545,11 +542,13 @@ static int uvd_v3_1_early_init(void *handle)
 	return 0;
 }
 
-static int uvd_v3_1_sw_init(void *handle)
+static int uvd_v3_1_sw_init(struct amdgpu_ip_block *ip_block)
 {
 	struct amdgpu_ring *ring;
-	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
+	struct amdgpu_device *adev = ip_block->adev;
 	int r;
+	void *ptr;
+	uint32_t ucode_len;
 
 	/* UVD TRAP */
 	r = amdgpu_irq_add_id(adev, AMDGPU_IRQ_CLIENTID_LEGACY, 124, &adev->uvd.inst->irq);
@@ -563,7 +562,7 @@ static int uvd_v3_1_sw_init(void *handle)
 	ring = &adev->uvd.inst->ring;
 	sprintf(ring->name, "uvd");
 	r = amdgpu_ring_init(adev, ring, 512, &adev->uvd.inst->irq, 0,
-			 AMDGPU_RING_PRIO_DEFAULT);
+			 AMDGPU_RING_PRIO_DEFAULT, NULL);
 	if (r)
 		return r;
 
@@ -571,15 +570,20 @@ static int uvd_v3_1_sw_init(void *handle)
 	if (r)
 		return r;
 
-	r = amdgpu_uvd_entity_init(adev);
+	/* Retrieval firmware validate key */
+	ptr = adev->uvd.inst[0].cpu_addr;
+	ptr += 192 + 16;
+	memcpy(&ucode_len, ptr, 4);
+	ptr += ucode_len;
+	memcpy(&adev->uvd.keyselect, ptr, 4);
 
 	return r;
 }
 
-static int uvd_v3_1_sw_fini(void *handle)
+static int uvd_v3_1_sw_fini(struct amdgpu_ip_block *ip_block)
 {
 	int r;
-	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
+	struct amdgpu_device *adev = ip_block->adev;
 
 	r = amdgpu_uvd_suspend(adev);
 	if (r)
@@ -617,13 +621,13 @@ static void uvd_v3_1_enable_mgcg(struct amdgpu_device *adev,
 /**
  * uvd_v3_1_hw_init - start and test UVD block
  *
- * @adev: amdgpu_device pointer
+ * @ip_block: Pointer to the amdgpu_ip_block for this hw instance.
  *
  * Initialize the hardware, boot up the VCPU and do some testing
  */
-static int uvd_v3_1_hw_init(void *handle)
+static int uvd_v3_1_hw_init(struct amdgpu_ip_block *ip_block)
 {
-	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
+	struct amdgpu_device *adev = ip_block->adev;
 	struct amdgpu_ring *ring = &adev->uvd.inst->ring;
 	uint32_t tmp;
 	int r;
@@ -684,13 +688,15 @@ done:
 /**
  * uvd_v3_1_hw_fini - stop the hardware block
  *
- * @adev: amdgpu_device pointer
+ * @ip_block: Pointer to the amdgpu_ip_block for this hw instance.
  *
  * Stop the UVD block, mark ring as not ready any more
  */
-static int uvd_v3_1_hw_fini(void *handle)
+static int uvd_v3_1_hw_fini(struct amdgpu_ip_block *ip_block)
 {
-	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
+	struct amdgpu_device *adev = ip_block->adev;
+
+	cancel_delayed_work_sync(&adev->uvd.idle_work);
 
 	if (RREG32(mmUVD_STATUS) != 0)
 		uvd_v3_1_stop(adev);
@@ -698,28 +704,58 @@ static int uvd_v3_1_hw_fini(void *handle)
 	return 0;
 }
 
-static int uvd_v3_1_suspend(void *handle)
+static int uvd_v3_1_prepare_suspend(struct amdgpu_ip_block *ip_block)
+{
+	struct amdgpu_device *adev = ip_block->adev;
+
+	return amdgpu_uvd_prepare_suspend(adev);
+}
+
+static int uvd_v3_1_suspend(struct amdgpu_ip_block *ip_block)
 {
 	int r;
-	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
+	struct amdgpu_device *adev = ip_block->adev;
 
-	r = uvd_v3_1_hw_fini(adev);
+	/*
+	 * Proper cleanups before halting the HW engine:
+	 *   - cancel the delayed idle work
+	 *   - enable powergating
+	 *   - enable clockgating
+	 *   - disable dpm
+	 *
+	 * TODO: to align with the VCN implementation, move the
+	 * jobs for clockgating/powergating/dpm setting to
+	 * ->set_powergating_state().
+	 */
+	cancel_delayed_work_sync(&adev->uvd.idle_work);
+
+	if (adev->pm.dpm_enabled) {
+		amdgpu_dpm_enable_uvd(adev, false);
+	} else {
+		amdgpu_asic_set_uvd_clocks(adev, 0, 0);
+		/* shutdown the UVD block */
+		amdgpu_device_ip_set_powergating_state(adev, AMD_IP_BLOCK_TYPE_UVD,
+						       AMD_PG_STATE_GATE);
+		amdgpu_device_ip_set_clockgating_state(adev, AMD_IP_BLOCK_TYPE_UVD,
+						       AMD_CG_STATE_GATE);
+	}
+
+	r = uvd_v3_1_hw_fini(ip_block);
 	if (r)
 		return r;
 
 	return amdgpu_uvd_suspend(adev);
 }
 
-static int uvd_v3_1_resume(void *handle)
+static int uvd_v3_1_resume(struct amdgpu_ip_block *ip_block)
 {
 	int r;
-	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
 
-	r = amdgpu_uvd_resume(adev);
+	r = amdgpu_uvd_resume(ip_block->adev);
 	if (r)
 		return r;
 
-	return uvd_v3_1_hw_init(adev);
+	return uvd_v3_1_hw_init(ip_block);
 }
 
 static bool uvd_v3_1_is_idle(void *handle)
@@ -729,10 +765,10 @@ static bool uvd_v3_1_is_idle(void *handle)
 	return !(RREG32(mmSRBM_STATUS) & SRBM_STATUS__UVD_BUSY_MASK);
 }
 
-static int uvd_v3_1_wait_for_idle(void *handle)
+static int uvd_v3_1_wait_for_idle(struct amdgpu_ip_block *ip_block)
 {
 	unsigned i;
-	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
+	struct amdgpu_device *adev = ip_block->adev;
 
 	for (i = 0; i < adev->usec_timeout; i++) {
 		if (!(RREG32(mmSRBM_STATUS) & SRBM_STATUS__UVD_BUSY_MASK))
@@ -741,9 +777,9 @@ static int uvd_v3_1_wait_for_idle(void *handle)
 	return -ETIMEDOUT;
 }
 
-static int uvd_v3_1_soft_reset(void *handle)
+static int uvd_v3_1_soft_reset(struct amdgpu_ip_block *ip_block)
 {
-	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
+	struct amdgpu_device *adev = ip_block->adev;
 
 	uvd_v3_1_stop(adev);
 
@@ -769,11 +805,11 @@ static int uvd_v3_1_set_powergating_state(void *handle,
 static const struct amd_ip_funcs uvd_v3_1_ip_funcs = {
 	.name = "uvd_v3_1",
 	.early_init = uvd_v3_1_early_init,
-	.late_init = NULL,
 	.sw_init = uvd_v3_1_sw_init,
 	.sw_fini = uvd_v3_1_sw_fini,
 	.hw_init = uvd_v3_1_hw_init,
 	.hw_fini = uvd_v3_1_hw_fini,
+	.prepare_suspend = uvd_v3_1_prepare_suspend,
 	.suspend = uvd_v3_1_suspend,
 	.resume = uvd_v3_1_resume,
 	.is_idle = uvd_v3_1_is_idle,
@@ -783,8 +819,7 @@ static const struct amd_ip_funcs uvd_v3_1_ip_funcs = {
 	.set_powergating_state = uvd_v3_1_set_powergating_state,
 };
 
-const struct amdgpu_ip_block_version uvd_v3_1_ip_block =
-{
+const struct amdgpu_ip_block_version uvd_v3_1_ip_block = {
 	.type = AMD_IP_BLOCK_TYPE_UVD,
 	.major = 3,
 	.minor = 1,

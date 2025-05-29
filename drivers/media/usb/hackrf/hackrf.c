@@ -753,12 +753,13 @@ static int hackrf_queue_setup(struct vb2_queue *vq,
 		unsigned int *nplanes, unsigned int sizes[], struct device *alloc_devs[])
 {
 	struct hackrf_dev *dev = vb2_get_drv_priv(vq);
+	unsigned int q_num_bufs = vb2_get_num_buffers(vq);
 
 	dev_dbg(dev->dev, "nbuffers=%d\n", *nbuffers);
 
 	/* Need at least 8 buffers */
-	if (vq->num_buffers + *nbuffers < 8)
-		*nbuffers = 8 - vq->num_buffers;
+	if (q_num_bufs + *nbuffers < 8)
+		*nbuffers = 8 - q_num_bufs;
 	*nplanes = 1;
 	sizes[0] = PAGE_ALIGN(dev->buffersize);
 
@@ -887,8 +888,6 @@ static const struct vb2_ops hackrf_vb2_ops = {
 	.buf_queue              = hackrf_buf_queue,
 	.start_streaming        = hackrf_start_streaming,
 	.stop_streaming         = hackrf_stop_streaming,
-	.wait_prepare           = vb2_ops_wait_prepare,
-	.wait_finish            = vb2_ops_wait_finish,
 };
 
 static int hackrf_querycap(struct file *file, void *fh,
@@ -929,7 +928,6 @@ static int hackrf_s_fmt_sdr(struct file *file, void *priv,
 	if (vb2_is_busy(q))
 		return -EBUSY;
 
-	memset(f->fmt.sdr.reserved, 0, sizeof(f->fmt.sdr.reserved));
 	for (i = 0; i < NUM_FORMATS; i++) {
 		if (f->fmt.sdr.pixelformat == formats[i].pixelformat) {
 			dev->pixelformat = formats[i].pixelformat;
@@ -955,7 +953,6 @@ static int hackrf_g_fmt_sdr(struct file *file, void *priv,
 	dev_dbg(dev->dev, "pixelformat fourcc %4.4s\n",
 			(char *)&dev->pixelformat);
 
-	memset(f->fmt.sdr.reserved, 0, sizeof(f->fmt.sdr.reserved));
 	f->fmt.sdr.pixelformat = dev->pixelformat;
 	f->fmt.sdr.buffersize = dev->buffersize;
 
@@ -971,7 +968,6 @@ static int hackrf_try_fmt_sdr(struct file *file, void *priv,
 	dev_dbg(dev->dev, "pixelformat fourcc %4.4s\n",
 			(char *)&f->fmt.sdr.pixelformat);
 
-	memset(f->fmt.sdr.reserved, 0, sizeof(f->fmt.sdr.reserved));
 	for (i = 0; i < NUM_FORMATS; i++) {
 		if (formats[i].pixelformat == f->fmt.sdr.pixelformat) {
 			f->fmt.sdr.buffersize = formats[i].buffersize;
@@ -1400,6 +1396,7 @@ static int hackrf_probe(struct usb_interface *intf,
 	dev->rx_vb2_queue.drv_priv = dev;
 	dev->rx_vb2_queue.buf_struct_size = sizeof(struct hackrf_buffer);
 	dev->rx_vb2_queue.timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
+	dev->rx_vb2_queue.lock = &dev->vb_queue_lock;
 	ret = vb2_queue_init(&dev->rx_vb2_queue);
 	if (ret) {
 		dev_err(dev->dev, "Could not initialize rx vb2 queue\n");
@@ -1415,6 +1412,7 @@ static int hackrf_probe(struct usb_interface *intf,
 	dev->tx_vb2_queue.drv_priv = dev;
 	dev->tx_vb2_queue.buf_struct_size = sizeof(struct hackrf_buffer);
 	dev->tx_vb2_queue.timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
+	dev->tx_vb2_queue.lock = &dev->vb_queue_lock;
 	ret = vb2_queue_init(&dev->tx_vb2_queue);
 	if (ret) {
 		dev_err(dev->dev, "Could not initialize tx vb2 queue\n");
@@ -1476,7 +1474,6 @@ static int hackrf_probe(struct usb_interface *intf,
 	/* Init video_device structure for receiver */
 	dev->rx_vdev = hackrf_template;
 	dev->rx_vdev.queue = &dev->rx_vb2_queue;
-	dev->rx_vdev.queue->lock = &dev->vb_queue_lock;
 	dev->rx_vdev.v4l2_dev = &dev->v4l2_dev;
 	dev->rx_vdev.ctrl_handler = &dev->rx_ctrl_handler;
 	dev->rx_vdev.lock = &dev->v4l2_lock;
@@ -1496,7 +1493,6 @@ static int hackrf_probe(struct usb_interface *intf,
 	/* Init video_device structure for transmitter */
 	dev->tx_vdev = hackrf_template;
 	dev->tx_vdev.queue = &dev->tx_vb2_queue;
-	dev->tx_vdev.queue->lock = &dev->vb_queue_lock;
 	dev->tx_vdev.v4l2_dev = &dev->v4l2_dev;
 	dev->tx_vdev.ctrl_handler = &dev->tx_ctrl_handler;
 	dev->tx_vdev.lock = &dev->v4l2_lock;

@@ -229,6 +229,9 @@ static int elo_probe(struct hid_device *hdev, const struct hid_device_id *id)
 	struct elo_priv *priv;
 	int ret;
 
+	if (!hid_is_usb(hdev))
+		return -EINVAL;
+
 	priv = kzalloc(sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
@@ -310,4 +313,5 @@ static void __exit elo_driver_exit(void)
 module_exit(elo_driver_exit);
 
 MODULE_AUTHOR("Jiri Slaby <jslaby@suse.cz>");
+MODULE_DESCRIPTION("HID driver for ELO usb touchscreen 4000/4500");
 MODULE_LICENSE("GPL");

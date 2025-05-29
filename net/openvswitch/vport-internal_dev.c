@@ -35,21 +35,18 @@ internal_dev_xmit(struct sk_buff *skb, struct net_device *netdev)
 {
 	int len, err;
 
+	/* store len value because skb can be freed inside ovs_vport_receive() */
 	len = skb->len;
+
 	rcu_read_lock();
 	err = ovs_vport_receive(internal_dev_priv(netdev)->vport, skb, NULL);
 	rcu_read_unlock();
 
-	if (likely(!err)) {
-		struct pcpu_sw_netstats *tstats = this_cpu_ptr(netdev->tstats);
-
-		u64_stats_update_begin(&tstats->syncp);
-		tstats->tx_bytes += len;
-		tstats->tx_packets++;
-		u64_stats_update_end(&tstats->syncp);
-	} else {
+	if (likely(!err))
+		dev_sw_netstats_tx_add(netdev, 1, len);
+	else
 		netdev->stats.tx_errors++;
-	}
+
 	return NETDEV_TX_OK;
 }
 
@@ -68,7 +65,7 @@ static int internal_dev_stop(struct net_device *netdev)
 static void internal_dev_getinfo(struct net_device *netdev,
 				 struct ethtool_drvinfo *info)
 {
-	strlcpy(info->driver, "openvswitch", sizeof(info->driver));
+	strscpy(info->driver, "openvswitch", sizeof(info->driver));
 }
 
 static const struct ethtool_ops internal_dev_ethtool_ops = {
@@ -83,24 +80,11 @@ static void internal_dev_destructor(struct net_device *dev)
 	ovs_vport_free(vport);
 }
 
-static void
-internal_get_stats(struct net_device *dev, struct rtnl_link_stats64 *stats)
-{
-	memset(stats, 0, sizeof(*stats));
-	stats->rx_errors  = dev->stats.rx_errors;
-	stats->tx_errors  = dev->stats.tx_errors;
-	stats->tx_dropped = dev->stats.tx_dropped;
-	stats->rx_dropped = dev->stats.rx_dropped;
-
-	dev_fetch_sw_netstats(stats, dev->tstats);
-}
-
 static const struct net_device_ops internal_dev_netdev_ops = {
 	.ndo_open = internal_dev_open,
 	.ndo_stop = internal_dev_stop,
 	.ndo_start_xmit = internal_dev_xmit,
 	.ndo_set_mac_address = eth_mac_addr,
-	.ndo_get_stats64 = internal_get_stats,
 };
 
 static struct rtnl_link_ops internal_dev_link_ops __read_mostly = {
@@ -118,19 +102,20 @@ static void do_setup(struct net_device *netdev)
 	netdev->priv_flags &= ~IFF_TX_SKB_SHARING;
 	netdev->priv_flags |= IFF_LIVE_ADDR_CHANGE | IFF_OPENVSWITCH |
 			      IFF_NO_QUEUE;
+	netdev->lltx = true;
 	netdev->needs_free_netdev = true;
 	netdev->priv_destructor = NULL;
 	netdev->ethtool_ops = &internal_dev_ethtool_ops;
 	netdev->rtnl_link_ops = &internal_dev_link_ops;
 
-	netdev->features = NETIF_F_LLTX | NETIF_F_SG | NETIF_F_FRAGLIST |
-			   NETIF_F_HIGHDMA | NETIF_F_HW_CSUM |
-			   NETIF_F_GSO_SOFTWARE | NETIF_F_GSO_ENCAP_ALL;
+	netdev->features = NETIF_F_SG | NETIF_F_FRAGLIST | NETIF_F_HIGHDMA |
+			   NETIF_F_HW_CSUM | NETIF_F_GSO_SOFTWARE |
+			   NETIF_F_GSO_ENCAP_ALL;
 
 	netdev->vlan_features = netdev->features;
 	netdev->hw_enc_features = netdev->features;
 	netdev->features |= NETIF_F_HW_VLAN_CTAG_TX | NETIF_F_HW_VLAN_STAG_TX;
-	netdev->hw_features = netdev->features & ~NETIF_F_LLTX;
+	netdev->hw_features = netdev->features;
 
 	eth_hw_addr_random(netdev);
 }
@@ -155,19 +140,16 @@ static struct vport *internal_dev_create(const struct vport_parms *parms)
 		err = -ENOMEM;
 		goto error_free_vport;
 	}
-	vport->dev->tstats = netdev_alloc_pcpu_stats(struct pcpu_sw_netstats);
-	if (!vport->dev->tstats) {
-		err = -ENOMEM;
-		goto error_free_netdev;
-	}
+	dev->pcpu_stat_type = NETDEV_PCPU_STAT_TSTATS;
 
 	dev_net_set(vport->dev, ovs_dp_get_net(vport->dp));
+	dev->ifindex = parms->desired_ifindex;
 	internal_dev = internal_dev_priv(vport->dev);
 	internal_dev->vport = vport;
 
 	/* Restrict bridge port to current netns. */
 	if (vport->port_no == OVSP_LOCAL)
-		vport->dev->features |= NETIF_F_NETNS_LOCAL;
+		vport->dev->netns_local = true;
 
 	rtnl_lock();
 	err = register_netdevice(vport->dev);
@@ -183,8 +165,6 @@ static struct vport *internal_dev_create(const struct vport_parms *parms)
 
 error_unlock:
 	rtnl_unlock();
-	free_percpu(dev->tstats);
-error_free_netdev:
 	free_netdev(dev);
 error_free_vport:
 	ovs_vport_free(vport);
@@ -200,11 +180,10 @@ static void internal_dev_destroy(struct vport *vport)
 
 	/* unregister_netdevice() waits for an RCU grace period. */
 	unregister_netdevice(vport->dev);
-	free_percpu(vport->dev->tstats);
 	rtnl_unlock();
 }
 
-static netdev_tx_t internal_dev_recv(struct sk_buff *skb)
+static int internal_dev_recv(struct sk_buff *skb)
 {
 	struct net_device *netdev = skb->dev;
 
@@ -216,7 +195,6 @@ static netdev_tx_t internal_dev_recv(struct sk_buff *skb)
 
 	skb_dst_drop(skb);
 	nf_reset_ct(skb);
-	secpath_reset(skb);
 
 	skb->pkt_type = PACKET_HOST;
 	skb->protocol = eth_type_trans(skb, netdev);

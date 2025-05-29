@@ -43,6 +43,13 @@
 #include "restrack.h"
 #include "uverbs.h"
 
+/*
+ * This determines whether a non-privileged user is allowed to specify a
+ * controlled QKEY or not, when true non-privileged user is allowed to specify
+ * a controlled QKEY.
+ */
+static bool privileged_qkey;
+
 typedef int (*res_fill_func_t)(struct sk_buff*, bool,
 			       struct rdma_restrack_entry*, uint32_t);
 
@@ -92,7 +99,9 @@ static const struct nla_policy nldev_policy[RDMA_NLDEV_ATTR_MAX] = {
 	[RDMA_NLDEV_ATTR_RES_CQE]		= { .type = NLA_U32 },
 	[RDMA_NLDEV_ATTR_RES_CQN]		= { .type = NLA_U32 },
 	[RDMA_NLDEV_ATTR_RES_CQ_ENTRY]		= { .type = NLA_NESTED },
+	[RDMA_NLDEV_ATTR_RES_CTX]		= { .type = NLA_NESTED },
 	[RDMA_NLDEV_ATTR_RES_CTXN]		= { .type = NLA_U32 },
+	[RDMA_NLDEV_ATTR_RES_CTX_ENTRY]		= { .type = NLA_NESTED },
 	[RDMA_NLDEV_ATTR_RES_DST_ADDR]		= {
 			.len = sizeof(struct __kernel_sockaddr_storage) },
 	[RDMA_NLDEV_ATTR_RES_IOVA]		= { .type = NLA_U64 },
@@ -128,8 +137,15 @@ static const struct nla_policy nldev_policy[RDMA_NLDEV_ATTR_MAX] = {
 	[RDMA_NLDEV_ATTR_RES_SUMMARY_ENTRY_NAME]= { .type = NLA_NUL_STRING,
 					.len = RDMA_NLDEV_ATTR_EMPTY_STRING },
 	[RDMA_NLDEV_ATTR_RES_TYPE]		= { .type = NLA_U8 },
+	[RDMA_NLDEV_ATTR_RES_SUBTYPE]		= { .type = NLA_NUL_STRING,
+					.len = RDMA_NLDEV_ATTR_EMPTY_STRING },
 	[RDMA_NLDEV_ATTR_RES_UNSAFE_GLOBAL_RKEY]= { .type = NLA_U32 },
 	[RDMA_NLDEV_ATTR_RES_USECNT]		= { .type = NLA_U64 },
+	[RDMA_NLDEV_ATTR_RES_SRQ]		= { .type = NLA_NESTED },
+	[RDMA_NLDEV_ATTR_RES_SRQN]		= { .type = NLA_U32 },
+	[RDMA_NLDEV_ATTR_RES_SRQ_ENTRY]		= { .type = NLA_NESTED },
+	[RDMA_NLDEV_ATTR_MIN_RANGE]		= { .type = NLA_U32 },
+	[RDMA_NLDEV_ATTR_MAX_RANGE]		= { .type = NLA_U32 },
 	[RDMA_NLDEV_ATTR_SM_LID]		= { .type = NLA_U32 },
 	[RDMA_NLDEV_ATTR_SUBNET_PREFIX]		= { .type = NLA_U64 },
 	[RDMA_NLDEV_ATTR_STAT_AUTO_MODE_MASK]	= { .type = NLA_U32 },
@@ -146,6 +162,15 @@ static const struct nla_policy nldev_policy[RDMA_NLDEV_ATTR_MAX] = {
 	[RDMA_NLDEV_ATTR_UVERBS_DRIVER_ID]	= { .type = NLA_U32 },
 	[RDMA_NLDEV_NET_NS_FD]			= { .type = NLA_U32 },
 	[RDMA_NLDEV_SYS_ATTR_NETNS_MODE]	= { .type = NLA_U8 },
+	[RDMA_NLDEV_SYS_ATTR_COPY_ON_FORK]	= { .type = NLA_U8 },
+	[RDMA_NLDEV_ATTR_STAT_HWCOUNTER_INDEX]	= { .type = NLA_U32 },
+	[RDMA_NLDEV_ATTR_STAT_HWCOUNTER_DYNAMIC] = { .type = NLA_U8 },
+	[RDMA_NLDEV_SYS_ATTR_PRIVILEGED_QKEY_MODE] = { .type = NLA_U8 },
+	[RDMA_NLDEV_ATTR_DRIVER_DETAILS]	= { .type = NLA_U8 },
+	[RDMA_NLDEV_ATTR_DEV_TYPE]		= { .type = NLA_U8 },
+	[RDMA_NLDEV_ATTR_PARENT_NAME]		= { .type = NLA_NUL_STRING },
+	[RDMA_NLDEV_ATTR_NAME_ASSIGN_TYPE]	= { .type = NLA_U8 },
+	[RDMA_NLDEV_ATTR_EVENT_TYPE]		= { .type = NLA_U8 },
 };
 
 static int put_driver_name_print_type(struct sk_buff *msg, const char *name,
@@ -227,6 +252,12 @@ int rdma_nl_put_driver_u64_hex(struct sk_buff *msg, const char *name, u64 value)
 }
 EXPORT_SYMBOL(rdma_nl_put_driver_u64_hex);
 
+bool rdma_nl_get_privileged_qkey(void)
+{
+	return privileged_qkey || capable(CAP_NET_RAW);
+}
+EXPORT_SYMBOL(rdma_nl_get_privileged_qkey);
+
 static int fill_nldev_handle(struct sk_buff *msg, struct ib_device *device)
 {
 	if (nla_put_u32(msg, RDMA_NLDEV_ATTR_DEV_INDEX, device->index))
@@ -242,7 +273,7 @@ static int fill_dev_info(struct sk_buff *msg, struct ib_device *device)
 {
 	char fw[IB_FW_VERSION_NAME_MAX];
 	int ret = 0;
-	u8 port;
+	u32 port;
 
 	if (fill_nldev_handle(msg, device))
 		return -EMSGSIZE;
@@ -272,6 +303,19 @@ static int fill_dev_info(struct sk_buff *msg, struct ib_device *device)
 	if (nla_put_u8(msg, RDMA_NLDEV_ATTR_DEV_NODE_TYPE, device->node_type))
 		return -EMSGSIZE;
 	if (nla_put_u8(msg, RDMA_NLDEV_ATTR_DEV_DIM, device->use_cq_dim))
+		return -EMSGSIZE;
+
+	if (device->type &&
+	    nla_put_u8(msg, RDMA_NLDEV_ATTR_DEV_TYPE, device->type))
+		return -EMSGSIZE;
+
+	if (device->parent &&
+	    nla_put_string(msg, RDMA_NLDEV_ATTR_PARENT_NAME,
+			   dev_name(&device->parent->dev)))
+		return -EMSGSIZE;
+
+	if (nla_put_u8(msg, RDMA_NLDEV_ATTR_NAME_ASSIGN_TYPE,
+		       device->name_assign_type))
 		return -EMSGSIZE;
 
 	/*
@@ -347,8 +391,7 @@ static int fill_port_info(struct sk_buff *msg,
 	}
 
 out:
-	if (netdev)
-		dev_put(netdev);
+	dev_put(netdev);
 	return ret;
 }
 
@@ -376,7 +419,8 @@ err:
 	return -EMSGSIZE;
 }
 
-static int fill_res_info(struct sk_buff *msg, struct ib_device *device)
+static int fill_res_info(struct sk_buff *msg, struct ib_device *device,
+			 bool show_details)
 {
 	static const char * const names[RDMA_RESTRACK_MAX] = {
 		[RDMA_RESTRACK_PD] = "pd",
@@ -385,6 +429,7 @@ static int fill_res_info(struct sk_buff *msg, struct ib_device *device)
 		[RDMA_RESTRACK_CM_ID] = "cm_id",
 		[RDMA_RESTRACK_MR] = "mr",
 		[RDMA_RESTRACK_CTX] = "ctx",
+		[RDMA_RESTRACK_SRQ] = "srq",
 	};
 
 	struct nlattr *table_attr;
@@ -400,7 +445,7 @@ static int fill_res_info(struct sk_buff *msg, struct ib_device *device)
 	for (i = 0; i < RDMA_RESTRACK_MAX; i++) {
 		if (!names[i])
 			continue;
-		curr = rdma_restrack_count(device, i);
+		curr = rdma_restrack_count(device, i, show_details);
 		ret = fill_res_info_entry(msg, names[i], curr);
 		if (ret)
 			goto err;
@@ -502,7 +547,7 @@ static int fill_res_qp_entry(struct sk_buff *msg, bool has_cap_net_admin,
 
 	/* In create_qp() port is not set yet */
 	if (qp->port && nla_put_u32(msg, RDMA_NLDEV_ATTR_PORT_INDEX, qp->port))
-		return -EINVAL;
+		return -EMSGSIZE;
 
 	ret = nla_put_u32(msg, RDMA_NLDEV_ATTR_RES_LQPN, qp->qp_num);
 	if (ret)
@@ -541,7 +586,7 @@ static int fill_res_cm_id_entry(struct sk_buff *msg, bool has_cap_net_admin,
 	struct rdma_cm_id *cm_id = &id_priv->id;
 
 	if (port && port != cm_id->port_num)
-		return 0;
+		return -EAGAIN;
 
 	if (cm_id->port_num &&
 	    nla_put_u32(msg, RDMA_NLDEV_ATTR_PORT_INDEX, cm_id->port_num))
@@ -703,6 +748,153 @@ static int fill_res_pd_entry(struct sk_buff *msg, bool has_cap_net_admin,
 err:	return -EMSGSIZE;
 }
 
+static int fill_res_ctx_entry(struct sk_buff *msg, bool has_cap_net_admin,
+			      struct rdma_restrack_entry *res, uint32_t port)
+{
+	struct ib_ucontext *ctx = container_of(res, struct ib_ucontext, res);
+
+	if (rdma_is_kernel_res(res))
+		return 0;
+
+	if (nla_put_u32(msg, RDMA_NLDEV_ATTR_RES_CTXN, ctx->res.id))
+		return -EMSGSIZE;
+
+	return fill_res_name_pid(msg, res);
+}
+
+static int fill_res_range_qp_entry(struct sk_buff *msg, uint32_t min_range,
+				   uint32_t max_range)
+{
+	struct nlattr *entry_attr;
+
+	if (!min_range)
+		return 0;
+
+	entry_attr = nla_nest_start(msg, RDMA_NLDEV_ATTR_RES_QP_ENTRY);
+	if (!entry_attr)
+		return -EMSGSIZE;
+
+	if (min_range == max_range) {
+		if (nla_put_u32(msg, RDMA_NLDEV_ATTR_RES_LQPN, min_range))
+			goto err;
+	} else {
+		if (nla_put_u32(msg, RDMA_NLDEV_ATTR_MIN_RANGE, min_range))
+			goto err;
+		if (nla_put_u32(msg, RDMA_NLDEV_ATTR_MAX_RANGE, max_range))
+			goto err;
+	}
+	nla_nest_end(msg, entry_attr);
+	return 0;
+
+err:
+	nla_nest_cancel(msg, entry_attr);
+	return -EMSGSIZE;
+}
+
+static int fill_res_srq_qps(struct sk_buff *msg, struct ib_srq *srq)
+{
+	uint32_t min_range = 0, prev = 0;
+	struct rdma_restrack_entry *res;
+	struct rdma_restrack_root *rt;
+	struct nlattr *table_attr;
+	struct ib_qp *qp = NULL;
+	unsigned long id = 0;
+
+	table_attr = nla_nest_start(msg, RDMA_NLDEV_ATTR_RES_QP);
+	if (!table_attr)
+		return -EMSGSIZE;
+
+	rt = &srq->device->res[RDMA_RESTRACK_QP];
+	xa_lock(&rt->xa);
+	xa_for_each(&rt->xa, id, res) {
+		if (!rdma_restrack_get(res))
+			continue;
+
+		qp = container_of(res, struct ib_qp, res);
+		if (!qp->srq || (qp->srq->res.id != srq->res.id)) {
+			rdma_restrack_put(res);
+			continue;
+		}
+
+		if (qp->qp_num < prev)
+			/* qp_num should be ascending */
+			goto err_loop;
+
+		if (min_range == 0) {
+			min_range = qp->qp_num;
+		} else if (qp->qp_num > (prev + 1)) {
+			if (fill_res_range_qp_entry(msg, min_range, prev))
+				goto err_loop;
+
+			min_range = qp->qp_num;
+		}
+		prev = qp->qp_num;
+		rdma_restrack_put(res);
+	}
+
+	xa_unlock(&rt->xa);
+
+	if (fill_res_range_qp_entry(msg, min_range, prev))
+		goto err;
+
+	nla_nest_end(msg, table_attr);
+	return 0;
+
+err_loop:
+	rdma_restrack_put(res);
+	xa_unlock(&rt->xa);
+err:
+	nla_nest_cancel(msg, table_attr);
+	return -EMSGSIZE;
+}
+
+static int fill_res_srq_entry(struct sk_buff *msg, bool has_cap_net_admin,
+			      struct rdma_restrack_entry *res, uint32_t port)
+{
+	struct ib_srq *srq = container_of(res, struct ib_srq, res);
+	struct ib_device *dev = srq->device;
+
+	if (nla_put_u32(msg, RDMA_NLDEV_ATTR_RES_SRQN, srq->res.id))
+		goto err;
+
+	if (nla_put_u8(msg, RDMA_NLDEV_ATTR_RES_TYPE, srq->srq_type))
+		goto err;
+
+	if (nla_put_u32(msg, RDMA_NLDEV_ATTR_RES_PDN, srq->pd->res.id))
+		goto err;
+
+	if (ib_srq_has_cq(srq->srq_type)) {
+		if (nla_put_u32(msg, RDMA_NLDEV_ATTR_RES_CQN,
+				srq->ext.cq->res.id))
+			goto err;
+	}
+
+	if (fill_res_srq_qps(msg, srq))
+		goto err;
+
+	if (fill_res_name_pid(msg, res))
+		goto err;
+
+	if (dev->ops.fill_res_srq_entry)
+		return dev->ops.fill_res_srq_entry(msg, srq);
+
+	return 0;
+
+err:
+	return -EMSGSIZE;
+}
+
+static int fill_res_srq_raw_entry(struct sk_buff *msg, bool has_cap_net_admin,
+				 struct rdma_restrack_entry *res, uint32_t port)
+{
+	struct ib_srq *srq = container_of(res, struct ib_srq, res);
+	struct ib_device *dev = srq->device;
+
+	if (!dev->ops.fill_res_srq_entry_raw)
+		return -EINVAL;
+	return dev->ops.fill_res_srq_entry_raw(msg, srq);
+}
+
 static int fill_stat_counter_mode(struct sk_buff *msg,
 				  struct rdma_counter *counter)
 {
@@ -754,6 +946,8 @@ static int fill_stat_counter_qps(struct sk_buff *msg,
 	int ret = 0;
 
 	table_attr = nla_nest_start(msg, RDMA_NLDEV_ATTR_RES_QP);
+	if (!table_attr)
+		return -EMSGSIZE;
 
 	rt = &counter->device->res[RDMA_RESTRACK_QP];
 	xa_lock(&rt->xa);
@@ -830,14 +1024,21 @@ static int fill_stat_counter_hwcounters(struct sk_buff *msg,
 	if (!table_attr)
 		return -EMSGSIZE;
 
-	for (i = 0; i < st->num_counters; i++)
-		if (rdma_nl_stat_hwcounter_entry(msg, st->names[i], st->value[i]))
+	mutex_lock(&st->lock);
+	for (i = 0; i < st->num_counters; i++) {
+		if (test_bit(i, st->is_disabled))
+			continue;
+		if (rdma_nl_stat_hwcounter_entry(msg, st->descs[i].name,
+						 st->value[i]))
 			goto err;
+	}
+	mutex_unlock(&st->lock);
 
 	nla_nest_end(msg, table_attr);
 	return 0;
 
 err:
+	mutex_unlock(&st->lock);
 	nla_nest_cancel(msg, table_attr);
 	return -EMSGSIZE;
 }
@@ -874,8 +1075,8 @@ static int nldev_get_doit(struct sk_buff *skb, struct nlmsghdr *nlh,
 	u32 index;
 	int err;
 
-	err = nlmsg_parse_deprecated(nlh, 0, tb, RDMA_NLDEV_ATTR_MAX - 1,
-				     nldev_policy, extack);
+	err = __nlmsg_parse(nlh, 0, tb, RDMA_NLDEV_ATTR_MAX - 1,
+			    nldev_policy, NL_VALIDATE_LIBERAL, extack);
 	if (err || !tb[RDMA_NLDEV_ATTR_DEV_INDEX])
 		return -EINVAL;
 
@@ -894,6 +1095,10 @@ static int nldev_get_doit(struct sk_buff *skb, struct nlmsghdr *nlh,
 	nlh = nlmsg_put(msg, NETLINK_CB(skb).portid, nlh->nlmsg_seq,
 			RDMA_NL_GET_TYPE(RDMA_NL_NLDEV, RDMA_NLDEV_CMD_GET),
 			0, 0);
+	if (!nlh) {
+		err = -EMSGSIZE;
+		goto err_free;
+	}
 
 	err = fill_dev_info(msg, device);
 	if (err)
@@ -919,8 +1124,8 @@ static int nldev_set_doit(struct sk_buff *skb, struct nlmsghdr *nlh,
 	u32 index;
 	int err;
 
-	err = nlmsg_parse_deprecated(nlh, 0, tb, RDMA_NLDEV_ATTR_MAX - 1,
-				     nldev_policy, extack);
+	err = nlmsg_parse(nlh, 0, tb, RDMA_NLDEV_ATTR_MAX - 1,
+			    nldev_policy, extack);
 	if (err || !tb[RDMA_NLDEV_ATTR_DEV_INDEX])
 		return -EINVAL;
 
@@ -932,7 +1137,7 @@ static int nldev_set_doit(struct sk_buff *skb, struct nlmsghdr *nlh,
 	if (tb[RDMA_NLDEV_ATTR_DEV_NAME]) {
 		char name[IB_DEVICE_NAME_MAX] = {};
 
-		nla_strlcpy(name, tb[RDMA_NLDEV_ATTR_DEV_NAME],
+		nla_strscpy(name, tb[RDMA_NLDEV_ATTR_DEV_NAME],
 			    IB_DEVICE_NAME_MAX);
 		if (strlen(name) == 0) {
 			err = -EINVAL;
@@ -979,7 +1184,7 @@ static int _nldev_get_dumpit(struct ib_device *device,
 			RDMA_NL_GET_TYPE(RDMA_NL_NLDEV, RDMA_NLDEV_CMD_GET),
 			0, NLM_F_MULTI);
 
-	if (fill_dev_info(skb, device)) {
+	if (!nlh || fill_dev_info(skb, device)) {
 		nlmsg_cancel(skb, nlh);
 		goto out;
 	}
@@ -1011,8 +1216,8 @@ static int nldev_port_get_doit(struct sk_buff *skb, struct nlmsghdr *nlh,
 	u32 port;
 	int err;
 
-	err = nlmsg_parse_deprecated(nlh, 0, tb, RDMA_NLDEV_ATTR_MAX - 1,
-				     nldev_policy, extack);
+	err = __nlmsg_parse(nlh, 0, tb, RDMA_NLDEV_ATTR_MAX - 1,
+			    nldev_policy, NL_VALIDATE_LIBERAL, extack);
 	if (err ||
 	    !tb[RDMA_NLDEV_ATTR_DEV_INDEX] ||
 	    !tb[RDMA_NLDEV_ATTR_PORT_INDEX])
@@ -1038,6 +1243,10 @@ static int nldev_port_get_doit(struct sk_buff *skb, struct nlmsghdr *nlh,
 	nlh = nlmsg_put(msg, NETLINK_CB(skb).portid, nlh->nlmsg_seq,
 			RDMA_NL_GET_TYPE(RDMA_NL_NLDEV, RDMA_NLDEV_CMD_GET),
 			0, 0);
+	if (!nlh) {
+		err = -EMSGSIZE;
+		goto err_free;
+	}
 
 	err = fill_port_info(msg, device, port, sock_net(skb->sk));
 	if (err)
@@ -1067,8 +1276,8 @@ static int nldev_port_get_dumpit(struct sk_buff *skb,
 	int err;
 	unsigned int p;
 
-	err = nlmsg_parse_deprecated(cb->nlh, 0, tb, RDMA_NLDEV_ATTR_MAX - 1,
-				     nldev_policy, NULL);
+	err = __nlmsg_parse(cb->nlh, 0, tb, RDMA_NLDEV_ATTR_MAX - 1,
+			    nldev_policy, NL_VALIDATE_LIBERAL, NULL);
 	if (err || !tb[RDMA_NLDEV_ATTR_DEV_INDEX])
 		return -EINVAL;
 
@@ -1099,7 +1308,7 @@ static int nldev_port_get_dumpit(struct sk_buff *skb,
 						 RDMA_NLDEV_CMD_PORT_GET),
 				0, NLM_F_MULTI);
 
-		if (fill_port_info(skb, device, p, sock_net(skb->sk))) {
+		if (!nlh || fill_port_info(skb, device, p, sock_net(skb->sk))) {
 			nlmsg_cancel(skb, nlh);
 			goto out;
 		}
@@ -1117,13 +1326,14 @@ static int nldev_res_get_doit(struct sk_buff *skb, struct nlmsghdr *nlh,
 			      struct netlink_ext_ack *extack)
 {
 	struct nlattr *tb[RDMA_NLDEV_ATTR_MAX];
+	bool show_details = false;
 	struct ib_device *device;
 	struct sk_buff *msg;
 	u32 index;
 	int ret;
 
-	ret = nlmsg_parse_deprecated(nlh, 0, tb, RDMA_NLDEV_ATTR_MAX - 1,
-				     nldev_policy, extack);
+	ret = __nlmsg_parse(nlh, 0, tb, RDMA_NLDEV_ATTR_MAX - 1,
+			    nldev_policy, NL_VALIDATE_LIBERAL, extack);
 	if (ret || !tb[RDMA_NLDEV_ATTR_DEV_INDEX])
 		return -EINVAL;
 
@@ -1131,6 +1341,9 @@ static int nldev_res_get_doit(struct sk_buff *skb, struct nlmsghdr *nlh,
 	device = ib_device_get_by_index(sock_net(skb->sk), index);
 	if (!device)
 		return -EINVAL;
+
+	if (tb[RDMA_NLDEV_ATTR_DRIVER_DETAILS])
+		show_details = nla_get_u8(tb[RDMA_NLDEV_ATTR_DRIVER_DETAILS]);
 
 	msg = nlmsg_new(NLMSG_DEFAULT_SIZE, GFP_KERNEL);
 	if (!msg) {
@@ -1141,8 +1354,12 @@ static int nldev_res_get_doit(struct sk_buff *skb, struct nlmsghdr *nlh,
 	nlh = nlmsg_put(msg, NETLINK_CB(skb).portid, nlh->nlmsg_seq,
 			RDMA_NL_GET_TYPE(RDMA_NL_NLDEV, RDMA_NLDEV_CMD_RES_GET),
 			0, 0);
+	if (!nlh) {
+		ret = -EMSGSIZE;
+		goto err_free;
+	}
 
-	ret = fill_res_info(msg, device);
+	ret = fill_res_info(msg, device, show_details);
 	if (ret)
 		goto err_free;
 
@@ -1172,7 +1389,7 @@ static int _nldev_res_get_dumpit(struct ib_device *device,
 			RDMA_NL_GET_TYPE(RDMA_NL_NLDEV, RDMA_NLDEV_CMD_RES_GET),
 			0, NLM_F_MULTI);
 
-	if (fill_res_info(skb, device)) {
+	if (!nlh || fill_res_info(skb, device, false)) {
 		nlmsg_cancel(skb, nlh);
 		goto out;
 	}
@@ -1236,6 +1453,19 @@ static const struct nldev_fill_res_entry fill_entries[RDMA_RESTRACK_MAX] = {
 		.entry = RDMA_NLDEV_ATTR_STAT_COUNTER_ENTRY,
 		.id = RDMA_NLDEV_ATTR_STAT_COUNTER_ID,
 	},
+	[RDMA_RESTRACK_CTX] = {
+		.nldev_attr = RDMA_NLDEV_ATTR_RES_CTX,
+		.flags = NLDEV_PER_DEV,
+		.entry = RDMA_NLDEV_ATTR_RES_CTX_ENTRY,
+		.id = RDMA_NLDEV_ATTR_RES_CTXN,
+	},
+	[RDMA_RESTRACK_SRQ] = {
+		.nldev_attr = RDMA_NLDEV_ATTR_RES_SRQ,
+		.flags = NLDEV_PER_DEV,
+		.entry = RDMA_NLDEV_ATTR_RES_SRQ_ENTRY,
+		.id = RDMA_NLDEV_ATTR_RES_SRQN,
+	},
+
 };
 
 static int res_get_common_doit(struct sk_buff *skb, struct nlmsghdr *nlh,
@@ -1252,8 +1482,8 @@ static int res_get_common_doit(struct sk_buff *skb, struct nlmsghdr *nlh,
 	struct sk_buff *msg;
 	int ret;
 
-	ret = nlmsg_parse_deprecated(nlh, 0, tb, RDMA_NLDEV_ATTR_MAX - 1,
-				     nldev_policy, extack);
+	ret = __nlmsg_parse(nlh, 0, tb, RDMA_NLDEV_ATTR_MAX - 1,
+			    nldev_policy, NL_VALIDATE_LIBERAL, extack);
 	if (ret || !tb[RDMA_NLDEV_ATTR_DEV_INDEX] || !fe->id || !tb[fe->id])
 		return -EINVAL;
 
@@ -1294,7 +1524,7 @@ static int res_get_common_doit(struct sk_buff *skb, struct nlmsghdr *nlh,
 					 RDMA_NL_GET_OP(nlh->nlmsg_type)),
 			0, 0);
 
-	if (fill_nldev_handle(msg, device)) {
+	if (!nlh || fill_nldev_handle(msg, device)) {
 		ret = -EMSGSIZE;
 		goto err_free;
 	}
@@ -1329,6 +1559,7 @@ static int res_get_common_dumpit(struct sk_buff *skb,
 	struct rdma_restrack_entry *res;
 	struct rdma_restrack_root *rt;
 	int err, ret = 0, idx = 0;
+	bool show_details = false;
 	struct nlattr *table_attr;
 	struct nlattr *entry_attr;
 	struct ib_device *device;
@@ -1339,8 +1570,8 @@ static int res_get_common_dumpit(struct sk_buff *skb,
 	u32 index, port = 0;
 	bool filled = false;
 
-	err = nlmsg_parse_deprecated(cb->nlh, 0, tb, RDMA_NLDEV_ATTR_MAX - 1,
-				     nldev_policy, NULL);
+	err = __nlmsg_parse(cb->nlh, 0, tb, RDMA_NLDEV_ATTR_MAX - 1,
+			    nldev_policy, NL_VALIDATE_LIBERAL, NULL);
 	/*
 	 * Right now, we are expecting the device index to get res information,
 	 * but it is possible to extend this code to return all devices in
@@ -1356,6 +1587,9 @@ static int res_get_common_dumpit(struct sk_buff *skb,
 	device = ib_device_get_by_index(sock_net(skb->sk), index);
 	if (!device)
 		return -EINVAL;
+
+	if (tb[RDMA_NLDEV_ATTR_DRIVER_DETAILS])
+		show_details = nla_get_u8(tb[RDMA_NLDEV_ATTR_DRIVER_DETAILS]);
 
 	/*
 	 * If no PORT_INDEX is supplied, we will return all QPs from that device
@@ -1373,7 +1607,7 @@ static int res_get_common_dumpit(struct sk_buff *skb,
 					 RDMA_NL_GET_OP(cb->nlh->nlmsg_type)),
 			0, NLM_F_MULTI);
 
-	if (fill_nldev_handle(skb, device)) {
+	if (!nlh || fill_nldev_handle(skb, device)) {
 		ret = -EMSGSIZE;
 		goto err;
 	}
@@ -1394,6 +1628,9 @@ static int res_get_common_dumpit(struct sk_buff *skb,
 	 * objects.
 	 */
 	xa_for_each(&rt->xa, id, res) {
+		if (xa_get_mark(&rt->xa, res->id, RESTRACK_DD) && !show_details)
+			goto next;
+
 		if (idx < start || !rdma_restrack_get(res))
 			goto next;
 
@@ -1476,6 +1713,9 @@ RES_GET_FUNCS(pd, RDMA_RESTRACK_PD);
 RES_GET_FUNCS(mr, RDMA_RESTRACK_MR);
 RES_GET_FUNCS(mr_raw, RDMA_RESTRACK_MR);
 RES_GET_FUNCS(counter, RDMA_RESTRACK_COUNTER);
+RES_GET_FUNCS(ctx, RDMA_RESTRACK_CTX);
+RES_GET_FUNCS(srq, RDMA_RESTRACK_SRQ);
+RES_GET_FUNCS(srq_raw, RDMA_RESTRACK_SRQ);
 
 static LIST_HEAD(link_ops);
 static DECLARE_RWSEM(link_ops_rwsem);
@@ -1523,19 +1763,19 @@ static int nldev_newlink(struct sk_buff *skb, struct nlmsghdr *nlh,
 	char type[IFNAMSIZ];
 	int err;
 
-	err = nlmsg_parse_deprecated(nlh, 0, tb, RDMA_NLDEV_ATTR_MAX - 1,
-				     nldev_policy, extack);
+	err = nlmsg_parse(nlh, 0, tb, RDMA_NLDEV_ATTR_MAX - 1,
+			    nldev_policy, extack);
 	if (err || !tb[RDMA_NLDEV_ATTR_DEV_NAME] ||
 	    !tb[RDMA_NLDEV_ATTR_LINK_TYPE] || !tb[RDMA_NLDEV_ATTR_NDEV_NAME])
 		return -EINVAL;
 
-	nla_strlcpy(ibdev_name, tb[RDMA_NLDEV_ATTR_DEV_NAME],
+	nla_strscpy(ibdev_name, tb[RDMA_NLDEV_ATTR_DEV_NAME],
 		    sizeof(ibdev_name));
 	if (strchr(ibdev_name, '%') || strlen(ibdev_name) == 0)
 		return -EINVAL;
 
-	nla_strlcpy(type, tb[RDMA_NLDEV_ATTR_LINK_TYPE], sizeof(type));
-	nla_strlcpy(ndev_name, tb[RDMA_NLDEV_ATTR_NDEV_NAME],
+	nla_strscpy(type, tb[RDMA_NLDEV_ATTR_LINK_TYPE], sizeof(type));
+	nla_strscpy(ndev_name, tb[RDMA_NLDEV_ATTR_NDEV_NAME],
 		    sizeof(ndev_name));
 
 	ndev = dev_get_by_name(sock_net(skb->sk), ndev_name);
@@ -1567,8 +1807,8 @@ static int nldev_dellink(struct sk_buff *skb, struct nlmsghdr *nlh,
 	u32 index;
 	int err;
 
-	err = nlmsg_parse_deprecated(nlh, 0, tb, RDMA_NLDEV_ATTR_MAX - 1,
-				     nldev_policy, extack);
+	err = nlmsg_parse(nlh, 0, tb, RDMA_NLDEV_ATTR_MAX - 1,
+			    nldev_policy, extack);
 	if (err || !tb[RDMA_NLDEV_ATTR_DEV_INDEX])
 		return -EINVAL;
 
@@ -1577,7 +1817,7 @@ static int nldev_dellink(struct sk_buff *skb, struct nlmsghdr *nlh,
 	if (!device)
 		return -EINVAL;
 
-	if (!(device->attrs.device_cap_flags & IB_DEVICE_ALLOW_USER_UNREG)) {
+	if (!(device->attrs.kernel_cap_flags & IBK_ALLOW_USER_UNREG)) {
 		ib_device_put(device);
 		return -EINVAL;
 	}
@@ -1597,12 +1837,12 @@ static int nldev_get_chardev(struct sk_buff *skb, struct nlmsghdr *nlh,
 	u32 index;
 	int err;
 
-	err = nlmsg_parse(nlh, 0, tb, RDMA_NLDEV_ATTR_MAX - 1, nldev_policy,
-			  extack);
+	err = __nlmsg_parse(nlh, 0, tb, RDMA_NLDEV_ATTR_MAX - 1, nldev_policy,
+			    NL_VALIDATE_LIBERAL, extack);
 	if (err || !tb[RDMA_NLDEV_ATTR_CHARDEV_TYPE])
 		return -EINVAL;
 
-	nla_strlcpy(client_name, tb[RDMA_NLDEV_ATTR_CHARDEV_TYPE],
+	nla_strscpy(client_name, tb[RDMA_NLDEV_ATTR_CHARDEV_TYPE],
 		    sizeof(client_name));
 
 	if (tb[RDMA_NLDEV_ATTR_DEV_INDEX]) {
@@ -1633,6 +1873,10 @@ static int nldev_get_chardev(struct sk_buff *skb, struct nlmsghdr *nlh,
 			RDMA_NL_GET_TYPE(RDMA_NL_NLDEV,
 					 RDMA_NLDEV_CMD_GET_CHARDEV),
 			0, 0);
+	if (!nlh) {
+		err = -EMSGSIZE;
+		goto out_nlmsg;
+	}
 
 	data.nl_msg = msg;
 	err = ib_get_client_nl_info(ibdev, client_name, &data);
@@ -1677,8 +1921,8 @@ static int nldev_sys_get_doit(struct sk_buff *skb, struct nlmsghdr *nlh,
 	struct sk_buff *msg;
 	int err;
 
-	err = nlmsg_parse(nlh, 0, tb, RDMA_NLDEV_ATTR_MAX - 1,
-			  nldev_policy, extack);
+	err = __nlmsg_parse(nlh, 0, tb, RDMA_NLDEV_ATTR_MAX - 1,
+			    nldev_policy, NL_VALIDATE_LIBERAL, extack);
 	if (err)
 		return err;
 
@@ -1690,6 +1934,10 @@ static int nldev_sys_get_doit(struct sk_buff *skb, struct nlmsghdr *nlh,
 			RDMA_NL_GET_TYPE(RDMA_NL_NLDEV,
 					 RDMA_NLDEV_CMD_SYS_GET),
 			0, 0);
+	if (!nlh) {
+		nlmsg_free(msg);
+		return -EMSGSIZE;
+	}
 
 	err = nla_put_u8(msg, RDMA_NLDEV_SYS_ATTR_NETNS_MODE,
 			 (u8)ib_devices_shared_netns);
@@ -1697,21 +1945,39 @@ static int nldev_sys_get_doit(struct sk_buff *skb, struct nlmsghdr *nlh,
 		nlmsg_free(msg);
 		return err;
 	}
+
+	err = nla_put_u8(msg, RDMA_NLDEV_SYS_ATTR_PRIVILEGED_QKEY_MODE,
+			 (u8)privileged_qkey);
+	if (err) {
+		nlmsg_free(msg);
+		return err;
+	}
+
+	err = nla_put_u8(msg, RDMA_NLDEV_SYS_ATTR_MONITOR_MODE, 1);
+	if (err) {
+		nlmsg_free(msg);
+		return err;
+	}
+	/*
+	 * Copy-on-fork is supported.
+	 * See commits:
+	 * 70e806e4e645 ("mm: Do early cow for pinned pages during fork() for ptes")
+	 * 4eae4efa2c29 ("hugetlb: do early cow when page pinned on src mm")
+	 * for more details. Don't backport this without them.
+	 *
+	 * Return value ignored on purpose, assume copy-on-fork is not
+	 * supported in case of failure.
+	 */
+	nla_put_u8(msg, RDMA_NLDEV_SYS_ATTR_COPY_ON_FORK, 1);
+
 	nlmsg_end(msg, nlh);
 	return rdma_nl_unicast(sock_net(skb->sk), msg, NETLINK_CB(skb).portid);
 }
 
-static int nldev_set_sys_set_doit(struct sk_buff *skb, struct nlmsghdr *nlh,
-				  struct netlink_ext_ack *extack)
+static int nldev_set_sys_set_netns_doit(struct nlattr *tb[])
 {
-	struct nlattr *tb[RDMA_NLDEV_ATTR_MAX];
 	u8 enable;
 	int err;
-
-	err = nlmsg_parse(nlh, 0, tb, RDMA_NLDEV_ATTR_MAX - 1,
-			  nldev_policy, extack);
-	if (err || !tb[RDMA_NLDEV_SYS_ATTR_NETNS_MODE])
-		return -EINVAL;
 
 	enable = nla_get_u8(tb[RDMA_NLDEV_SYS_ATTR_NETNS_MODE]);
 	/* Only 0 and 1 are supported */
@@ -1722,24 +1988,147 @@ static int nldev_set_sys_set_doit(struct sk_buff *skb, struct nlmsghdr *nlh,
 	return err;
 }
 
+static int nldev_set_sys_set_pqkey_doit(struct nlattr *tb[])
+{
+	u8 enable;
+
+	enable = nla_get_u8(tb[RDMA_NLDEV_SYS_ATTR_PRIVILEGED_QKEY_MODE]);
+	/* Only 0 and 1 are supported */
+	if (enable > 1)
+		return -EINVAL;
+
+	privileged_qkey = enable;
+	return 0;
+}
+
+static int nldev_set_sys_set_doit(struct sk_buff *skb, struct nlmsghdr *nlh,
+				  struct netlink_ext_ack *extack)
+{
+	struct nlattr *tb[RDMA_NLDEV_ATTR_MAX];
+	int err;
+
+	err = nlmsg_parse(nlh, 0, tb, RDMA_NLDEV_ATTR_MAX - 1,
+			  nldev_policy, extack);
+	if (err)
+		return -EINVAL;
+
+	if (tb[RDMA_NLDEV_SYS_ATTR_NETNS_MODE])
+		return nldev_set_sys_set_netns_doit(tb);
+
+	if (tb[RDMA_NLDEV_SYS_ATTR_PRIVILEGED_QKEY_MODE])
+		return nldev_set_sys_set_pqkey_doit(tb);
+
+	return -EINVAL;
+}
+
+
+static int nldev_stat_set_mode_doit(struct sk_buff *msg,
+				    struct netlink_ext_ack *extack,
+				    struct nlattr *tb[],
+				    struct ib_device *device, u32 port)
+{
+	u32 mode, mask = 0, qpn, cntn = 0;
+	int ret;
+
+	/* Currently only counter for QP is supported */
+	if (!tb[RDMA_NLDEV_ATTR_STAT_RES] ||
+	    nla_get_u32(tb[RDMA_NLDEV_ATTR_STAT_RES]) != RDMA_NLDEV_ATTR_RES_QP)
+		return -EINVAL;
+
+	mode = nla_get_u32(tb[RDMA_NLDEV_ATTR_STAT_MODE]);
+	if (mode == RDMA_COUNTER_MODE_AUTO) {
+		if (tb[RDMA_NLDEV_ATTR_STAT_AUTO_MODE_MASK])
+			mask = nla_get_u32(
+				tb[RDMA_NLDEV_ATTR_STAT_AUTO_MODE_MASK]);
+		return rdma_counter_set_auto_mode(device, port, mask, extack);
+	}
+
+	if (!tb[RDMA_NLDEV_ATTR_RES_LQPN])
+		return -EINVAL;
+
+	qpn = nla_get_u32(tb[RDMA_NLDEV_ATTR_RES_LQPN]);
+	if (tb[RDMA_NLDEV_ATTR_STAT_COUNTER_ID]) {
+		cntn = nla_get_u32(tb[RDMA_NLDEV_ATTR_STAT_COUNTER_ID]);
+		ret = rdma_counter_bind_qpn(device, port, qpn, cntn);
+		if (ret)
+			return ret;
+	} else {
+		ret = rdma_counter_bind_qpn_alloc(device, port, qpn, &cntn);
+		if (ret)
+			return ret;
+	}
+
+	if (nla_put_u32(msg, RDMA_NLDEV_ATTR_STAT_COUNTER_ID, cntn) ||
+	    nla_put_u32(msg, RDMA_NLDEV_ATTR_RES_LQPN, qpn)) {
+		ret = -EMSGSIZE;
+		goto err_fill;
+	}
+
+	return 0;
+
+err_fill:
+	rdma_counter_unbind_qpn(device, port, qpn, cntn);
+	return ret;
+}
+
+static int nldev_stat_set_counter_dynamic_doit(struct nlattr *tb[],
+					       struct ib_device *device,
+					       u32 port)
+{
+	struct rdma_hw_stats *stats;
+	struct nlattr *entry_attr;
+	unsigned long *target;
+	int rem, i, ret = 0;
+	u32 index;
+
+	stats = ib_get_hw_stats_port(device, port);
+	if (!stats)
+		return -EINVAL;
+
+	target = kcalloc(BITS_TO_LONGS(stats->num_counters),
+			 sizeof(*stats->is_disabled), GFP_KERNEL);
+	if (!target)
+		return -ENOMEM;
+
+	nla_for_each_nested(entry_attr, tb[RDMA_NLDEV_ATTR_STAT_HWCOUNTERS],
+			    rem) {
+		index = nla_get_u32(entry_attr);
+		if ((index >= stats->num_counters) ||
+		    !(stats->descs[index].flags & IB_STAT_FLAG_OPTIONAL)) {
+			ret = -EINVAL;
+			goto out;
+		}
+
+		set_bit(index, target);
+	}
+
+	for (i = 0; i < stats->num_counters; i++) {
+		if (!(stats->descs[i].flags & IB_STAT_FLAG_OPTIONAL))
+			continue;
+
+		ret = rdma_counter_modify(device, port, i, test_bit(i, target));
+		if (ret)
+			goto out;
+	}
+
+out:
+	kfree(target);
+	return ret;
+}
+
 static int nldev_stat_set_doit(struct sk_buff *skb, struct nlmsghdr *nlh,
 			       struct netlink_ext_ack *extack)
 {
-	u32 index, port, mode, mask = 0, qpn, cntn = 0;
 	struct nlattr *tb[RDMA_NLDEV_ATTR_MAX];
 	struct ib_device *device;
 	struct sk_buff *msg;
+	u32 index, port;
 	int ret;
 
-	ret = nlmsg_parse(nlh, 0, tb, RDMA_NLDEV_ATTR_MAX - 1,
-			  nldev_policy, extack);
-	/* Currently only counter for QP is supported */
-	if (ret || !tb[RDMA_NLDEV_ATTR_STAT_RES] ||
-	    !tb[RDMA_NLDEV_ATTR_DEV_INDEX] ||
-	    !tb[RDMA_NLDEV_ATTR_PORT_INDEX] || !tb[RDMA_NLDEV_ATTR_STAT_MODE])
-		return -EINVAL;
-
-	if (nla_get_u32(tb[RDMA_NLDEV_ATTR_STAT_RES]) != RDMA_NLDEV_ATTR_RES_QP)
+	ret = nlmsg_parse(nlh, 0, tb, RDMA_NLDEV_ATTR_MAX - 1, nldev_policy,
+			  extack);
+	if (ret || !tb[RDMA_NLDEV_ATTR_DEV_INDEX] ||
+	    !tb[RDMA_NLDEV_ATTR_PORT_INDEX])
 		return -EINVAL;
 
 	index = nla_get_u32(tb[RDMA_NLDEV_ATTR_DEV_INDEX]);
@@ -1750,61 +2139,49 @@ static int nldev_stat_set_doit(struct sk_buff *skb, struct nlmsghdr *nlh,
 	port = nla_get_u32(tb[RDMA_NLDEV_ATTR_PORT_INDEX]);
 	if (!rdma_is_port_valid(device, port)) {
 		ret = -EINVAL;
-		goto err;
+		goto err_put_device;
+	}
+
+	if (!tb[RDMA_NLDEV_ATTR_STAT_MODE] &&
+	    !tb[RDMA_NLDEV_ATTR_STAT_HWCOUNTERS]) {
+		ret = -EINVAL;
+		goto err_put_device;
 	}
 
 	msg = nlmsg_new(NLMSG_DEFAULT_SIZE, GFP_KERNEL);
 	if (!msg) {
 		ret = -ENOMEM;
-		goto err;
+		goto err_put_device;
 	}
 	nlh = nlmsg_put(msg, NETLINK_CB(skb).portid, nlh->nlmsg_seq,
 			RDMA_NL_GET_TYPE(RDMA_NL_NLDEV,
 					 RDMA_NLDEV_CMD_STAT_SET),
 			0, 0);
+	if (!nlh || fill_nldev_handle(msg, device) ||
+	    nla_put_u32(msg, RDMA_NLDEV_ATTR_PORT_INDEX, port)) {
+		ret = -EMSGSIZE;
+		goto err_free_msg;
+	}
 
-	mode = nla_get_u32(tb[RDMA_NLDEV_ATTR_STAT_MODE]);
-	if (mode == RDMA_COUNTER_MODE_AUTO) {
-		if (tb[RDMA_NLDEV_ATTR_STAT_AUTO_MODE_MASK])
-			mask = nla_get_u32(
-				tb[RDMA_NLDEV_ATTR_STAT_AUTO_MODE_MASK]);
-
-		ret = rdma_counter_set_auto_mode(device, port,
-						 mask ? true : false, mask);
+	if (tb[RDMA_NLDEV_ATTR_STAT_MODE]) {
+		ret = nldev_stat_set_mode_doit(msg, extack, tb, device, port);
 		if (ret)
-			goto err_msg;
-	} else {
-		if (!tb[RDMA_NLDEV_ATTR_RES_LQPN])
-			goto err_msg;
-		qpn = nla_get_u32(tb[RDMA_NLDEV_ATTR_RES_LQPN]);
-		if (tb[RDMA_NLDEV_ATTR_STAT_COUNTER_ID]) {
-			cntn = nla_get_u32(tb[RDMA_NLDEV_ATTR_STAT_COUNTER_ID]);
-			ret = rdma_counter_bind_qpn(device, port, qpn, cntn);
-		} else {
-			ret = rdma_counter_bind_qpn_alloc(device, port,
-							  qpn, &cntn);
-		}
-		if (ret)
-			goto err_msg;
+			goto err_free_msg;
+	}
 
-		if (fill_nldev_handle(msg, device) ||
-		    nla_put_u32(msg, RDMA_NLDEV_ATTR_PORT_INDEX, port) ||
-		    nla_put_u32(msg, RDMA_NLDEV_ATTR_STAT_COUNTER_ID, cntn) ||
-		    nla_put_u32(msg, RDMA_NLDEV_ATTR_RES_LQPN, qpn)) {
-			ret = -EMSGSIZE;
-			goto err_fill;
-		}
+	if (tb[RDMA_NLDEV_ATTR_STAT_HWCOUNTERS]) {
+		ret = nldev_stat_set_counter_dynamic_doit(tb, device, port);
+		if (ret)
+			goto err_free_msg;
 	}
 
 	nlmsg_end(msg, nlh);
 	ib_device_put(device);
 	return rdma_nl_unicast(sock_net(skb->sk), msg, NETLINK_CB(skb).portid);
 
-err_fill:
-	rdma_counter_unbind_qpn(device, port, qpn, cntn);
-err_msg:
+err_free_msg:
 	nlmsg_free(msg);
-err:
+err_put_device:
 	ib_device_put(device);
 	return ret;
 }
@@ -1849,6 +2226,10 @@ static int nldev_stat_del_doit(struct sk_buff *skb, struct nlmsghdr *nlh,
 			RDMA_NL_GET_TYPE(RDMA_NL_NLDEV,
 					 RDMA_NLDEV_CMD_STAT_SET),
 			0, 0);
+	if (!nlh) {
+		ret = -EMSGSIZE;
+		goto err_fill;
+	}
 
 	cntn = nla_get_u32(tb[RDMA_NLDEV_ATTR_STAT_COUNTER_ID]);
 	qpn = nla_get_u32(tb[RDMA_NLDEV_ATTR_RES_LQPN]);
@@ -1896,13 +2277,14 @@ static int stat_get_doit_default_counter(struct sk_buff *skb,
 	if (!device)
 		return -EINVAL;
 
-	if (!device->ops.alloc_hw_stats || !device->ops.get_hw_stats) {
+	if (!device->ops.alloc_hw_port_stats || !device->ops.get_hw_stats) {
 		ret = -EINVAL;
 		goto err;
 	}
 
 	port = nla_get_u32(tb[RDMA_NLDEV_ATTR_PORT_INDEX]);
-	if (!rdma_is_port_valid(device, port)) {
+	stats = ib_get_hw_stats_port(device, port);
+	if (!stats) {
 		ret = -EINVAL;
 		goto err;
 	}
@@ -1918,17 +2300,12 @@ static int stat_get_doit_default_counter(struct sk_buff *skb,
 					 RDMA_NLDEV_CMD_STAT_GET),
 			0, 0);
 
-	if (fill_nldev_handle(msg, device) ||
+	if (!nlh || fill_nldev_handle(msg, device) ||
 	    nla_put_u32(msg, RDMA_NLDEV_ATTR_PORT_INDEX, port)) {
 		ret = -EMSGSIZE;
 		goto err_msg;
 	}
 
-	stats = device->port_data ? device->port_data[port].hw_stats : NULL;
-	if (stats == NULL) {
-		ret = -EINVAL;
-		goto err_msg;
-	}
 	mutex_lock(&stats->lock);
 
 	num_cnts = device->ops.get_hw_stats(device, stats, port, 0);
@@ -1943,9 +2320,13 @@ static int stat_get_doit_default_counter(struct sk_buff *skb,
 		goto err_stats;
 	}
 	for (i = 0; i < num_cnts; i++) {
+		if (test_bit(i, stats->is_disabled))
+			continue;
+
 		v = stats->value[i] +
 			rdma_counter_get_hwstat_value(device, port, i);
-		if (rdma_nl_stat_hwcounter_entry(msg, stats->names[i], v)) {
+		if (rdma_nl_stat_hwcounter_entry(msg,
+						 stats->descs[i].name, v)) {
 			ret = -EMSGSIZE;
 			goto err_table;
 		}
@@ -2007,6 +2388,10 @@ static int stat_get_doit_qp(struct sk_buff *skb, struct nlmsghdr *nlh,
 			RDMA_NL_GET_TYPE(RDMA_NL_NLDEV,
 					 RDMA_NLDEV_CMD_STAT_GET),
 			0, 0);
+	if (!nlh) {
+		ret = -EMSGSIZE;
+		goto err_msg;
+	}
 
 	ret = rdma_counter_get_mode(device, port, &mode, &mask);
 	if (ret)
@@ -2042,8 +2427,8 @@ static int nldev_stat_get_doit(struct sk_buff *skb, struct nlmsghdr *nlh,
 	struct nlattr *tb[RDMA_NLDEV_ATTR_MAX];
 	int ret;
 
-	ret = nlmsg_parse(nlh, 0, tb, RDMA_NLDEV_ATTR_MAX - 1,
-			  nldev_policy, extack);
+	ret = __nlmsg_parse(nlh, 0, tb, RDMA_NLDEV_ATTR_MAX - 1,
+			    nldev_policy, NL_VALIDATE_LIBERAL, extack);
 	if (ret)
 		return -EINVAL;
 
@@ -2072,8 +2457,8 @@ static int nldev_stat_get_dumpit(struct sk_buff *skb,
 	struct nlattr *tb[RDMA_NLDEV_ATTR_MAX];
 	int ret;
 
-	ret = nlmsg_parse(cb->nlh, 0, tb, RDMA_NLDEV_ATTR_MAX - 1,
-			  nldev_policy, NULL);
+	ret = __nlmsg_parse(cb->nlh, 0, tb, RDMA_NLDEV_ATTR_MAX - 1,
+			    nldev_policy, NL_VALIDATE_LIBERAL, NULL);
 	if (ret || !tb[RDMA_NLDEV_ATTR_STAT_RES])
 		return -EINVAL;
 
@@ -2091,6 +2476,149 @@ static int nldev_stat_get_dumpit(struct sk_buff *skb,
 	}
 
 	return ret;
+}
+
+static int nldev_stat_get_counter_status_doit(struct sk_buff *skb,
+					      struct nlmsghdr *nlh,
+					      struct netlink_ext_ack *extack)
+{
+	struct nlattr *tb[RDMA_NLDEV_ATTR_MAX], *table, *entry;
+	struct rdma_hw_stats *stats;
+	struct ib_device *device;
+	struct sk_buff *msg;
+	u32 devid, port;
+	int ret, i;
+
+	ret = __nlmsg_parse(nlh, 0, tb, RDMA_NLDEV_ATTR_MAX - 1,
+			    nldev_policy, NL_VALIDATE_LIBERAL, extack);
+	if (ret || !tb[RDMA_NLDEV_ATTR_DEV_INDEX] ||
+	    !tb[RDMA_NLDEV_ATTR_PORT_INDEX])
+		return -EINVAL;
+
+	devid = nla_get_u32(tb[RDMA_NLDEV_ATTR_DEV_INDEX]);
+	device = ib_device_get_by_index(sock_net(skb->sk), devid);
+	if (!device)
+		return -EINVAL;
+
+	port = nla_get_u32(tb[RDMA_NLDEV_ATTR_PORT_INDEX]);
+	if (!rdma_is_port_valid(device, port)) {
+		ret = -EINVAL;
+		goto err;
+	}
+
+	stats = ib_get_hw_stats_port(device, port);
+	if (!stats) {
+		ret = -EINVAL;
+		goto err;
+	}
+
+	msg = nlmsg_new(NLMSG_DEFAULT_SIZE, GFP_KERNEL);
+	if (!msg) {
+		ret = -ENOMEM;
+		goto err;
+	}
+
+	nlh = nlmsg_put(
+		msg, NETLINK_CB(skb).portid, nlh->nlmsg_seq,
+		RDMA_NL_GET_TYPE(RDMA_NL_NLDEV, RDMA_NLDEV_CMD_STAT_GET_STATUS),
+		0, 0);
+
+	ret = -EMSGSIZE;
+	if (!nlh || fill_nldev_handle(msg, device) ||
+	    nla_put_u32(msg, RDMA_NLDEV_ATTR_PORT_INDEX, port))
+		goto err_msg;
+
+	table = nla_nest_start(msg, RDMA_NLDEV_ATTR_STAT_HWCOUNTERS);
+	if (!table)
+		goto err_msg;
+
+	mutex_lock(&stats->lock);
+	for (i = 0; i < stats->num_counters; i++) {
+		entry = nla_nest_start(msg,
+				       RDMA_NLDEV_ATTR_STAT_HWCOUNTER_ENTRY);
+		if (!entry)
+			goto err_msg_table;
+
+		if (nla_put_string(msg,
+				   RDMA_NLDEV_ATTR_STAT_HWCOUNTER_ENTRY_NAME,
+				   stats->descs[i].name) ||
+		    nla_put_u32(msg, RDMA_NLDEV_ATTR_STAT_HWCOUNTER_INDEX, i))
+			goto err_msg_entry;
+
+		if ((stats->descs[i].flags & IB_STAT_FLAG_OPTIONAL) &&
+		    (nla_put_u8(msg, RDMA_NLDEV_ATTR_STAT_HWCOUNTER_DYNAMIC,
+				!test_bit(i, stats->is_disabled))))
+			goto err_msg_entry;
+
+		nla_nest_end(msg, entry);
+	}
+	mutex_unlock(&stats->lock);
+
+	nla_nest_end(msg, table);
+	nlmsg_end(msg, nlh);
+	ib_device_put(device);
+	return rdma_nl_unicast(sock_net(skb->sk), msg, NETLINK_CB(skb).portid);
+
+err_msg_entry:
+	nla_nest_cancel(msg, entry);
+err_msg_table:
+	mutex_unlock(&stats->lock);
+	nla_nest_cancel(msg, table);
+err_msg:
+	nlmsg_free(msg);
+err:
+	ib_device_put(device);
+	return ret;
+}
+
+static int nldev_newdev(struct sk_buff *skb, struct nlmsghdr *nlh,
+			struct netlink_ext_ack *extack)
+{
+	struct nlattr *tb[RDMA_NLDEV_ATTR_MAX];
+	enum rdma_nl_dev_type type;
+	struct ib_device *parent;
+	char name[IFNAMSIZ] = {};
+	u32 parentid;
+	int ret;
+
+	ret = nlmsg_parse(nlh, 0, tb, RDMA_NLDEV_ATTR_MAX - 1,
+			  nldev_policy, extack);
+	if (ret || !tb[RDMA_NLDEV_ATTR_DEV_INDEX] ||
+		!tb[RDMA_NLDEV_ATTR_DEV_NAME] || !tb[RDMA_NLDEV_ATTR_DEV_TYPE])
+		return -EINVAL;
+
+	nla_strscpy(name, tb[RDMA_NLDEV_ATTR_DEV_NAME], sizeof(name));
+	type = nla_get_u8(tb[RDMA_NLDEV_ATTR_DEV_TYPE]);
+	parentid = nla_get_u32(tb[RDMA_NLDEV_ATTR_DEV_INDEX]);
+	parent = ib_device_get_by_index(sock_net(skb->sk), parentid);
+	if (!parent)
+		return -EINVAL;
+
+	ret = ib_add_sub_device(parent, type, name);
+	ib_device_put(parent);
+
+	return ret;
+}
+
+static int nldev_deldev(struct sk_buff *skb, struct nlmsghdr *nlh,
+			struct netlink_ext_ack *extack)
+{
+	struct nlattr *tb[RDMA_NLDEV_ATTR_MAX];
+	struct ib_device *device;
+	u32 devid;
+	int ret;
+
+	ret = nlmsg_parse(nlh, 0, tb, RDMA_NLDEV_ATTR_MAX - 1,
+			  nldev_policy, extack);
+	if (ret || !tb[RDMA_NLDEV_ATTR_DEV_INDEX])
+		return -EINVAL;
+
+	devid = nla_get_u32(tb[RDMA_NLDEV_ATTR_DEV_INDEX]);
+	device = ib_device_get_by_index(sock_net(skb->sk), devid);
+	if (!device)
+		return -EINVAL;
+
+	return ib_del_sub_device_and_put(device);
 }
 
 static const struct rdma_nl_cbs nldev_cb_table[RDMA_NLDEV_NUM_OPS] = {
@@ -2141,11 +2669,20 @@ static const struct rdma_nl_cbs nldev_cb_table[RDMA_NLDEV_NUM_OPS] = {
 		.doit = nldev_res_get_pd_doit,
 		.dump = nldev_res_get_pd_dumpit,
 	},
+	[RDMA_NLDEV_CMD_RES_CTX_GET] = {
+		.doit = nldev_res_get_ctx_doit,
+		.dump = nldev_res_get_ctx_dumpit,
+	},
+	[RDMA_NLDEV_CMD_RES_SRQ_GET] = {
+		.doit = nldev_res_get_srq_doit,
+		.dump = nldev_res_get_srq_dumpit,
+	},
 	[RDMA_NLDEV_CMD_SYS_GET] = {
 		.doit = nldev_sys_get_doit,
 	},
 	[RDMA_NLDEV_CMD_SYS_SET] = {
 		.doit = nldev_set_sys_set_doit,
+		.flags = RDMA_NL_ADMIN_PERM,
 	},
 	[RDMA_NLDEV_CMD_STAT_SET] = {
 		.doit = nldev_stat_set_doit,
@@ -2174,14 +2711,192 @@ static const struct rdma_nl_cbs nldev_cb_table[RDMA_NLDEV_NUM_OPS] = {
 		.dump = nldev_res_get_mr_raw_dumpit,
 		.flags = RDMA_NL_ADMIN_PERM,
 	},
+	[RDMA_NLDEV_CMD_RES_SRQ_GET_RAW] = {
+		.doit = nldev_res_get_srq_raw_doit,
+		.dump = nldev_res_get_srq_raw_dumpit,
+		.flags = RDMA_NL_ADMIN_PERM,
+	},
+	[RDMA_NLDEV_CMD_STAT_GET_STATUS] = {
+		.doit = nldev_stat_get_counter_status_doit,
+	},
+	[RDMA_NLDEV_CMD_NEWDEV] = {
+		.doit = nldev_newdev,
+		.flags = RDMA_NL_ADMIN_PERM,
+	},
+	[RDMA_NLDEV_CMD_DELDEV] = {
+		.doit = nldev_deldev,
+		.flags = RDMA_NL_ADMIN_PERM,
+	},
 };
+
+static int fill_mon_netdev_rename(struct sk_buff *msg,
+				  struct ib_device *device, u32 port,
+				  const struct net *net)
+{
+	struct net_device *netdev = ib_device_get_netdev(device, port);
+	int ret = 0;
+
+	if (!netdev || !net_eq(dev_net(netdev), net))
+		goto out;
+
+	ret = nla_put_u32(msg, RDMA_NLDEV_ATTR_NDEV_INDEX, netdev->ifindex);
+	if (ret)
+		goto out;
+	ret = nla_put_string(msg, RDMA_NLDEV_ATTR_NDEV_NAME, netdev->name);
+out:
+	dev_put(netdev);
+	return ret;
+}
+
+static int fill_mon_netdev_association(struct sk_buff *msg,
+				       struct ib_device *device, u32 port,
+				       const struct net *net)
+{
+	struct net_device *netdev = ib_device_get_netdev(device, port);
+	int ret = 0;
+
+	if (netdev && !net_eq(dev_net(netdev), net))
+		goto out;
+
+	ret = nla_put_u32(msg, RDMA_NLDEV_ATTR_DEV_INDEX, device->index);
+	if (ret)
+		goto out;
+
+	ret = nla_put_string(msg, RDMA_NLDEV_ATTR_DEV_NAME,
+			     dev_name(&device->dev));
+	if (ret)
+		goto out;
+
+	ret = nla_put_u32(msg, RDMA_NLDEV_ATTR_PORT_INDEX, port);
+	if (ret)
+		goto out;
+
+	if (netdev) {
+		ret = nla_put_u32(msg,
+				  RDMA_NLDEV_ATTR_NDEV_INDEX, netdev->ifindex);
+		if (ret)
+			goto out;
+
+		ret = nla_put_string(msg,
+				     RDMA_NLDEV_ATTR_NDEV_NAME, netdev->name);
+	}
+
+out:
+	dev_put(netdev);
+	return ret;
+}
+
+static void rdma_nl_notify_err_msg(struct ib_device *device, u32 port_num,
+				    enum rdma_nl_notify_event_type type)
+{
+	struct net_device *netdev;
+
+	switch (type) {
+	case RDMA_REGISTER_EVENT:
+		dev_warn_ratelimited(&device->dev,
+				     "Failed to send RDMA monitor register device event\n");
+		break;
+	case RDMA_UNREGISTER_EVENT:
+		dev_warn_ratelimited(&device->dev,
+				     "Failed to send RDMA monitor unregister device event\n");
+		break;
+	case RDMA_NETDEV_ATTACH_EVENT:
+		netdev = ib_device_get_netdev(device, port_num);
+		dev_warn_ratelimited(&device->dev,
+				     "Failed to send RDMA monitor netdev attach event: port %d netdev %d\n",
+				     port_num, netdev->ifindex);
+		dev_put(netdev);
+		break;
+	case RDMA_NETDEV_DETACH_EVENT:
+		dev_warn_ratelimited(&device->dev,
+				     "Failed to send RDMA monitor netdev detach event: port %d\n",
+				     port_num);
+		break;
+	case RDMA_RENAME_EVENT:
+		dev_warn_ratelimited(&device->dev,
+				     "Failed to send RDMA monitor rename device event\n");
+		break;
+
+	case RDMA_NETDEV_RENAME_EVENT:
+		netdev = ib_device_get_netdev(device, port_num);
+		dev_warn_ratelimited(&device->dev,
+				     "Failed to send RDMA monitor netdev rename event: port %d netdev %d\n",
+				     port_num, netdev->ifindex);
+		dev_put(netdev);
+		break;
+	default:
+		break;
+	}
+}
+
+int rdma_nl_notify_event(struct ib_device *device, u32 port_num,
+			  enum rdma_nl_notify_event_type type)
+{
+	struct sk_buff *skb;
+	struct net *net;
+	int ret = 0;
+	void *nlh;
+
+	net = read_pnet(&device->coredev.rdma_net);
+	if (!net)
+		return -EINVAL;
+
+	skb = nlmsg_new(NLMSG_DEFAULT_SIZE, GFP_KERNEL);
+	if (!skb)
+		return -ENOMEM;
+	nlh = nlmsg_put(skb, 0, 0,
+			RDMA_NL_GET_TYPE(RDMA_NL_NLDEV, RDMA_NLDEV_CMD_MONITOR),
+			0, 0);
+	if (!nlh)
+		goto err_free;
+
+	switch (type) {
+	case RDMA_REGISTER_EVENT:
+	case RDMA_UNREGISTER_EVENT:
+	case RDMA_RENAME_EVENT:
+		ret = fill_nldev_handle(skb, device);
+		if (ret)
+			goto err_free;
+		break;
+	case RDMA_NETDEV_ATTACH_EVENT:
+	case RDMA_NETDEV_DETACH_EVENT:
+		ret = fill_mon_netdev_association(skb, device, port_num, net);
+		if (ret)
+			goto err_free;
+		break;
+	case RDMA_NETDEV_RENAME_EVENT:
+		ret = fill_mon_netdev_rename(skb, device, port_num, net);
+		if (ret)
+			goto err_free;
+		break;
+	default:
+		break;
+	}
+
+	ret = nla_put_u8(skb, RDMA_NLDEV_ATTR_EVENT_TYPE, type);
+	if (ret)
+		goto err_free;
+
+	nlmsg_end(skb, nlh);
+	ret = rdma_nl_multicast(net, skb, RDMA_NL_GROUP_NOTIFY, GFP_KERNEL);
+	if (ret && ret != -ESRCH) {
+		skb = NULL; /* skb is freed in the netlink send-op handling */
+		goto err_free;
+	}
+	return 0;
+
+err_free:
+	rdma_nl_notify_err_msg(device, port_num, type);
+	nlmsg_free(skb);
+	return ret;
+}
 
 void __init nldev_init(void)
 {
 	rdma_nl_register(RDMA_NL_NLDEV, nldev_cb_table);
 }
 
-void __exit nldev_exit(void)
+void nldev_exit(void)
 {
 	rdma_nl_unregister(RDMA_NL_NLDEV);
 }

@@ -404,6 +404,12 @@ enum desc_status {
 	 */
 	BUSY,
 	/*
+	 * Pause was called while descriptor was BUSY. Due to hardware
+	 * limitations, only termination is possible for descriptors
+	 * that have been paused.
+	 */
+	PAUSED,
+	/*
 	 * Sitting on the channel work_list but xfer done
 	 * by PL330 core
 	 */
@@ -1050,7 +1056,7 @@ static bool _trigger(struct pl330_thread *thrd)
 	return true;
 }
 
-static bool _start(struct pl330_thread *thrd)
+static bool pl330_start_thread(struct pl330_thread *thrd)
 {
 	switch (_state(thrd)) {
 	case PL330_STATE_FAULT_COMPLETING:
@@ -1527,8 +1533,6 @@ static int pl330_submit_req(struct pl330_thread *thrd,
 
 	/* First dry run to check if req is acceptable */
 	ret = _setup_req(pl330, 1, thrd, idx, &xs);
-	if (ret < 0)
-		goto xfer_exit;
 
 	if (ret > pl330->mcbufsz / 2) {
 		dev_info(pl330->ddma.dev, "%s:%d Try increasing mcbufsz (%i/%i)\n",
@@ -1704,7 +1708,7 @@ static int pl330_update(struct pl330_dmac *pl330)
 			thrd->req_running = -1;
 
 			/* Get going again ASAP */
-			_start(thrd);
+			pl330_start_thread(thrd);
 
 			/* For now, just make a list of callbacks to be done */
 			list_add_tail(&descdone->rqd, &pl330->req_done);
@@ -2043,7 +2047,7 @@ static inline void fill_queue(struct dma_pl330_chan *pch)
 	list_for_each_entry(desc, &pch->work_list, node) {
 
 		/* If already submitted */
-		if (desc->status == BUSY)
+		if (desc->status == BUSY || desc->status == PAUSED)
 			continue;
 
 		ret = pl330_submit_req(pch->thread, desc);
@@ -2091,7 +2095,7 @@ static void pl330_tasklet(struct tasklet_struct *t)
 	} else {
 		/* Make sure the PL330 Channel thread is active */
 		spin_lock(&pch->thread->dmac->lock);
-		_start(pch->thread);
+		pl330_start_thread(pch->thread);
 		spin_unlock(&pch->thread->dmac->lock);
 	}
 
@@ -2109,7 +2113,7 @@ static void pl330_tasklet(struct tasklet_struct *t)
 			if (power_down) {
 				pch->active = true;
 				spin_lock(&pch->thread->dmac->lock);
-				_start(pch->thread);
+				pl330_start_thread(pch->thread);
 				spin_unlock(&pch->thread->dmac->lock);
 				power_down = false;
 			}
@@ -2328,6 +2332,7 @@ static int pl330_pause(struct dma_chan *chan)
 {
 	struct dma_pl330_chan *pch = to_pchan(chan);
 	struct pl330_dmac *pl330 = pch->dmac;
+	struct dma_pl330_desc *desc;
 	unsigned long flags;
 
 	pm_runtime_get_sync(pl330->ddma.dev);
@@ -2337,6 +2342,10 @@ static int pl330_pause(struct dma_chan *chan)
 	_stop(pch->thread);
 	spin_unlock(&pl330->lock);
 
+	list_for_each_entry(desc, &pch->work_list, node) {
+		if (desc->status == BUSY)
+			desc->status = PAUSED;
+	}
 	spin_unlock_irqrestore(&pch->lock, flags);
 	pm_runtime_mark_last_busy(pl330->ddma.dev);
 	pm_runtime_put_autosuspend(pl330->ddma.dev);
@@ -2427,7 +2436,7 @@ pl330_tx_status(struct dma_chan *chan, dma_cookie_t cookie,
 		else if (running && desc == running)
 			transferred =
 				pl330_get_current_xferred_count(pch, desc);
-		else if (desc->status == BUSY)
+		else if (desc->status == BUSY || desc->status == PAUSED)
 			/*
 			 * Busy but not running means either just enqueued,
 			 * or finished and not yet marked done
@@ -2443,6 +2452,9 @@ pl330_tx_status(struct dma_chan *chan, dma_cookie_t cookie,
 			switch (desc->status) {
 			case DONE:
 				ret = DMA_COMPLETE;
+				break;
+			case PAUSED:
+				ret = DMA_PAUSED;
 				break;
 			case PREP:
 			case BUSY:
@@ -2573,6 +2585,7 @@ static struct dma_pl330_desc *pluck_desc(struct list_head *pool,
 
 		desc->status = PREP;
 		desc->txd.callback = NULL;
+		desc->txd.callback_result = NULL;
 	}
 
 	spin_unlock_irqrestore(lock, flags);
@@ -2591,7 +2604,7 @@ static struct dma_pl330_desc *pl330_get_desc(struct dma_pl330_chan *pch)
 
 	/* If the DMAC pool is empty, alloc new */
 	if (!desc) {
-		DEFINE_SPINLOCK(lock);
+		static DEFINE_SPINLOCK(lock);
 		LIST_HEAD(pool);
 
 		if (!add_desc(&pool, &lock, GFP_ATOMIC, 1))
@@ -2696,13 +2709,15 @@ static struct dma_async_tx_descriptor *pl330_prep_dma_cyclic(
 	for (i = 0; i < len / period_len; i++) {
 		desc = pl330_get_desc(pch);
 		if (!desc) {
+			unsigned long iflags;
+
 			dev_err(pch->dmac->ddma.dev, "%s:%d Unable to fetch desc\n",
 				__func__, __LINE__);
 
 			if (!first)
 				return NULL;
 
-			spin_lock_irqsave(&pl330->pool_lock, flags);
+			spin_lock_irqsave(&pl330->pool_lock, iflags);
 
 			while (!list_empty(&first->node)) {
 				desc = list_entry(first->node.next,
@@ -2712,7 +2727,7 @@ static struct dma_async_tx_descriptor *pl330_prep_dma_cyclic(
 
 			list_move_tail(&first->node, &pl330->desc_pool);
 
-			spin_unlock_irqrestore(&pl330->pool_lock, flags);
+			spin_unlock_irqrestore(&pl330->pool_lock, iflags);
 
 			return NULL;
 		}
@@ -2752,7 +2767,6 @@ static struct dma_async_tx_descriptor *pl330_prep_dma_cyclic(
 		return NULL;
 
 	pch->cyclic = true;
-	desc->txd.flags = flags;
 
 	return &desc->txd;
 }
@@ -2799,12 +2813,10 @@ pl330_prep_dma_memcpy(struct dma_chan *chan, dma_addr_t dst,
 	 * If burst size is smaller than bus width then make sure we only
 	 * transfer one at a time to avoid a burst stradling an MFIFO entry.
 	 */
-	if (desc->rqcfg.brst_size * 8 < pl330->pcfg.data_bus_width)
+	if (burst * 8 < pl330->pcfg.data_bus_width)
 		desc->rqcfg.brst_len = 1;
 
 	desc->bytes_requested = len;
-
-	desc->txd.flags = flags;
 
 	return &desc->txd;
 }
@@ -2889,7 +2901,6 @@ pl330_prep_slave_sg(struct dma_chan *chan, struct scatterlist *sgl,
 	}
 
 	/* Return the last desc in the chain */
-	desc->txd.flags = flg;
 	return &desc->txd;
 }
 
@@ -2968,7 +2979,7 @@ static int __maybe_unused pl330_suspend(struct device *dev)
 	struct amba_device *pcdev = to_amba_device(dev);
 
 	pm_runtime_force_suspend(dev);
-	amba_pclk_unprepare(pcdev);
+	clk_unprepare(pcdev->pclk);
 
 	return 0;
 }
@@ -2978,7 +2989,7 @@ static int __maybe_unused pl330_resume(struct device *dev)
 	struct amba_device *pcdev = to_amba_device(dev);
 	int ret;
 
-	ret = amba_pclk_prepare(pcdev);
+	ret = clk_prepare(pcdev->pclk);
 	if (ret)
 		return ret;
 
@@ -3152,10 +3163,7 @@ pl330_probe(struct amba_device *adev, const struct amba_id *id)
 	 * This is the limit for transfers with a buswidth of 1, larger
 	 * buswidths will have larger limits.
 	 */
-	ret = dma_set_max_seg_size(&adev->dev, 1900800);
-	if (ret)
-		dev_err(&adev->dev, "unable to set the seg size\n");
-
+	dma_set_max_seg_size(&adev->dev, 1900800);
 
 	init_pl330_debugfs(pl330);
 	dev_info(&adev->dev,
@@ -3197,7 +3205,7 @@ probe_err2:
 	return ret;
 }
 
-static int pl330_remove(struct amba_device *adev)
+static void pl330_remove(struct amba_device *adev)
 {
 	struct pl330_dmac *pl330 = amba_get_drvdata(adev);
 	struct dma_pl330_chan *pch, *_p;
@@ -3237,7 +3245,6 @@ static int pl330_remove(struct amba_device *adev)
 
 	if (pl330->rstc)
 		reset_control_assert(pl330->rstc);
-	return 0;
 }
 
 static const struct amba_id pl330_ids[] = {
@@ -3252,7 +3259,6 @@ MODULE_DEVICE_TABLE(amba, pl330_ids);
 
 static struct amba_driver pl330_driver = {
 	.drv = {
-		.owner = THIS_MODULE,
 		.name = "dma-pl330",
 		.pm = &pl330_pm,
 	},

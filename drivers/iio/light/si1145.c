@@ -220,7 +220,6 @@ static int __si1145_command_reset(struct si1145_data *data)
 			return -ETIMEDOUT;
 		}
 		msleep(SI1145_COMMAND_MINSLEEP_MS);
-		continue;
 	}
 }
 
@@ -271,7 +270,7 @@ static int si1145_command(struct si1145_data *data, u8 cmd)
 		if ((ret & ~SI1145_RSP_COUNTER_MASK) == 0) {
 			if (ret == data->rsp_seq) {
 				if (time_after(jiffies, stop_jiffies)) {
-					dev_warn(dev, "timeout on command %#02hhx\n",
+					dev_warn(dev, "timeout on command 0x%02x\n",
 						 cmd);
 					ret = -ETIMEDOUT;
 					break;
@@ -291,12 +290,12 @@ static int si1145_command(struct si1145_data *data, u8 cmd)
 			ret = -EIO;
 		} else {
 			if (ret == SI1145_RSP_INVALID_SETTING) {
-				dev_warn(dev, "INVALID_SETTING error on command %#02hhx\n",
+				dev_warn(dev, "INVALID_SETTING error on command 0x%02x\n",
 					 cmd);
 				ret = -EINVAL;
 			} else {
 				/* All overflows are treated identically */
-				dev_dbg(dev, "overflow, ret=%d, cmd=%#02hhx\n",
+				dev_dbg(dev, "overflow, ret=%d, cmd=0x%02x\n",
 					ret, cmd);
 				ret = -EOVERFLOW;
 			}
@@ -466,11 +465,10 @@ static irqreturn_t si1145_trigger_handler(int irq, void *private)
 			goto done;
 	}
 
-	for_each_set_bit(i, indio_dev->active_scan_mask,
-		indio_dev->masklength) {
+	iio_for_each_active_channel(indio_dev, i) {
 		int run = 1;
 
-		while (i + run < indio_dev->masklength) {
+		while (i + run < iio_get_masklength(indio_dev)) {
 			if (!test_bit(i + run, indio_dev->active_scan_mask))
 				break;
 			if (indio_dev->channels[i + run].address !=
@@ -515,7 +513,7 @@ static int si1145_set_chlist(struct iio_dev *indio_dev, unsigned long scan_mask)
 	if (data->scan_mask == scan_mask)
 		return 0;
 
-	for_each_set_bit(i, &scan_mask, indio_dev->masklength) {
+	for_each_set_bit(i, &scan_mask, iio_get_masklength(indio_dev)) {
 		switch (indio_dev->channels[i].address) {
 		case SI1145_REG_ALSVIS_DATA:
 			reg |= SI1145_CHLIST_EN_ALSVIS;
@@ -1243,11 +1241,10 @@ static int si1145_probe_trigger(struct iio_dev *indio_dev)
 	int ret;
 
 	trig = devm_iio_trigger_alloc(&client->dev,
-			"%s-dev%d", indio_dev->name, indio_dev->id);
+			"%s-dev%d", indio_dev->name, iio_device_id(indio_dev));
 	if (!trig)
 		return -ENOMEM;
 
-	trig->dev.parent = &client->dev;
 	trig->ops = &si1145_trigger_ops;
 	iio_trigger_set_drvdata(trig, indio_dev);
 
@@ -1271,9 +1268,9 @@ static int si1145_probe_trigger(struct iio_dev *indio_dev)
 	return 0;
 }
 
-static int si1145_probe(struct i2c_client *client,
-			const struct i2c_device_id *id)
+static int si1145_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	struct si1145_data *data;
 	struct iio_dev *indio_dev;
 	u8 part_id, rev_id, seq_id;
@@ -1300,10 +1297,10 @@ static int si1145_probe(struct i2c_client *client,
 						SI1145_REG_SEQ_ID);
 	if (ret < 0)
 		return ret;
-	dev_info(&client->dev, "device ID part %#02hhx rev %#02hhx seq %#02hhx\n",
+	dev_info(&client->dev, "device ID part 0x%02x rev 0x%02x seq 0x%02x\n",
 			part_id, rev_id, seq_id);
 	if (part_id != data->part_info->part) {
-		dev_err(&client->dev, "part ID mismatch got %#02hhx, expected %#02x\n",
+		dev_err(&client->dev, "part ID mismatch got 0x%02x, expected 0x%02x\n",
 				part_id, data->part_info->part);
 		return -ENODEV;
 	}
@@ -1354,7 +1351,7 @@ static struct i2c_driver si1145_driver = {
 	.driver = {
 		.name   = "si1145",
 	},
-	.probe  = si1145_probe,
+	.probe = si1145_probe,
 	.id_table = si1145_ids,
 };
 

@@ -112,7 +112,7 @@ static void acpi_ut_delete_internal_obj(union acpi_operand_object *object)
 						       gpe_block);
 		}
 
-		/*lint -fallthrough */
+		ACPI_FALLTHROUGH;
 
 	case ACPI_TYPE_PROCESSOR:
 	case ACPI_TYPE_THERMAL:
@@ -140,7 +140,7 @@ static void acpi_ut_delete_internal_obj(union acpi_operand_object *object)
 			(void)
 			    acpi_os_delete_semaphore
 			    (acpi_gbl_global_lock_semaphore);
-			acpi_gbl_global_lock_semaphore = NULL;
+			acpi_gbl_global_lock_semaphore = ACPI_SEMAPHORE_NULL;
 
 			acpi_os_delete_mutex(object->mutex.os_mutex);
 			acpi_gbl_global_lock_mutex = NULL;
@@ -157,7 +157,7 @@ static void acpi_ut_delete_internal_obj(union acpi_operand_object *object)
 				  object, object->event.os_semaphore));
 
 		(void)acpi_os_delete_semaphore(object->event.os_semaphore);
-		object->event.os_semaphore = NULL;
+		object->event.os_semaphore = ACPI_SEMAPHORE_NULL;
 		break;
 
 	case ACPI_TYPE_METHOD:
@@ -283,6 +283,14 @@ static void acpi_ut_delete_internal_obj(union acpi_operand_object *object)
 		if (second_desc) {
 			acpi_ut_delete_object_desc(second_desc);
 		}
+		break;
+
+	case ACPI_TYPE_LOCAL_ADDRESS_HANDLER:
+
+		ACPI_DEBUG_PRINT((ACPI_DB_ALLOCATIONS,
+				  "***** Address handler %p\n", object));
+
+		acpi_os_delete_mutex(object->address_space.context_mutex);
 		break;
 
 	default:
@@ -414,6 +422,7 @@ acpi_ut_update_ref_count(union acpi_operand_object *object, u32 action)
 			ACPI_WARNING((AE_INFO,
 				      "Obj %p, Reference Count is already zero, cannot decrement\n",
 				      object));
+			return;
 		}
 
 		ACPI_DEBUG_PRINT_RAW((ACPI_DB_ALLOCATIONS,

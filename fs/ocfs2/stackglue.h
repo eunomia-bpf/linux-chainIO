@@ -1,7 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* -*- mode: c; c-basic-offset: 8; -*-
- * vim: noexpandtab sw=8 ts=8 sts=0:
- *
+/*
  * stackglue.h
  *
  * Glue to the underlying cluster stack.
@@ -225,7 +223,7 @@ struct ocfs2_stack_operations {
  */
 struct ocfs2_stack_plugin {
 	char *sp_name;
-	struct ocfs2_stack_operations *sp_ops;
+	const struct ocfs2_stack_operations *sp_ops;
 	struct module *sp_owner;
 
 	/* These are managed by the stackglue code. */

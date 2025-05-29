@@ -28,7 +28,7 @@
  *	Last modified: 17 APR 08, 1700 PDT
  */
 
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include <linux/init.h>
 #include <linux/types.h>
 #include <linux/crypto.h>
@@ -36,6 +36,7 @@
 #include <linux/scatterlist.h>
 #include <asm/byteorder.h>
 #include <crypto/scatterwalk.h>
+#include <crypto/internal/cipher.h>
 #include <crypto/internal/hash.h>
 
 /*
@@ -648,7 +649,6 @@ static int vmac_create(struct crypto_template *tmpl, struct rtattr **tb)
 
 	inst->alg.base.cra_priority = alg->cra_priority;
 	inst->alg.base.cra_blocksize = alg->cra_blocksize;
-	inst->alg.base.cra_alignmask = alg->cra_alignmask;
 
 	inst->alg.base.cra_ctxsize = sizeof(struct vmac_tfm_ctx);
 	inst->alg.base.cra_init = vmac_init_tfm;
@@ -693,3 +693,4 @@ module_exit(vmac_module_exit);
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("VMAC hash algorithm");
 MODULE_ALIAS_CRYPTO("vmac64");
+MODULE_IMPORT_NS(CRYPTO_INTERNAL);

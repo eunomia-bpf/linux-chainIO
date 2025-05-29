@@ -36,7 +36,7 @@
  *    OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #include "carl9170.h"
 #include "cmd.h"
@@ -327,10 +327,6 @@ int carl9170_set_operating_mode(struct ar9170 *ar)
 			cam_mode |= AR9170_MAC_CAM_AP;
 
 			/* iwlagn 802.11n STA Workaround */
-			rx_ctrl |= AR9170_MAC_RX_CTRL_PASS_TO_HOST;
-			break;
-		case NL80211_IFTYPE_WDS:
-			cam_mode |= AR9170_MAC_CAM_AP_WDS;
 			rx_ctrl |= AR9170_MAC_RX_CTRL_PASS_TO_HOST;
 			break;
 		case NL80211_IFTYPE_STATION:

@@ -46,7 +46,7 @@ Parameters::
         capi:authenc(hmac(sha256),xts(aes))-random
         capi:rfc7539(chacha20,poly1305)-random
 
-    The /proc/crypto contains a list of curently loaded crypto modes.
+    The /proc/crypto contains a list of currently loaded crypto modes.
 
 <key>
     Key used for encryption. It is encoded either as a hexadecimal number
@@ -67,7 +67,7 @@ Parameters::
     the value passed in <key_size>.
 
 <key_type>
-    Either 'logon', 'user' or 'encrypted' kernel key type.
+    Either 'logon', 'user', 'encrypted' or 'trusted' kernel key type.
 
 <key_description>
     The kernel keyring key description crypt target should look for
@@ -92,7 +92,7 @@ Parameters::
 
 <#opt_params>
     Number of optional parameters. If there are no optional parameters,
-    the optional paramaters section can be skipped or #opt_params can be zero.
+    the optional parameters section can be skipped or #opt_params can be zero.
     Otherwise #opt_params is the number of following arguments.
 
     Example of optional parameters section:
@@ -112,6 +112,11 @@ same_cpu_crypt
     Perform encryption using the same cpu that IO was submitted on.
     The default is to use an unbound workqueue so that encryption work
     is automatically balanced between available CPUs.
+
+high_priority
+    Set dm-crypt workqueues and the writer thread to high priority. This
+    improves throughput and latency of dm-crypt while degrading general
+    responsiveness of the system.
 
 submit_from_crypt_cpus
     Disable offloading writes to a separate thread after encryption.
@@ -154,6 +159,27 @@ iv_large_sectors
    sector will be 8 (without flag) and 1 if iv_large_sectors is present.
    The <iv_offset> must be multiple of <sector_size> (in 512 bytes units)
    if this flag is specified.
+
+integrity_key_size:<bytes>
+   Use an integrity key of <bytes> size instead of using an integrity key size
+   of the digest size of the used HMAC algorithm.
+
+
+Module parameters::
+   max_read_size
+      Maximum size of read requests. When a request larger than this size
+      is received, dm-crypt will split the request. The splitting improves
+      concurrency (the split requests could be encrypted in parallel by multiple
+      cores), but it also causes overhead. The user should tune this parameters to
+      fit the actual workload.
+
+   max_write_size
+      Maximum size of write requests. When a request larger than this size
+      is received, dm-crypt will split the request. The splitting improves
+      concurrency (the split requests could be encrypted in parallel by multiple
+      cores), but it also causes overhead. The user should tune this parameters to
+      fit the actual workload.
+
 
 Example scripts
 ===============

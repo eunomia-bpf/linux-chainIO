@@ -36,7 +36,7 @@ static int xge_get_resources(struct xge_pdata *pdata)
 		return -ENOMEM;
 	}
 
-	if (!device_get_mac_address(dev, ndev->dev_addr, ETH_ALEN))
+	if (device_get_ethdev_address(dev, ndev))
 		eth_hw_addr_random(ndev);
 
 	memcpy(ndev->perm_addr, ndev->dev_addr, ndev->addr_len);
@@ -672,23 +672,25 @@ static int xge_probe(struct platform_device *pdev)
 	if (ret)
 		goto err;
 
-	netif_napi_add(ndev, &pdata->napi, xge_napi, NAPI_POLL_WEIGHT);
+	netif_napi_add(ndev, &pdata->napi, xge_napi);
 
 	ret = register_netdev(ndev);
 	if (ret) {
 		netdev_err(ndev, "Failed to register netdev\n");
-		goto err;
+		goto err_mdio_remove;
 	}
 
 	return 0;
 
+err_mdio_remove:
+	xge_mdio_remove(ndev);
 err:
 	free_netdev(ndev);
 
 	return ret;
 }
 
-static int xge_remove(struct platform_device *pdev)
+static void xge_remove(struct platform_device *pdev)
 {
 	struct xge_pdata *pdata;
 	struct net_device *ndev;
@@ -704,8 +706,6 @@ static int xge_remove(struct platform_device *pdev)
 	xge_mdio_remove(ndev);
 	unregister_netdev(ndev);
 	free_netdev(ndev);
-
-	return 0;
 }
 
 static void xge_shutdown(struct platform_device *pdev)

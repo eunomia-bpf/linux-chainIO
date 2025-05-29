@@ -6,7 +6,7 @@
 #ifndef _CRYPTO_INTERNAL_POLY1305_H
 #define _CRYPTO_INTERNAL_POLY1305_H
 
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include <linux/types.h>
 #include <crypto/poly1305.h>
 
@@ -18,7 +18,8 @@
  * only the ε-almost-∆-universal hash function (not the full MAC) is computed.
  */
 
-void poly1305_core_setkey(struct poly1305_core_key *key, const u8 *raw_key);
+void poly1305_core_setkey(struct poly1305_core_key *key,
+			  const u8 raw_key[POLY1305_BLOCK_SIZE]);
 static inline void poly1305_core_init(struct poly1305_state *state)
 {
 	*state = (struct poly1305_state){};

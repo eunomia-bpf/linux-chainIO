@@ -11,7 +11,7 @@ struct ioc_gq;
 
 #include <linux/tracepoint.h>
 
-TRACE_EVENT(iocost_iocg_activate,
+DECLARE_EVENT_CLASS(iocost_iocg_state,
 
 	TP_PROTO(struct ioc_gq *iocg, const char *path, struct ioc_now *now,
 		u64 last_period, u64 cur_period, u64 vtime),
@@ -34,11 +34,11 @@ TRACE_EVENT(iocost_iocg_activate,
 	),
 
 	TP_fast_assign(
-		__assign_str(devname, ioc_name(iocg->ioc));
-		__assign_str(cgroup, path);
+		__assign_str(devname);
+		__assign_str(cgroup);
 		__entry->now = now->now;
 		__entry->vnow = now->vnow;
-		__entry->vrate = now->vrate;
+		__entry->vrate = iocg->ioc->vtime_base_rate;
 		__entry->last_period = last_period;
 		__entry->cur_period = cur_period;
 		__entry->vtime = vtime;
@@ -57,6 +57,20 @@ TRACE_EVENT(iocost_iocg_activate,
 		__entry->vtime, __entry->inuse, __entry->weight,
 		__entry->hweight_inuse, __entry->hweight_active
 	)
+);
+
+DEFINE_EVENT(iocost_iocg_state, iocost_iocg_activate,
+	TP_PROTO(struct ioc_gq *iocg, const char *path, struct ioc_now *now,
+		 u64 last_period, u64 cur_period, u64 vtime),
+
+	TP_ARGS(iocg, path, now, last_period, cur_period, vtime)
+);
+
+DEFINE_EVENT(iocost_iocg_state, iocost_iocg_idle,
+	TP_PROTO(struct ioc_gq *iocg, const char *path, struct ioc_now *now,
+		 u64 last_period, u64 cur_period, u64 vtime),
+
+	TP_ARGS(iocg, path, now, last_period, cur_period, vtime)
 );
 
 DECLARE_EVENT_CLASS(iocg_inuse_update,
@@ -79,8 +93,8 @@ DECLARE_EVENT_CLASS(iocg_inuse_update,
 	),
 
 	TP_fast_assign(
-		__assign_str(devname, ioc_name(iocg->ioc));
-		__assign_str(cgroup, path);
+		__assign_str(devname);
+		__assign_str(cgroup);
 		__entry->now = now->now;
 		__entry->old_inuse = old_inuse;
 		__entry->new_inuse = new_inuse;
@@ -145,8 +159,8 @@ TRACE_EVENT(iocost_ioc_vrate_adj,
 	),
 
 	TP_fast_assign(
-		__assign_str(devname, ioc_name(ioc));
-		__entry->old_vrate = atomic64_read(&ioc->vtime_rate);;
+		__assign_str(devname);
+		__entry->old_vrate = ioc->vtime_base_rate;
 		__entry->new_vrate = new_vrate;
 		__entry->busy_level = ioc->busy_level;
 		__entry->read_missed_ppm = missed_ppm[READ];
@@ -186,8 +200,8 @@ TRACE_EVENT(iocost_iocg_forgive_debt,
 	),
 
 	TP_fast_assign(
-		__assign_str(devname, ioc_name(iocg->ioc));
-		__assign_str(cgroup, path);
+		__assign_str(devname);
+		__assign_str(cgroup);
 		__entry->now = now->now;
 		__entry->vnow = now->vnow;
 		__entry->usage_pct = usage_pct;

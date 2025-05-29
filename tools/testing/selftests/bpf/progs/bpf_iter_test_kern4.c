@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /* Copyright (c) 2020 Facebook */
-#include "bpf_iter.h"
+#include <vmlinux.h>
 #include <bpf/bpf_helpers.h>
 
 char _license[] SEC("license") = "GPL";
@@ -9,8 +9,8 @@ __u32 map1_id = 0, map2_id = 0;
 __u32 map1_accessed = 0, map2_accessed = 0;
 __u64 map1_seqnum = 0, map2_seqnum1 = 0, map2_seqnum2 = 0;
 
-static volatile const __u32 print_len;
-static volatile const __u32 ret1;
+volatile const __u32 print_len;
+volatile const __u32 ret1;
 
 SEC("iter/bpf_map")
 int dump_bpf_map(struct bpf_iter__bpf_map *ctx)
@@ -45,7 +45,7 @@ int dump_bpf_map(struct bpf_iter__bpf_map *ctx)
 	}
 
 	/* fill seq_file buffer */
-	for (i = 0; i < print_len; i++)
+	for (i = 0; i < (int)print_len; i++)
 		bpf_seq_write(seq, &seq_num, sizeof(seq_num));
 
 	return ret;

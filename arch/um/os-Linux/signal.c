@@ -8,6 +8,7 @@
 
 #include <stdlib.h>
 #include <stdarg.h>
+#include <stdbool.h>
 #include <errno.h>
 #include <signal.h>
 #include <string.h>
@@ -18,13 +19,14 @@
 #include <sysdep/mcontext.h>
 #include <um_malloc.h>
 #include <sys/ucontext.h>
+#include <timetravel.h>
 
 void (*sig_info[NSIG])(int, struct siginfo *, struct uml_pt_regs *) = {
 	[SIGTRAP]	= relay_signal,
 	[SIGFPE]	= relay_signal,
 	[SIGILL]	= relay_signal,
 	[SIGWINCH]	= winch,
-	[SIGBUS]	= bus_handler,
+	[SIGBUS]	= relay_signal,
 	[SIGSEGV]	= segv_handler,
 	[SIGIO]		= sigio_handler,
 };
@@ -62,17 +64,41 @@ static void sig_handler_common(int sig, struct siginfo *si, mcontext_t *mc)
 #define SIGALRM_BIT 1
 #define SIGALRM_MASK (1 << SIGALRM_BIT)
 
-static int signals_enabled;
+int signals_enabled;
+#if IS_ENABLED(CONFIG_UML_TIME_TRAVEL_SUPPORT)
+static int signals_blocked, signals_blocked_pending;
+#endif
 static unsigned int signals_pending;
 static unsigned int signals_active = 0;
 
-void sig_handler(int sig, struct siginfo *si, mcontext_t *mc)
+static void sig_handler(int sig, struct siginfo *si, mcontext_t *mc)
 {
-	int enabled;
+	int enabled = signals_enabled;
 
-	enabled = signals_enabled;
+#if IS_ENABLED(CONFIG_UML_TIME_TRAVEL_SUPPORT)
+	if ((signals_blocked ||
+	     __atomic_load_n(&signals_blocked_pending, __ATOMIC_SEQ_CST)) &&
+	    (sig == SIGIO)) {
+		/* increment so unblock will do another round */
+		__atomic_add_fetch(&signals_blocked_pending, 1,
+				   __ATOMIC_SEQ_CST);
+		return;
+	}
+#endif
+
 	if (!enabled && (sig == SIGIO)) {
-		signals_pending |= SIGIO_MASK;
+		/*
+		 * In TT_MODE_EXTERNAL, need to still call time-travel
+		 * handlers. This will mark signals_pending by itself
+		 * (only if necessary.)
+		 * Note we won't get here if signals are hard-blocked
+		 * (which is handled above), in that case the hard-
+		 * unblock will handle things.
+		 */
+		if (time_travel_mode == TT_MODE_EXTERNAL)
+			sigio_run_timetravel_handlers();
+		else
+			signals_pending |= SIGIO_MASK;
 		return;
 	}
 
@@ -80,7 +106,7 @@ void sig_handler(int sig, struct siginfo *si, mcontext_t *mc)
 
 	sig_handler_common(sig, si, mc);
 
-	set_signals_trace(enabled);
+	um_set_signals_trace(enabled);
 }
 
 static void timer_real_alarm_handler(mcontext_t *mc)
@@ -94,7 +120,7 @@ static void timer_real_alarm_handler(mcontext_t *mc)
 	timer_handler(SIGALRM, NULL, &regs);
 }
 
-void timer_alarm_handler(int sig, struct siginfo *unused_si, mcontext_t *mc)
+static void timer_alarm_handler(int sig, struct siginfo *unused_si, mcontext_t *mc)
 {
 	int enabled;
 
@@ -112,7 +138,7 @@ void timer_alarm_handler(int sig, struct siginfo *unused_si, mcontext_t *mc)
 
 	signals_active &= ~SIGALRM_MASK;
 
-	set_signals_trace(enabled);
+	um_set_signals_trace(enabled);
 }
 
 void deliver_alarm(void) {
@@ -129,11 +155,21 @@ void set_sigstack(void *sig_stack, int size)
 	stack_t stack = {
 		.ss_flags = 0,
 		.ss_sp = sig_stack,
-		.ss_size = size - sizeof(void *)
+		.ss_size = size
 	};
 
 	if (sigaltstack(&stack, NULL) != 0)
 		panic("enabling signal stack failed, errno = %d\n", errno);
+}
+
+static void sigusr1_handler(int sig, struct siginfo *unused_si, mcontext_t *mc)
+{
+	uml_pm_wake();
+}
+
+void register_pm_wake_signal(void)
+{
+	set_handler(SIGUSR1);
 }
 
 static void (*handlers[_NSIG])(int sig, struct siginfo *si, mcontext_t *mc) = {
@@ -145,50 +181,17 @@ static void (*handlers[_NSIG])(int sig, struct siginfo *si, mcontext_t *mc) = {
 
 	[SIGIO] = sig_handler,
 	[SIGWINCH] = sig_handler,
-	[SIGALRM] = timer_alarm_handler
+	[SIGALRM] = timer_alarm_handler,
+
+	[SIGUSR1] = sigusr1_handler,
 };
 
 static void hard_handler(int sig, siginfo_t *si, void *p)
 {
 	ucontext_t *uc = p;
 	mcontext_t *mc = &uc->uc_mcontext;
-	unsigned long pending = 1UL << sig;
 
-	do {
-		int nested, bail;
-
-		/*
-		 * pending comes back with one bit set for each
-		 * interrupt that arrived while setting up the stack,
-		 * plus a bit for this interrupt, plus the zero bit is
-		 * set if this is a nested interrupt.
-		 * If bail is true, then we interrupted another
-		 * handler setting up the stack.  In this case, we
-		 * have to return, and the upper handler will deal
-		 * with this interrupt.
-		 */
-		bail = to_irq_stack(&pending);
-		if (bail)
-			return;
-
-		nested = pending & 1;
-		pending &= ~1;
-
-		while ((sig = ffs(pending)) != 0){
-			sig--;
-			pending &= ~(1 << sig);
-			(*handlers[sig])(sig, (struct siginfo *)si, mc);
-		}
-
-		/*
-		 * Again, pending comes back with a mask of signals
-		 * that arrived while tearing down the stack.  If this
-		 * is non-zero, we just go back, set up the stack
-		 * again, and handle the new interrupts.
-		 */
-		if (!nested)
-			pending = from_irq_stack(nested);
-	} while (pending);
+	(*handlers[sig])(sig, (struct siginfo *)si, mc);
 }
 
 void set_handler(int sig)
@@ -220,6 +223,11 @@ void set_handler(int sig)
 	sigaddset(&sig_mask, sig);
 	if (sigprocmask(SIG_UNBLOCK, &sig_mask, NULL) < 0)
 		panic("sigprocmask failed - errno = %d\n", errno);
+}
+
+void send_sigio_to_self(void)
+{
+	kill(os_getpid(), SIGIO);
 }
 
 int change_sig(int signal, int on)
@@ -254,6 +262,9 @@ void unblock_signals(void)
 		return;
 
 	signals_enabled = 1;
+#if IS_ENABLED(CONFIG_UML_TIME_TRAVEL_SUPPORT)
+	deliver_time_travel_irqs();
+#endif
 
 	/*
 	 * We loop because the IRQ handler returns with interrupts off.  So,
@@ -314,12 +325,7 @@ void unblock_signals(void)
 	}
 }
 
-int get_signals(void)
-{
-	return signals_enabled;
-}
-
-int set_signals(int enable)
+int um_set_signals(int enable)
 {
 	int ret;
 	if (signals_enabled == enable)
@@ -333,7 +339,7 @@ int set_signals(int enable)
 	return ret;
 }
 
-int set_signals_trace(int enable)
+int um_set_signals_trace(int enable)
 {
 	int ret;
 	if (signals_enabled == enable)
@@ -348,10 +354,101 @@ int set_signals_trace(int enable)
 	return ret;
 }
 
-int os_is_signal_stack(void)
+#if IS_ENABLED(CONFIG_UML_TIME_TRAVEL_SUPPORT)
+void mark_sigio_pending(void)
 {
-	stack_t ss;
-	sigaltstack(NULL, &ss);
-
-	return ss.ss_flags & SS_ONSTACK;
+	/*
+	 * It would seem that this should be atomic so
+	 * it isn't a read-modify-write with a signal
+	 * that could happen in the middle, losing the
+	 * value set by the signal.
+	 *
+	 * However, this function is only called when in
+	 * time-travel=ext simulation mode, in which case
+	 * the only signal ever pending is SIGIO, which
+	 * is blocked while this can be called, and the
+	 * timer signal (SIGALRM) cannot happen.
+	 */
+	signals_pending |= SIGIO_MASK;
 }
+
+void block_signals_hard(void)
+{
+	signals_blocked++;
+	barrier();
+}
+
+void unblock_signals_hard(void)
+{
+	static bool unblocking;
+
+	if (!signals_blocked)
+		panic("unblocking signals while not blocked");
+
+	if (--signals_blocked)
+		return;
+	/*
+	 * Must be set to 0 before we check pending so the
+	 * SIGIO handler will run as normal unless we're still
+	 * going to process signals_blocked_pending.
+	 */
+	barrier();
+
+	/*
+	 * Note that block_signals_hard()/unblock_signals_hard() can be called
+	 * within the unblock_signals()/sigio_run_timetravel_handlers() below.
+	 * This would still be prone to race conditions since it's actually a
+	 * call _within_ e.g. vu_req_read_message(), where we observed this
+	 * issue, which loops. Thus, if the inner call handles the recorded
+	 * pending signals, we can get out of the inner call with the real
+	 * signal hander no longer blocked, and still have a race. Thus don't
+	 * handle unblocking in the inner call, if it happens, but only in
+	 * the outermost call - 'unblocking' serves as an ownership for the
+	 * signals_blocked_pending decrement.
+	 */
+	if (unblocking)
+		return;
+	unblocking = true;
+
+	while (__atomic_load_n(&signals_blocked_pending, __ATOMIC_SEQ_CST)) {
+		if (signals_enabled) {
+			/* signals are enabled so we can touch this */
+			signals_pending |= SIGIO_MASK;
+			/*
+			 * this is a bit inefficient, but that's
+			 * not really important
+			 */
+			block_signals();
+			unblock_signals();
+		} else {
+			/*
+			 * we need to run time-travel handlers even
+			 * if not enabled
+			 */
+			sigio_run_timetravel_handlers();
+		}
+
+		/*
+		 * The decrement of signals_blocked_pending must be atomic so
+		 * that the signal handler will either happen before or after
+		 * the decrement, not during a read-modify-write:
+		 *  - If it happens before, it can increment it and we'll
+		 *    decrement it and do another round in the loop.
+		 *  - If it happens after it'll see 0 for both signals_blocked
+		 *    and signals_blocked_pending and thus run the handler as
+		 *    usual (subject to signals_enabled, but that's unrelated.)
+		 *
+		 * Note that a call to unblock_signals_hard() within the calls
+		 * to unblock_signals() or sigio_run_timetravel_handlers() above
+		 * will do nothing due to the 'unblocking' state, so this cannot
+		 * underflow as the only one decrementing will be the outermost
+		 * one.
+		 */
+		if (__atomic_sub_fetch(&signals_blocked_pending, 1,
+				       __ATOMIC_SEQ_CST) < 0)
+			panic("signals_blocked_pending underflow");
+	}
+
+	unblocking = false;
+}
+#endif

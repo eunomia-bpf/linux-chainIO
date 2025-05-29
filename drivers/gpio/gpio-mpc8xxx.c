@@ -1,28 +1,26 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * GPIOs on MPC512x/8349/8572/8610/QorIQ and compatible
  *
  * Copyright (C) 2008 Peter Korsgaard <jacmet@sunsite.dk>
  * Copyright (C) 2016 Freescale Semiconductor Inc.
- *
- * This file is licensed under the terms of the GNU General Public License
- * version 2.  This program is licensed "as is" without any warranty of any
- * kind, whether express or implied.
  */
 
-#include <linux/kernel.h>
-#include <linux/init.h>
-#include <linux/spinlock.h>
-#include <linux/io.h>
-#include <linux/of.h>
-#include <linux/of_gpio.h>
-#include <linux/of_address.h>
-#include <linux/of_irq.h>
-#include <linux/of_platform.h>
-#include <linux/slab.h>
-#include <linux/irq.h>
-#include <linux/gpio/driver.h>
+#include <linux/acpi.h>
 #include <linux/bitops.h>
+#include <linux/gpio/driver.h>
+#include <linux/init.h>
 #include <linux/interrupt.h>
+#include <linux/io.h>
+#include <linux/irq.h>
+#include <linux/kernel.h>
+#include <linux/mod_devicetable.h>
+#include <linux/platform_device.h>
+#include <linux/pm.h>
+#include <linux/pm_runtime.h>
+#include <linux/property.h>
+#include <linux/slab.h>
+#include <linux/spinlock.h>
 
 #define MPC8XXX_GPIO_PINS	32
 
@@ -44,7 +42,7 @@ struct mpc8xxx_gpio_chip {
 				unsigned offset, int value);
 
 	struct irq_domain *irq;
-	unsigned int irqn;
+	int irqn;
 };
 
 /*
@@ -117,7 +115,7 @@ static irqreturn_t mpc8xxx_gpio_irq_cascade(int irq, void *data)
 	mask = gc->read_reg(mpc8xxx_gc->regs + GPIO_IER)
 		& gc->read_reg(mpc8xxx_gc->regs + GPIO_IMR);
 	for_each_set_bit(i, &mask, 32)
-		generic_handle_irq(irq_linear_revmap(mpc8xxx_gc->irq, 31 - i));
+		generic_handle_domain_irq(mpc8xxx_gc->irq, 31 - i);
 
 	return IRQ_HANDLED;
 }
@@ -169,6 +167,7 @@ static int mpc8xxx_irq_set_type(struct irq_data *d, unsigned int flow_type)
 
 	switch (flow_type) {
 	case IRQ_TYPE_EDGE_FALLING:
+	case IRQ_TYPE_LEVEL_LOW:
 		raw_spin_lock_irqsave(&mpc8xxx_gc->lock, flags);
 		gc->write_reg(mpc8xxx_gc->regs + GPIO_ICR,
 			gc->read_reg(mpc8xxx_gc->regs + GPIO_ICR)
@@ -300,14 +299,14 @@ static const struct of_device_id mpc8xxx_gpio_ids[] = {
 
 static int mpc8xxx_probe(struct platform_device *pdev)
 {
-	struct device_node *np = pdev->dev.of_node;
+	const struct mpc8xxx_gpio_devtype *devtype = NULL;
 	struct mpc8xxx_gpio_chip *mpc8xxx_gc;
-	struct gpio_chip	*gc;
-	const struct mpc8xxx_gpio_devtype *devtype =
-		of_device_get_match_data(&pdev->dev);
+	struct device *dev = &pdev->dev;
+	struct fwnode_handle *fwnode;
+	struct gpio_chip *gc;
 	int ret;
 
-	mpc8xxx_gc = devm_kzalloc(&pdev->dev, sizeof(*mpc8xxx_gc), GFP_KERNEL);
+	mpc8xxx_gc = devm_kzalloc(dev, sizeof(*mpc8xxx_gc), GFP_KERNEL);
 	if (!mpc8xxx_gc)
 		return -ENOMEM;
 
@@ -315,36 +314,33 @@ static int mpc8xxx_probe(struct platform_device *pdev)
 
 	raw_spin_lock_init(&mpc8xxx_gc->lock);
 
-	mpc8xxx_gc->regs = of_iomap(np, 0);
-	if (!mpc8xxx_gc->regs)
-		return -ENOMEM;
+	mpc8xxx_gc->regs = devm_platform_ioremap_resource(pdev, 0);
+	if (IS_ERR(mpc8xxx_gc->regs))
+		return PTR_ERR(mpc8xxx_gc->regs);
 
 	gc = &mpc8xxx_gc->gc;
-	gc->parent = &pdev->dev;
+	gc->parent = dev;
 
-	if (of_property_read_bool(np, "little-endian")) {
-		ret = bgpio_init(gc, &pdev->dev, 4,
-				 mpc8xxx_gc->regs + GPIO_DAT,
-				 NULL, NULL,
-				 mpc8xxx_gc->regs + GPIO_DIR, NULL,
-				 BGPIOF_BIG_ENDIAN);
+	if (device_property_read_bool(dev, "little-endian")) {
+		ret = bgpio_init(gc, dev, 4, mpc8xxx_gc->regs + GPIO_DAT,
+				 NULL, NULL, mpc8xxx_gc->regs + GPIO_DIR,
+				 NULL, BGPIOF_BIG_ENDIAN);
 		if (ret)
-			goto err;
-		dev_dbg(&pdev->dev, "GPIO registers are LITTLE endian\n");
+			return ret;
+		dev_dbg(dev, "GPIO registers are LITTLE endian\n");
 	} else {
-		ret = bgpio_init(gc, &pdev->dev, 4,
-				 mpc8xxx_gc->regs + GPIO_DAT,
-				 NULL, NULL,
-				 mpc8xxx_gc->regs + GPIO_DIR, NULL,
-				 BGPIOF_BIG_ENDIAN
+		ret = bgpio_init(gc, dev, 4, mpc8xxx_gc->regs + GPIO_DAT,
+				 NULL, NULL, mpc8xxx_gc->regs + GPIO_DIR,
+				 NULL, BGPIOF_BIG_ENDIAN
 				 | BGPIOF_BIG_ENDIAN_BYTE_ORDER);
 		if (ret)
-			goto err;
-		dev_dbg(&pdev->dev, "GPIO registers are BIG endian\n");
+			return ret;
+		dev_dbg(dev, "GPIO registers are BIG endian\n");
 	}
 
 	mpc8xxx_gc->direction_output = gc->direction_output;
 
+	devtype = device_get_match_data(dev);
 	if (!devtype)
 		devtype = &mpc8xxx_gpio_devtype_default;
 
@@ -369,24 +365,33 @@ static int mpc8xxx_probe(struct platform_device *pdev)
 	 * associated input enable must be set (GPIOxGPIE[IEn]=1) to propagate
 	 * the port value to the GPIO Data Register.
 	 */
-	if (of_device_is_compatible(np, "fsl,qoriq-gpio") ||
-	    of_device_is_compatible(np, "fsl,ls1028a-gpio") ||
-	    of_device_is_compatible(np, "fsl,ls1088a-gpio"))
+	fwnode = dev_fwnode(dev);
+	if (device_is_compatible(dev, "fsl,qoriq-gpio") ||
+	    device_is_compatible(dev, "fsl,ls1028a-gpio") ||
+	    device_is_compatible(dev, "fsl,ls1088a-gpio") ||
+	    is_acpi_node(fwnode)) {
 		gc->write_reg(mpc8xxx_gc->regs + GPIO_IBE, 0xffffffff);
-
-	ret = gpiochip_add_data(gc, mpc8xxx_gc);
-	if (ret) {
-		pr_err("%pOF: GPIO chip registration failed with status %d\n",
-		       np, ret);
-		goto err;
+		/* Also, latch state of GPIOs configured as output by bootloader. */
+		gc->bgpio_data = gc->read_reg(mpc8xxx_gc->regs + GPIO_DAT) &
+			gc->read_reg(mpc8xxx_gc->regs + GPIO_DIR);
 	}
 
-	mpc8xxx_gc->irqn = irq_of_parse_and_map(np, 0);
-	if (!mpc8xxx_gc->irqn)
-		return 0;
+	ret = devm_gpiochip_add_data(dev, gc, mpc8xxx_gc);
+	if (ret) {
+		dev_err(dev,
+			"GPIO chip registration failed with status %d\n", ret);
+		return ret;
+	}
 
-	mpc8xxx_gc->irq = irq_domain_add_linear(np, MPC8XXX_GPIO_PINS,
-					&mpc8xxx_gpio_irq_ops, mpc8xxx_gc);
+	mpc8xxx_gc->irqn = platform_get_irq(pdev, 0);
+	if (mpc8xxx_gc->irqn < 0)
+		return mpc8xxx_gc->irqn;
+
+	mpc8xxx_gc->irq = irq_domain_create_linear(fwnode,
+						   MPC8XXX_GPIO_PINS,
+						   &mpc8xxx_gpio_irq_ops,
+						   mpc8xxx_gc);
+
 	if (!mpc8xxx_gc->irq)
 		return 0;
 
@@ -394,23 +399,25 @@ static int mpc8xxx_probe(struct platform_device *pdev)
 	gc->write_reg(mpc8xxx_gc->regs + GPIO_IER, 0xffffffff);
 	gc->write_reg(mpc8xxx_gc->regs + GPIO_IMR, 0);
 
-	ret = devm_request_irq(&pdev->dev, mpc8xxx_gc->irqn,
+	ret = devm_request_irq(dev, mpc8xxx_gc->irqn,
 			       mpc8xxx_gpio_irq_cascade,
-			       IRQF_SHARED, "gpio-cascade",
+			       IRQF_NO_THREAD | IRQF_SHARED, "gpio-cascade",
 			       mpc8xxx_gc);
 	if (ret) {
-		dev_err(&pdev->dev, "%s: failed to devm_request_irq(%d), ret = %d\n",
-			np->full_name, mpc8xxx_gc->irqn, ret);
+		dev_err(dev, "failed to devm_request_irq(%d), ret = %d\n",
+			mpc8xxx_gc->irqn, ret);
 		goto err;
 	}
 
+	device_init_wakeup(dev, true);
+
 	return 0;
 err:
-	iounmap(mpc8xxx_gc->regs);
+	irq_domain_remove(mpc8xxx_gc->irq);
 	return ret;
 }
 
-static int mpc8xxx_remove(struct platform_device *pdev)
+static void mpc8xxx_remove(struct platform_device *pdev)
 {
 	struct mpc8xxx_gpio_chip *mpc8xxx_gc = platform_get_drvdata(pdev);
 
@@ -418,12 +425,38 @@ static int mpc8xxx_remove(struct platform_device *pdev)
 		irq_set_chained_handler_and_data(mpc8xxx_gc->irqn, NULL, NULL);
 		irq_domain_remove(mpc8xxx_gc->irq);
 	}
+}
 
-	gpiochip_remove(&mpc8xxx_gc->gc);
-	iounmap(mpc8xxx_gc->regs);
+static int mpc8xxx_suspend(struct device *dev)
+{
+	struct mpc8xxx_gpio_chip *mpc8xxx_gc = dev_get_drvdata(dev);
+
+	if (mpc8xxx_gc->irqn && device_may_wakeup(dev))
+		enable_irq_wake(mpc8xxx_gc->irqn);
 
 	return 0;
 }
+
+static int mpc8xxx_resume(struct device *dev)
+{
+	struct mpc8xxx_gpio_chip *mpc8xxx_gc = dev_get_drvdata(dev);
+
+	if (mpc8xxx_gc->irqn && device_may_wakeup(dev))
+		disable_irq_wake(mpc8xxx_gc->irqn);
+
+	return 0;
+}
+
+static DEFINE_RUNTIME_DEV_PM_OPS(mpc8xx_pm_ops,
+				 mpc8xxx_suspend, mpc8xxx_resume, NULL);
+
+#ifdef CONFIG_ACPI
+static const struct acpi_device_id gpio_acpi_ids[] = {
+	{"NXP0031",},
+	{ }
+};
+MODULE_DEVICE_TABLE(acpi, gpio_acpi_ids);
+#endif
 
 static struct platform_driver mpc8xxx_plat_driver = {
 	.probe		= mpc8xxx_probe,
@@ -431,6 +464,8 @@ static struct platform_driver mpc8xxx_plat_driver = {
 	.driver		= {
 		.name = "gpio-mpc8xxx",
 		.of_match_table	= mpc8xxx_gpio_ids,
+		.acpi_match_table = ACPI_PTR(gpio_acpi_ids),
+		.pm = pm_ptr(&mpc8xx_pm_ops),
 	},
 };
 

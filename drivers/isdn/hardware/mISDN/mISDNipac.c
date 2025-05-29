@@ -21,6 +21,7 @@
 
 MODULE_AUTHOR("Karsten Keil");
 MODULE_VERSION(ISAC_REV);
+MODULE_DESCRIPTION("mISDN driver for ISAC specific functions");
 MODULE_LICENSE("GPL v2");
 
 #define ReadISAC(is, o)		(is->read_reg(is->dch.hw, o + is->off))
@@ -694,7 +695,7 @@ isac_release(struct isac_hw *isac)
 {
 	if (isac->type & IPAC_TYPE_ISACX)
 		WriteISAC(isac, ISACX_MASK, 0xff);
-	else
+	else if (isac->type != 0)
 		WriteISAC(isac, ISAC_MASK, 0xff);
 	if (isac->dch.timer.function != NULL) {
 		del_timer(&isac->dch.timer);
@@ -1062,7 +1063,7 @@ ipac_rme(struct hscx_hw *hx)
 	if (!hx->bch.rx_skb)
 		return;
 	if (hx->bch.rx_skb->len < 2) {
-		pr_debug("%s: B%1d frame to short %d\n",
+		pr_debug("%s: B%1d frame too short %d\n",
 			 hx->ip->name, hx->bch.nr, hx->bch.rx_skb->len);
 		skb_trim(hx->bch.rx_skb, 0);
 	} else {

@@ -99,10 +99,10 @@ extern struct sdhci_host *sdhci_pltfm_init(struct platform_device *pdev,
 					  size_t priv_size);
 extern void sdhci_pltfm_free(struct platform_device *pdev);
 
-extern int sdhci_pltfm_register(struct platform_device *pdev,
-				const struct sdhci_pltfm_data *pdata,
-				size_t priv_size);
-extern int sdhci_pltfm_unregister(struct platform_device *pdev);
+extern int sdhci_pltfm_init_and_add_host(struct platform_device *pdev,
+					 const struct sdhci_pltfm_data *pdata,
+					 size_t priv_size);
+extern void sdhci_pltfm_remove(struct platform_device *pdev);
 
 extern unsigned int sdhci_pltfm_clk_get_max_clock(struct sdhci_host *host);
 
@@ -111,8 +111,13 @@ static inline void *sdhci_pltfm_priv(struct sdhci_pltfm_host *host)
 	return host->private;
 }
 
+extern const struct dev_pm_ops sdhci_pltfm_pmops;
+#ifdef CONFIG_PM_SLEEP
 int sdhci_pltfm_suspend(struct device *dev);
 int sdhci_pltfm_resume(struct device *dev);
-extern const struct dev_pm_ops sdhci_pltfm_pmops;
+#else
+static inline int sdhci_pltfm_suspend(struct device *dev) { return 0; }
+static inline int sdhci_pltfm_resume(struct device *dev) { return 0; }
+#endif
 
 #endif /* _DRIVERS_MMC_SDHCI_PLTFM_H */

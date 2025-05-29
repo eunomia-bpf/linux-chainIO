@@ -8,6 +8,9 @@
  * Copyright (C) 2015 Cogent Embedded, Inc.
  */
 
+#ifndef __MEDIA_I2C_MAX9271_H__
+#define __MEDIA_I2C_MAX9271_H__
+
 #include <linux/i2c.h>
 
 #define MAX9271_DEFAULT_ADDR	0x40
@@ -84,6 +87,15 @@
 struct max9271_device {
 	struct i2c_client *client;
 };
+
+/**
+ * max9271_wake_up() - Wake up the serializer by issuing an i2c transaction
+ * @dev: The max9271 device
+ *
+ * This function shall be called before any other interaction with the
+ * serializer.
+ */
+void max9271_wake_up(struct max9271_device *dev);
 
 /**
  * max9271_set_serial_link() - Enable/disable serial link
@@ -222,3 +234,5 @@ int max9271_set_deserializer_address(struct max9271_device *dev, u8 addr);
  * Return 0 on success or a negative error code on failure
  */
 int max9271_set_translation(struct max9271_device *dev, u8 source, u8 dest);
+
+#endif /* __MEDIA_I2C_MAX9271_H__ */

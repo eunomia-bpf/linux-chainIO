@@ -50,9 +50,9 @@ DVB_DEFINE_MOD_OPT_ADAPTER_NR(adapter_nr);
 /* nGene interrupt handler **************************************************/
 /****************************************************************************/
 
-static void event_tasklet(struct tasklet_struct *t)
+static void event_bh_work(struct work_struct *t)
 {
-	struct ngene *dev = from_tasklet(dev, t, event_tasklet);
+	struct ngene *dev = from_work(dev, t, event_bh_work);
 
 	while (dev->EventQueueReadIndex != dev->EventQueueWriteIndex) {
 		struct EVENT_BUFFER Event =
@@ -68,9 +68,9 @@ static void event_tasklet(struct tasklet_struct *t)
 	}
 }
 
-static void demux_tasklet(struct tasklet_struct *t)
+static void demux_bh_work(struct work_struct *t)
 {
-	struct ngene_channel *chan = from_tasklet(chan, t, demux_tasklet);
+	struct ngene_channel *chan = from_work(chan, t, demux_bh_work);
 	struct device *pdev = &chan->dev->pci_dev->dev;
 	struct SBufferHeader *Cur = chan->nextBuffer;
 
@@ -204,7 +204,7 @@ static irqreturn_t irq_handler(int irq, void *dev_id)
 			dev->EventQueueOverflowFlag = 1;
 		}
 		dev->EventBuffer->EventStatus &= ~0x80;
-		tasklet_schedule(&dev->event_tasklet);
+		queue_work(system_bh_wq, &dev->event_bh_work);
 		rc = IRQ_HANDLED;
 	}
 
@@ -217,8 +217,8 @@ static irqreturn_t irq_handler(int irq, void *dev_id)
 			     ngeneBuffer.SR.Flags & 0xC0) == 0x80) {
 				dev->channel[i].nextBuffer->
 					ngeneBuffer.SR.Flags |= 0x40;
-				tasklet_schedule(
-					&dev->channel[i].demux_tasklet);
+				queue_work(system_bh_wq,
+					   &dev->channel[i].demux_bh_work);
 				rc = IRQ_HANDLED;
 			}
 		}
@@ -385,7 +385,7 @@ static int ngene_command_config_free_buf(struct ngene *dev, u8 *config)
 
 	com.cmd.hdr.Opcode = CMD_CONFIGURE_FREE_BUFFER;
 	com.cmd.hdr.Length = 6;
-	memcpy(&com.cmd.ConfigureBuffers.config, config, 6);
+	memcpy(&com.cmd.ConfigureFreeBuffers.config, config, 6);
 	com.in_len = 6;
 	com.out_len = 0;
 
@@ -763,23 +763,22 @@ static void free_ringbuffer(struct ngene *dev, struct SRingBufferDescriptor *rb)
 
 	for (j = 0; j < rb->NumBuffers; j++, Cur = Cur->Next) {
 		if (Cur->Buffer1)
-			pci_free_consistent(dev->pci_dev,
-					    rb->Buffer1Length,
-					    Cur->Buffer1,
-					    Cur->scList1->Address);
+			dma_free_coherent(&dev->pci_dev->dev,
+					  rb->Buffer1Length, Cur->Buffer1,
+					  Cur->scList1->Address);
 
 		if (Cur->Buffer2)
-			pci_free_consistent(dev->pci_dev,
-					    rb->Buffer2Length,
-					    Cur->Buffer2,
-					    Cur->scList2->Address);
+			dma_free_coherent(&dev->pci_dev->dev,
+					  rb->Buffer2Length, Cur->Buffer2,
+					  Cur->scList2->Address);
 	}
 
 	if (rb->SCListMem)
-		pci_free_consistent(dev->pci_dev, rb->SCListMemSize,
-				    rb->SCListMem, rb->PASCListMem);
+		dma_free_coherent(&dev->pci_dev->dev, rb->SCListMemSize,
+				  rb->SCListMem, rb->PASCListMem);
 
-	pci_free_consistent(dev->pci_dev, rb->MemSize, rb->Head, rb->PAHead);
+	dma_free_coherent(&dev->pci_dev->dev, rb->MemSize, rb->Head,
+			  rb->PAHead);
 }
 
 static void free_idlebuffer(struct ngene *dev,
@@ -813,15 +812,13 @@ static void free_common_buffers(struct ngene *dev)
 	}
 
 	if (dev->OverflowBuffer)
-		pci_free_consistent(dev->pci_dev,
-				    OVERFLOW_BUFFER_SIZE,
-				    dev->OverflowBuffer, dev->PAOverflowBuffer);
+		dma_free_coherent(&dev->pci_dev->dev, OVERFLOW_BUFFER_SIZE,
+				  dev->OverflowBuffer, dev->PAOverflowBuffer);
 
 	if (dev->FWInterfaceBuffer)
-		pci_free_consistent(dev->pci_dev,
-				    4096,
-				    dev->FWInterfaceBuffer,
-				    dev->PAFWInterfaceBuffer);
+		dma_free_coherent(&dev->pci_dev->dev, 4096,
+				  dev->FWInterfaceBuffer,
+				  dev->PAFWInterfaceBuffer);
 }
 
 /****************************************************************************/
@@ -848,7 +845,7 @@ static int create_ring_buffer(struct pci_dev *pci_dev,
 	if (MemSize < 4096)
 		MemSize = 4096;
 
-	Head = pci_alloc_consistent(pci_dev, MemSize, &tmp);
+	Head = dma_alloc_coherent(&pci_dev->dev, MemSize, &tmp, GFP_KERNEL);
 	PARingBufferHead = tmp;
 
 	if (!Head)
@@ -899,7 +896,8 @@ static int AllocateRingBuffers(struct pci_dev *pci_dev,
 	if (SCListMemSize < 4096)
 		SCListMemSize = 4096;
 
-	SCListMem = pci_alloc_consistent(pci_dev, SCListMemSize, &tmp);
+	SCListMem = dma_alloc_coherent(&pci_dev->dev, SCListMemSize, &tmp,
+				       GFP_KERNEL);
 
 	PASCListMem = tmp;
 	if (SCListMem == NULL)
@@ -918,8 +916,8 @@ static int AllocateRingBuffers(struct pci_dev *pci_dev,
 	for (i = 0; i < pRingBuffer->NumBuffers; i += 1, Cur = Cur->Next) {
 		u64 PABuffer;
 
-		void *Buffer = pci_alloc_consistent(pci_dev, Buffer1Length,
-						    &tmp);
+		void *Buffer = dma_alloc_coherent(&pci_dev->dev,
+						  Buffer1Length, &tmp, GFP_KERNEL);
 		PABuffer = tmp;
 
 		if (Buffer == NULL)
@@ -951,7 +949,8 @@ static int AllocateRingBuffers(struct pci_dev *pci_dev,
 		if (!Buffer2Length)
 			continue;
 
-		Buffer = pci_alloc_consistent(pci_dev, Buffer2Length, &tmp);
+		Buffer = dma_alloc_coherent(&pci_dev->dev, Buffer2Length,
+					    &tmp, GFP_KERNEL);
 		PABuffer = tmp;
 
 		if (Buffer == NULL)
@@ -1040,17 +1039,18 @@ static int AllocCommonBuffers(struct ngene *dev)
 {
 	int status = 0, i;
 
-	dev->FWInterfaceBuffer = pci_alloc_consistent(dev->pci_dev, 4096,
-						     &dev->PAFWInterfaceBuffer);
+	dev->FWInterfaceBuffer = dma_alloc_coherent(&dev->pci_dev->dev, 4096,
+						    &dev->PAFWInterfaceBuffer,
+						    GFP_KERNEL);
 	if (!dev->FWInterfaceBuffer)
 		return -ENOMEM;
 	dev->hosttongene = dev->FWInterfaceBuffer;
 	dev->ngenetohost = dev->FWInterfaceBuffer + 256;
 	dev->EventBuffer = dev->FWInterfaceBuffer + 512;
 
-	dev->OverflowBuffer = pci_zalloc_consistent(dev->pci_dev,
-						    OVERFLOW_BUFFER_SIZE,
-						    &dev->PAOverflowBuffer);
+	dev->OverflowBuffer = dma_alloc_coherent(&dev->pci_dev->dev,
+						 OVERFLOW_BUFFER_SIZE,
+						 &dev->PAOverflowBuffer, GFP_KERNEL);
 	if (!dev->OverflowBuffer)
 		return -ENOMEM;
 
@@ -1181,7 +1181,7 @@ static void ngene_init(struct ngene *dev)
 	struct device *pdev = &dev->pci_dev->dev;
 	int i;
 
-	tasklet_setup(&dev->event_tasklet, event_tasklet);
+	INIT_WORK(&dev->event_bh_work, event_bh_work);
 
 	memset_io(dev->iomem + 0xc000, 0x00, 0x220);
 	memset_io(dev->iomem + 0xc400, 0x00, 0x100);
@@ -1395,7 +1395,7 @@ static void release_channel(struct ngene_channel *chan)
 	if (chan->running)
 		set_transfer(chan, 0);
 
-	tasklet_kill(&chan->demux_tasklet);
+	cancel_work_sync(&chan->demux_bh_work);
 
 	if (chan->ci_dev) {
 		dvb_unregister_device(chan->ci_dev);
@@ -1445,7 +1445,7 @@ static int init_channel(struct ngene_channel *chan)
 	struct ngene_info *ni = dev->card_info;
 	int io = ni->io_type[nr];
 
-	tasklet_setup(&chan->demux_tasklet, demux_tasklet);
+	INIT_WORK(&chan->demux_bh_work, demux_bh_work);
 	chan->users = 0;
 	chan->type = io;
 	chan->mode = chan->type;	/* for now only one mode */
@@ -1488,7 +1488,9 @@ static int init_channel(struct ngene_channel *chan)
 	}
 
 	if (dev->ci.en && (io & NGENE_IO_TSOUT)) {
-		dvb_ca_en50221_init(adapter, dev->ci.en, 0, 1);
+		ret = dvb_ca_en50221_init(adapter, dev->ci.en, 0, 1);
+		if (ret != 0)
+			goto err;
 		set_transfer(chan, 1);
 		chan->dev->channel[2].DataFormatFlags = DF_SWAP32;
 		set_transfer(&chan->dev->channel[2], 1);
@@ -1647,7 +1649,7 @@ void ngene_remove(struct pci_dev *pdev)
 	struct ngene *dev = pci_get_drvdata(pdev);
 	int i;
 
-	tasklet_kill(&dev->event_tasklet);
+	cancel_work_sync(&dev->event_bh_work);
 	for (i = MAX_STREAM - 1; i >= 0; i--)
 		release_channel(&dev->channel[i]);
 	if (dev->ci.en)

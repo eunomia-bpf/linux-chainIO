@@ -24,8 +24,8 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-#include <drm/drm_crtc_helper.h>
 #include <drm/drm_fourcc.h>
+#include <drm/drm_modeset_helper_vtables.h>
 
 #include "nouveau_drv.h"
 #include "nouveau_reg.h"
@@ -488,12 +488,13 @@ static void nv04_dfp_update_backlight(struct drm_encoder *encoder, int mode)
 #ifdef __powerpc__
 	struct drm_device *dev = encoder->dev;
 	struct nvif_object *device = &nouveau_drm(dev)->client.device.object;
+	struct pci_dev *pdev = to_pci_dev(dev->dev);
 
 	/* BIOS scripts usually take care of the backlight, thanks
 	 * Apple for your consistency.
 	 */
-	if (dev->pdev->device == 0x0174 || dev->pdev->device == 0x0179 ||
-	    dev->pdev->device == 0x0189 || dev->pdev->device == 0x0329) {
+	if (pdev->device == 0x0174 || pdev->device == 0x0179 ||
+	    pdev->device == 0x0189 || pdev->device == 0x0329) {
 		if (mode == DRM_MODE_DPMS_ON) {
 			nvif_mask(device, NV_PBUS_DEBUG_DUALHEAD_CTL, 1 << 31, 1 << 31);
 			nvif_mask(device, NV_PCRTC_GPIO_EXT, 3, 1);
@@ -625,7 +626,7 @@ static void nv04_tmds_slave_init(struct drm_encoder *encoder)
 	struct drm_device *dev = encoder->dev;
 	struct dcb_output *dcb = nouveau_encoder(encoder)->dcb;
 	struct nouveau_drm *drm = nouveau_drm(dev);
-	struct nvkm_i2c *i2c = nvxx_i2c(&drm->client.device);
+	struct nvkm_i2c *i2c = nvxx_i2c(drm);
 	struct nvkm_i2c_bus *bus = nvkm_i2c_bus_find(i2c, NVKM_I2C_BUS_PRI);
 	struct nvkm_i2c_bus_probe info[] = {
 		{

@@ -54,6 +54,11 @@ struct iio_cb_buffer *iio_channel_get_all_cb(struct device *dev,
 	struct iio_cb_buffer *cb_buff;
 	struct iio_channel *chan;
 
+	if (!cb) {
+		dev_err(dev, "Invalid arguments: A callback must be provided!\n");
+		return ERR_PTR(-EINVAL);
+	}
+
 	cb_buff = kzalloc(sizeof(*cb_buff), GFP_KERNEL);
 	if (cb_buff == NULL)
 		return ERR_PTR(-ENOMEM);
@@ -72,7 +77,7 @@ struct iio_cb_buffer *iio_channel_get_all_cb(struct device *dev,
 	}
 
 	cb_buff->indio_dev = cb_buff->channels[0].indio_dev;
-	cb_buff->buffer.scan_mask = bitmap_zalloc(cb_buff->indio_dev->masklength,
+	cb_buff->buffer.scan_mask = bitmap_zalloc(iio_get_masklength(cb_buff->indio_dev),
 						  GFP_KERNEL);
 	if (cb_buff->buffer.scan_mask == NULL) {
 		ret = -ENOMEM;

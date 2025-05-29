@@ -20,17 +20,39 @@ struct vboxsf_handle {
 	struct list_head head;
 };
 
-static int vboxsf_file_open(struct inode *inode, struct file *file)
+struct vboxsf_handle *vboxsf_create_sf_handle(struct inode *inode,
+					      u64 handle, u32 access_flags)
 {
 	struct vboxsf_inode *sf_i = VBOXSF_I(inode);
+	struct vboxsf_handle *sf_handle;
+
+	sf_handle = kmalloc(sizeof(*sf_handle), GFP_KERNEL);
+	if (!sf_handle)
+		return ERR_PTR(-ENOMEM);
+
+	/* the host may have given us different attr then requested */
+	sf_i->force_restat = 1;
+
+	/* init our handle struct and add it to the inode's handles list */
+	sf_handle->handle = handle;
+	sf_handle->root = VBOXSF_SBI(inode->i_sb)->root;
+	sf_handle->access_flags = access_flags;
+	kref_init(&sf_handle->refcount);
+
+	mutex_lock(&sf_i->handle_list_mutex);
+	list_add(&sf_handle->head, &sf_i->handle_list);
+	mutex_unlock(&sf_i->handle_list_mutex);
+
+	return sf_handle;
+}
+
+static int vboxsf_file_open(struct inode *inode, struct file *file)
+{
+	struct vboxsf_sbi *sbi = VBOXSF_SBI(inode->i_sb);
 	struct shfl_createparms params = {};
 	struct vboxsf_handle *sf_handle;
 	u32 access_flags = 0;
 	int err;
-
-	sf_handle = kmalloc(sizeof(*sf_handle), GFP_KERNEL);
-	if (!sf_handle)
-		return -ENOMEM;
 
 	/*
 	 * We check the value of params.handle afterwards to find out if
@@ -83,23 +105,14 @@ static int vboxsf_file_open(struct inode *inode, struct file *file)
 	err = vboxsf_create_at_dentry(file_dentry(file), &params);
 	if (err == 0 && params.handle == SHFL_HANDLE_NIL)
 		err = (params.result == SHFL_FILE_EXISTS) ? -EEXIST : -ENOENT;
-	if (err) {
-		kfree(sf_handle);
+	if (err)
 		return err;
+
+	sf_handle = vboxsf_create_sf_handle(inode, params.handle, access_flags);
+	if (IS_ERR(sf_handle)) {
+		vboxsf_close(sbi->root, params.handle);
+		return PTR_ERR(sf_handle);
 	}
-
-	/* the host may have given us different attr then requested */
-	sf_i->force_restat = 1;
-
-	/* init our handle struct and add it to the inode's handles list */
-	sf_handle->handle = params.handle;
-	sf_handle->root = VBOXSF_SBI(inode->i_sb)->root;
-	sf_handle->access_flags = access_flags;
-	kref_init(&sf_handle->refcount);
-
-	mutex_lock(&sf_i->handle_list_mutex);
-	list_add(&sf_handle->head, &sf_i->handle_list);
-	mutex_unlock(&sf_i->handle_list_mutex);
 
 	file->private_data = sf_handle;
 	return 0;
@@ -114,22 +127,26 @@ static void vboxsf_handle_release(struct kref *refcount)
 	kfree(sf_handle);
 }
 
-static int vboxsf_file_release(struct inode *inode, struct file *file)
+void vboxsf_release_sf_handle(struct inode *inode, struct vboxsf_handle *sf_handle)
 {
 	struct vboxsf_inode *sf_i = VBOXSF_I(inode);
-	struct vboxsf_handle *sf_handle = file->private_data;
-
-	/*
-	 * When a file is closed on our (the guest) side, we want any subsequent
-	 * accesses done on the host side to see all changes done from our side.
-	 */
-	filemap_write_and_wait(inode->i_mapping);
 
 	mutex_lock(&sf_i->handle_list_mutex);
 	list_del(&sf_handle->head);
 	mutex_unlock(&sf_i->handle_list_mutex);
 
 	kref_put(&sf_handle->refcount, vboxsf_handle_release);
+}
+
+static int vboxsf_file_release(struct inode *inode, struct file *file)
+{
+	/*
+	 * When a file is closed on our (the guest) side, we want any subsequent
+	 * accesses done on the host side to see all changes done from our side.
+	 */
+	filemap_write_and_wait(inode->i_mapping);
+
+	vboxsf_release_sf_handle(inode, file->private_data);
 	return 0;
 }
 
@@ -200,7 +217,8 @@ const struct file_operations vboxsf_reg_fops = {
 	.open = vboxsf_file_open,
 	.release = vboxsf_file_release,
 	.fsync = noop_fsync,
-	.splice_read = generic_file_splice_read,
+	.splice_read = filemap_splice_read,
+	.setlease = simple_nosetlease,
 };
 
 const struct inode_operations vboxsf_reg_iops = {
@@ -208,27 +226,21 @@ const struct inode_operations vboxsf_reg_iops = {
 	.setattr = vboxsf_setattr
 };
 
-static int vboxsf_readpage(struct file *file, struct page *page)
+static int vboxsf_read_folio(struct file *file, struct folio *folio)
 {
 	struct vboxsf_handle *sf_handle = file->private_data;
-	loff_t off = page_offset(page);
+	loff_t off = folio_pos(folio);
 	u32 nread = PAGE_SIZE;
 	u8 *buf;
 	int err;
 
-	buf = kmap(page);
+	buf = kmap_local_folio(folio, 0);
 
 	err = vboxsf_read(sf_handle->root, sf_handle->handle, off, &nread, buf);
-	if (err == 0) {
-		memset(&buf[nread], 0, PAGE_SIZE - nread);
-		flush_dcache_page(page);
-		SetPageUptodate(page);
-	} else {
-		SetPageError(page);
-	}
+	buf = folio_zero_tail(folio, nread, buf + nread);
 
-	kunmap(page);
-	unlock_page(page);
+	kunmap_local(buf);
+	folio_end_read(folio, err == 0);
 	return err;
 }
 
@@ -276,7 +288,6 @@ static int vboxsf_writepage(struct page *page, struct writeback_control *wbc)
 	kref_put(&sf_handle->refcount, vboxsf_handle_release);
 
 	if (err == 0) {
-		ClearPageError(page);
 		/* mtime changed */
 		sf_i->force_restat = 1;
 	} else {
@@ -289,23 +300,23 @@ static int vboxsf_writepage(struct page *page, struct writeback_control *wbc)
 
 static int vboxsf_write_end(struct file *file, struct address_space *mapping,
 			    loff_t pos, unsigned int len, unsigned int copied,
-			    struct page *page, void *fsdata)
+			    struct folio *folio, void *fsdata)
 {
 	struct inode *inode = mapping->host;
 	struct vboxsf_handle *sf_handle = file->private_data;
-	unsigned int from = pos & ~PAGE_MASK;
+	size_t from = offset_in_folio(folio, pos);
 	u32 nwritten = len;
 	u8 *buf;
 	int err;
 
-	/* zero the stale part of the page if we did a short copy */
-	if (!PageUptodate(page) && copied < len)
-		zero_user(page, from + copied, len - copied);
+	/* zero the stale part of the folio if we did a short copy */
+	if (!folio_test_uptodate(folio) && copied < len)
+		folio_zero_range(folio, from + copied, len - copied);
 
-	buf = kmap(page);
+	buf = kmap(&folio->page);
 	err = vboxsf_write(sf_handle->root, sf_handle->handle,
 			   pos, &nwritten, buf + from);
-	kunmap(page);
+	kunmap(&folio->page);
 
 	if (err) {
 		nwritten = 0;
@@ -315,16 +326,16 @@ static int vboxsf_write_end(struct file *file, struct address_space *mapping,
 	/* mtime changed */
 	VBOXSF_I(inode)->force_restat = 1;
 
-	if (!PageUptodate(page) && nwritten == PAGE_SIZE)
-		SetPageUptodate(page);
+	if (!folio_test_uptodate(folio) && nwritten == folio_size(folio))
+		folio_mark_uptodate(folio);
 
 	pos += nwritten;
 	if (pos > inode->i_size)
 		i_size_write(inode, pos);
 
 out:
-	unlock_page(page);
-	put_page(page);
+	folio_unlock(folio);
+	folio_put(folio);
 
 	return nwritten;
 }
@@ -332,12 +343,12 @@ out:
 /*
  * Note simple_write_begin does not read the page from disk on partial writes
  * this is ok since vboxsf_write_end only writes the written parts of the
- * page and it does not call SetPageUptodate for partial writes.
+ * page and it does not call folio_mark_uptodate for partial writes.
  */
 const struct address_space_operations vboxsf_reg_aops = {
-	.readpage = vboxsf_readpage,
+	.read_folio = vboxsf_read_folio,
 	.writepage = vboxsf_writepage,
-	.set_page_dirty = __set_page_dirty_nobuffers,
+	.dirty_folio = filemap_dirty_folio,
 	.write_begin = simple_write_begin,
 	.write_end = vboxsf_write_end,
 };

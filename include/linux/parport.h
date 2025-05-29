@@ -40,10 +40,6 @@ struct amiga_parport_state {
        unsigned char statusdir;/* ciab.ddrb & 7 */
 };
 
-struct ax88796_parport_state {
-	unsigned char cpr;
-};
-
 struct ip32_parport_state {
 	unsigned int dcr;
 	unsigned int ecr;
@@ -55,7 +51,6 @@ struct parport_state {
 		/* ARC has no state. */
 		struct ax_parport_state ax;
 		struct amiga_parport_state amiga;
-		struct ax88796_parport_state ax88796;
 		/* Atari has not state. */
 		struct ip32_parport_state ip32;
 		void *misc; 
@@ -257,13 +252,10 @@ struct parport {
 
 struct parport_driver {
 	const char *name;
-	void (*attach) (struct parport *);
 	void (*detach) (struct parport *);
 	void (*match_port)(struct parport *);
 	int (*probe)(struct pardevice *);
 	struct device_driver driver;
-	bool devmodel;
-	struct list_head list;
 };
 
 #define to_parport_driver(n) container_of(n, struct parport_driver, driver)
@@ -297,12 +289,50 @@ int __must_check __parport_register_driver(struct parport_driver *,
  * parport_register_driver must be a macro so that KBUILD_MODNAME can
  * be expanded
  */
+
+/**
+ *	parport_register_driver - register a parallel port device driver
+ *	@driver: structure describing the driver
+ *
+ *	This can be called by a parallel port device driver in order
+ *	to receive notifications about ports being found in the
+ *	system, as well as ports no longer available.
+ *
+ *	The @driver structure is allocated by the caller and must not be
+ *	deallocated until after calling parport_unregister_driver().
+ *
+ *	If using the non device model:
+ *	The driver's attach() function may block.  The port that
+ *	attach() is given will be valid for the duration of the
+ *	callback, but if the driver wants to take a copy of the
+ *	pointer it must call parport_get_port() to do so.  Calling
+ *	parport_register_device() on that port will do this for you.
+ *
+ *	The driver's detach() function may block.  The port that
+ *	detach() is given will be valid for the duration of the
+ *	callback, but if the driver wants to take a copy of the
+ *	pointer it must call parport_get_port() to do so.
+ *
+ *
+ *	Returns 0 on success. The non device model will always succeeds.
+ *	but the new device model can fail and will return the error code.
+ **/
 #define parport_register_driver(driver)             \
 	__parport_register_driver(driver, THIS_MODULE, KBUILD_MODNAME)
 
 /* Unregister a high-level driver. */
-extern void parport_unregister_driver (struct parport_driver *);
 void parport_unregister_driver(struct parport_driver *);
+
+/**
+ * module_parport_driver() - Helper macro for registering a modular parport driver
+ * @__parport_driver: struct parport_driver to be used
+ *
+ * Helper macro for parport drivers which do not do anything special in module
+ * init and exit. This eliminates a lot of boilerplate. Each module may only
+ * use this macro once, and calling it replaces module_init() and module_exit().
+ */
+#define module_parport_driver(__parport_driver) \
+	module_driver(__parport_driver, parport_register_driver, parport_unregister_driver)
 
 /* If parport_register_driver doesn't fit your needs, perhaps
  * parport_find_xxx does. */
@@ -478,7 +508,7 @@ extern int parport_device_proc_register(struct pardevice *device);
 extern int parport_device_proc_unregister(struct pardevice *device);
 
 /* If PC hardware is the only type supported, we can optimise a bit.  */
-#if !defined(CONFIG_PARPORT_NOT_PC)
+#if !defined(CONFIG_PARPORT_NOT_PC) && defined(CONFIG_PARPORT_PC)
 
 #include <linux/parport_pc.h>
 #define parport_write_data(p,x)            parport_pc_write_data(p,x)

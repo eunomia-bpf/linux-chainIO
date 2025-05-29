@@ -8,6 +8,7 @@
  *
  */
 
+#include <linux/export.h>
 #include <linux/sys.h>
 #include <asm/unistd.h>
 #include <asm/errno.h>
@@ -22,49 +23,9 @@
 #include <asm/processor.h>
 #include <asm/bug.h>
 #include <asm/ptrace.h>
-#include <asm/export.h>
 #include <asm/feature-fixups.h>
 
 	.text
-
-/*
- * We store the saved ksp_limit in the unused part
- * of the STACK_FRAME_OVERHEAD
- */
-_GLOBAL(call_do_softirq)
-	mflr	r0
-	stw	r0,4(r1)
-	lwz	r10,THREAD+KSP_LIMIT(r2)
-	stw	r3, THREAD+KSP_LIMIT(r2)
-	stwu	r1,THREAD_SIZE-STACK_FRAME_OVERHEAD(r3)
-	mr	r1,r3
-	stw	r10,8(r1)
-	bl	__do_softirq
-	lwz	r10,8(r1)
-	lwz	r1,0(r1)
-	lwz	r0,4(r1)
-	stw	r10,THREAD+KSP_LIMIT(r2)
-	mtlr	r0
-	blr
-
-/*
- * void call_do_irq(struct pt_regs *regs, void *sp);
- */
-_GLOBAL(call_do_irq)
-	mflr	r0
-	stw	r0,4(r1)
-	lwz	r10,THREAD+KSP_LIMIT(r2)
-	stw	r4, THREAD+KSP_LIMIT(r2)
-	stwu	r1,THREAD_SIZE-STACK_FRAME_OVERHEAD(r4)
-	mr	r1,r4
-	stw	r10,8(r1)
-	bl	__do_irq
-	lwz	r10,8(r1)
-	lwz	r1,0(r1)
-	lwz	r0,4(r1)
-	stw	r10,THREAD+KSP_LIMIT(r2)
-	mtlr	r0
-	blr
 
 /*
  * This returns the high 64 bits of the product of two 64-bit numbers.
@@ -106,7 +67,7 @@ _GLOBAL(reloc_got2)
 	srwi.	r8,r8,2
 	beqlr
 	mtctr	r8
-	bl	1f
+	bcl	20,31,$+4
 1:	mflr	r0
 	lis	r4,1b@ha
 	addi	r4,r4,1b@l
@@ -215,46 +176,6 @@ _GLOBAL(low_choose_7447a_dfs)
 
 #endif /* CONFIG_CPU_FREQ_PMAC && CONFIG_PPC_BOOK3S_32 */
 
-#ifdef CONFIG_40x
-
-/*
- * Do an IO access in real mode
- */
-_GLOBAL(real_readb)
-	mfmsr	r7
-	rlwinm	r0,r7,0,~MSR_DR
-	sync
-	mtmsr	r0
-	sync
-	isync
-	lbz	r3,0(r3)
-	sync
-	mtmsr	r7
-	sync
-	isync
-	blr
-_ASM_NOKPROBE_SYMBOL(real_readb)
-
-	/*
- * Do an IO access in real mode
- */
-_GLOBAL(real_writeb)
-	mfmsr	r7
-	rlwinm	r0,r7,0,~MSR_DR
-	sync
-	mtmsr	r0
-	sync
-	isync
-	stb	r3,0(r4)
-	sync
-	mtmsr	r7
-	sync
-	isync
-	blr
-_ASM_NOKPROBE_SYMBOL(real_writeb)
-
-#endif /* CONFIG_40x */
-
 /*
  * Copy a whole page.  We use the dcbz instruction on the destination
  * to reduce memory traffic (it eliminates the unnecessary reads of
@@ -276,7 +197,7 @@ _GLOBAL(copy_page)
 	addi	r3,r3,-4
 
 0:	twnei	r5, 0	/* WARN if r3 is not cache aligned */
-	EMIT_BUG_ENTRY 0b,__FILE__,__LINE__, BUGFLAG_WARNING
+	EMIT_WARN_ENTRY 0b,__FILE__,__LINE__, BUGFLAG_WARNING
 
 	addi	r4,r4,-4
 
@@ -421,15 +342,9 @@ EXPORT_SYMBOL(__bswapdi2)
 _GLOBAL(start_secondary_resume)
 	/* Reset stack */
 	rlwinm	r1, r1, 0, 0, 31 - THREAD_SHIFT
-	addi	r1,r1,THREAD_SIZE-STACK_FRAME_OVERHEAD
+	addi	r1,r1,THREAD_SIZE-STACK_FRAME_MIN_SIZE
 	li	r3,0
 	stw	r3,0(r1)		/* Zero the stack frame pointer	*/
 	bl	start_secondary
 	b	.
 #endif /* CONFIG_SMP */
-	
-/*
- * This routine is just here to keep GCC happy - sigh...
- */
-_GLOBAL(__main)
-	blr

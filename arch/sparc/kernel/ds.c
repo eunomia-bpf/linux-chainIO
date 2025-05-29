@@ -33,7 +33,7 @@
 
 static char version[] =
 	DRV_MODULE_NAME ".c:v" DRV_MODULE_VERSION " (" DRV_MODULE_RELDATE ")\n";
-MODULE_AUTHOR("David S. Miller (davem@davemloft.net)");
+MODULE_AUTHOR("David S. Miller <davem@davemloft.net>");
 MODULE_DESCRIPTION("Sun LDOM domain services driver");
 MODULE_LICENSE("GPL");
 MODULE_VERSION(DRV_MODULE_VERSION);
@@ -1236,11 +1236,6 @@ out_err:
 	return err;
 }
 
-static int ds_remove(struct vio_dev *vdev)
-{
-	return 0;
-}
-
 static const struct vio_device_id ds_match[] = {
 	{
 		.type = "domain-services-port",
@@ -1251,7 +1246,6 @@ static const struct vio_device_id ds_match[] = {
 static struct vio_driver ds_driver = {
 	.id_table	= ds_match,
 	.probe		= ds_probe,
-	.remove		= ds_remove,
 	.name		= "ds",
 };
 

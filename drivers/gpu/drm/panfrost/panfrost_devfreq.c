@@ -4,6 +4,7 @@
 #include <linux/clk.h>
 #include <linux/devfreq.h>
 #include <linux/devfreq_cooling.h>
+#include <linux/nvmem-consumer.h>
 #include <linux/platform_device.h>
 #include <linux/pm_opp.h>
 
@@ -28,6 +29,7 @@ static void panfrost_devfreq_update_utilization(struct panfrost_devfreq *pfdevfr
 static int panfrost_devfreq_target(struct device *dev, unsigned long *freq,
 				   u32 flags)
 {
+	struct panfrost_device *ptdev = dev_get_drvdata(dev);
 	struct dev_pm_opp *opp;
 	int err;
 
@@ -37,10 +39,10 @@ static int panfrost_devfreq_target(struct device *dev, unsigned long *freq,
 	dev_pm_opp_put(opp);
 
 	err = dev_pm_opp_set_rate(dev, *freq);
-	if (err)
-		return err;
+	if (!err)
+		ptdev->pfdevfreq.current_frequency = *freq;
 
-	return 0;
+	return err;
 }
 
 static void panfrost_devfreq_reset(struct panfrost_devfreq *pfdevfreq)
@@ -81,10 +83,36 @@ static int panfrost_devfreq_get_dev_status(struct device *dev,
 }
 
 static struct devfreq_dev_profile panfrost_devfreq_profile = {
+	.timer = DEVFREQ_TIMER_DELAYED,
 	.polling_ms = 50, /* ~3 frames */
 	.target = panfrost_devfreq_target,
 	.get_dev_status = panfrost_devfreq_get_dev_status,
 };
+
+static int panfrost_read_speedbin(struct device *dev)
+{
+	u32 val;
+	int ret;
+
+	ret = nvmem_cell_read_variable_le_u32(dev, "speed-bin", &val);
+	if (ret) {
+		/*
+		 * -ENOENT means that this platform doesn't support speedbins
+		 * as it didn't declare any speed-bin nvmem: in this case, we
+		 * keep going without it; any other error means that we are
+		 * supposed to read the bin value, but we failed doing so.
+		 */
+		if (ret != -ENOENT && ret != -EOPNOTSUPP) {
+			DRM_DEV_ERROR(dev, "Cannot read speed-bin (%d).", ret);
+			return ret;
+		}
+
+		return 0;
+	}
+	DRM_DEV_DEBUG(dev, "Using speed-bin = 0x%x\n", val);
+
+	return devm_pm_opp_set_supported_hw(dev, &val, 1);
+}
 
 int panfrost_devfreq_init(struct panfrost_device *pfdev)
 {
@@ -93,29 +121,39 @@ int panfrost_devfreq_init(struct panfrost_device *pfdev)
 	unsigned long cur_freq;
 	struct device *dev = &pfdev->pdev->dev;
 	struct devfreq *devfreq;
-	struct opp_table *opp_table;
 	struct thermal_cooling_device *cooling;
 	struct panfrost_devfreq *pfdevfreq = &pfdev->pfdevfreq;
+	unsigned long freq = ULONG_MAX;
 
-	opp_table = dev_pm_opp_set_regulators(dev, pfdev->comp->supply_names,
-					      pfdev->comp->num_supplies);
-	if (IS_ERR(opp_table)) {
-		ret = PTR_ERR(opp_table);
-		/* Continue if the optional regulator is missing */
-		if (ret != -ENODEV) {
-			DRM_DEV_ERROR(dev, "Couldn't set OPP regulators\n");
-			goto err_fini;
-		}
-	} else {
-		pfdevfreq->regulators_opp_table = opp_table;
+	if (pfdev->comp->num_supplies > 1) {
+		/*
+		 * GPUs with more than 1 supply require platform-specific handling:
+		 * continue without devfreq
+		 */
+		DRM_DEV_INFO(dev, "More than 1 supply is not supported yet\n");
+		return 0;
 	}
 
-	ret = dev_pm_opp_of_add_table(dev);
+	ret = panfrost_read_speedbin(dev);
+	if (ret)
+		return ret;
+
+	ret = devm_pm_opp_set_regulators(dev, pfdev->comp->supply_names);
+	if (ret) {
+		/* Continue if the optional regulator is missing */
+		if (ret != -ENODEV) {
+			if (ret != -EPROBE_DEFER)
+				DRM_DEV_ERROR(dev, "Couldn't set OPP regulators\n");
+			return ret;
+		}
+	}
+
+	ret = devm_pm_opp_of_add_table(dev);
 	if (ret) {
 		/* Optional, continue without devfreq */
 		if (ret == -ENODEV)
 			ret = 0;
-		goto err_fini;
+		return ret;
 	}
 	pfdevfreq->opp_of_table_added = true;
 
@@ -126,34 +164,61 @@ int panfrost_devfreq_init(struct panfrost_device *pfdev)
 	cur_freq = clk_get_rate(pfdev->clock);
 
 	opp = devfreq_recommended_opp(dev, &cur_freq, 0);
-	if (IS_ERR(opp)) {
-		ret = PTR_ERR(opp);
-		goto err_fini;
-	}
+	if (IS_ERR(opp))
+		return PTR_ERR(opp);
 
 	panfrost_devfreq_profile.initial_freq = cur_freq;
+
+	/*
+	 * We could wait until panfrost_devfreq_target() to set this value, but
+	 * since the simple_ondemand governor works asynchronously, there's a
+	 * chance by the time someone opens the device's fdinfo file, current
+	 * frequency hasn't been updated yet, so let's just do an early set.
+	 */
+	pfdevfreq->current_frequency = cur_freq;
+
+	/*
+	 * Set the recommend OPP this will enable and configure the regulator
+	 * if any and will avoid a switch off by regulator_late_cleanup()
+	 */
+	ret = dev_pm_opp_set_opp(dev, opp);
+	dev_pm_opp_put(opp);
+	if (ret) {
+		DRM_DEV_ERROR(dev, "Couldn't set recommended OPP\n");
+		return ret;
+	}
+
+	/* Find the fastest defined rate  */
+	opp = dev_pm_opp_find_freq_floor(dev, &freq);
+	if (IS_ERR(opp))
+		return PTR_ERR(opp);
+	pfdevfreq->fast_rate = freq;
+
 	dev_pm_opp_put(opp);
 
+	/*
+	 * Setup default thresholds for the simple_ondemand governor.
+	 * The values are chosen based on experiments.
+	 */
+	pfdevfreq->gov_data.upthreshold = 45;
+	pfdevfreq->gov_data.downdifferential = 5;
+
 	devfreq = devm_devfreq_add_device(dev, &panfrost_devfreq_profile,
-					  DEVFREQ_GOV_SIMPLE_ONDEMAND, NULL);
+					  DEVFREQ_GOV_SIMPLE_ONDEMAND,
+					  &pfdevfreq->gov_data);
 	if (IS_ERR(devfreq)) {
 		DRM_DEV_ERROR(dev, "Couldn't initialize GPU devfreq\n");
-		ret = PTR_ERR(devfreq);
-		goto err_fini;
+		return PTR_ERR(devfreq);
 	}
 	pfdevfreq->devfreq = devfreq;
 
-	cooling = of_devfreq_cooling_register(dev->of_node, devfreq);
+	cooling = devfreq_cooling_em_register(devfreq, NULL);
 	if (IS_ERR(cooling))
 		DRM_DEV_INFO(dev, "Failed to register cooling device\n");
 	else
 		pfdevfreq->cooling = cooling;
 
 	return 0;
-
-err_fini:
-	panfrost_devfreq_fini(pfdev);
-	return ret;
 }
 
 void panfrost_devfreq_fini(struct panfrost_device *pfdev)
@@ -163,16 +228,6 @@ void panfrost_devfreq_fini(struct panfrost_device *pfdev)
 	if (pfdevfreq->cooling) {
 		devfreq_cooling_unregister(pfdevfreq->cooling);
 		pfdevfreq->cooling = NULL;
-	}
-
-	if (pfdevfreq->opp_of_table_added) {
-		dev_pm_opp_of_remove_table(&pfdev->pdev->dev);
-		pfdevfreq->opp_of_table_added = false;
-	}
-
-	if (pfdevfreq->regulators_opp_table) {
-		dev_pm_opp_put_regulators(pfdevfreq->regulators_opp_table);
-		pfdevfreq->regulators_opp_table = NULL;
 	}
 }
 

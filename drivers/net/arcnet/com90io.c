@@ -252,7 +252,7 @@ static int __init com90io_found(struct net_device *dev)
 
 	/* get and check the station ID from offset 1 in shmem */
 
-	dev->dev_addr[0] = get_buffer_byte(dev, 1);
+	arcnet_set_addr(dev, get_buffer_byte(dev, 1));
 
 	err = register_netdev(dev);
 	if (err) {
@@ -350,6 +350,7 @@ static char device[9];		/* use eg. device=arc1 to change name */
 module_param_hw(io, int, ioport, 0);
 module_param_hw(irq, int, irq, 0);
 module_param_string(device, device, sizeof(device), 0);
+MODULE_DESCRIPTION("ARCnet COM90xx IO mapped chipset driver");
 MODULE_LICENSE("GPL");
 
 #ifndef MODULE
@@ -396,7 +397,7 @@ static int __init com90io_init(void)
 	err = com90io_probe(dev);
 
 	if (err) {
-		free_netdev(dev);
+		free_arcdev(dev);
 		return err;
 	}
 
@@ -419,7 +420,7 @@ static void __exit com90io_exit(void)
 
 	free_irq(dev->irq, dev);
 	release_region(dev->base_addr, ARCNET_TOTAL_SIZE);
-	free_netdev(dev);
+	free_arcdev(dev);
 }
 
 module_init(com90io_init)

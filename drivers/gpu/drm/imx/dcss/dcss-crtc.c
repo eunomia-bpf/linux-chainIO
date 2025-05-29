@@ -3,6 +3,7 @@
  * Copyright 2019 NXP.
  */
 
+#include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_vblank.h>
 #include <linux/platform_device.h>
@@ -52,13 +53,13 @@ static const struct drm_crtc_funcs dcss_crtc_funcs = {
 };
 
 static void dcss_crtc_atomic_begin(struct drm_crtc *crtc,
-				   struct drm_crtc_state *old_crtc_state)
+				   struct drm_atomic_state *state)
 {
 	drm_crtc_vblank_on(crtc);
 }
 
 static void dcss_crtc_atomic_flush(struct drm_crtc *crtc,
-				   struct drm_crtc_state *old_crtc_state)
+				   struct drm_atomic_state *state)
 {
 	struct dcss_crtc *dcss_crtc = container_of(crtc, struct dcss_crtc,
 						   base);
@@ -77,8 +78,10 @@ static void dcss_crtc_atomic_flush(struct drm_crtc *crtc,
 }
 
 static void dcss_crtc_atomic_enable(struct drm_crtc *crtc,
-				    struct drm_crtc_state *old_crtc_state)
+				    struct drm_atomic_state *state)
 {
+	struct drm_crtc_state *old_crtc_state = drm_atomic_get_old_crtc_state(state,
+									      crtc);
 	struct dcss_crtc *dcss_crtc = container_of(crtc, struct dcss_crtc,
 						   base);
 	struct dcss_dev *dcss = dcss_crtc->base.dev->dev_private;
@@ -111,8 +114,10 @@ static void dcss_crtc_atomic_enable(struct drm_crtc *crtc,
 }
 
 static void dcss_crtc_atomic_disable(struct drm_crtc *crtc,
-				     struct drm_crtc_state *old_crtc_state)
+				     struct drm_atomic_state *state)
 {
+	struct drm_crtc_state *old_crtc_state = drm_atomic_get_old_crtc_state(state,
+									      crtc);
 	struct dcss_crtc *dcss_crtc = container_of(crtc, struct dcss_crtc,
 						   base);
 	struct dcss_dev *dcss = dcss_crtc->base.dev->dev_private;
@@ -201,14 +206,12 @@ int dcss_crtc_init(struct dcss_crtc *crtc, struct drm_device *drm)
 	if (crtc->irq < 0)
 		return crtc->irq;
 
-	ret = request_irq(crtc->irq, dcss_crtc_irq_handler,
-			  0, "dcss_drm", crtc);
+	ret = request_irq(crtc->irq, dcss_crtc_irq_handler, IRQF_NO_AUTOEN,
+			  "dcss_drm", crtc);
 	if (ret) {
 		dev_err(dcss->dev, "irq request failed with %d.\n", ret);
 		return ret;
 	}
-
-	disable_irq(crtc->irq);
 
 	return 0;
 }

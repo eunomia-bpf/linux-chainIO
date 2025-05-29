@@ -15,7 +15,8 @@
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/of_platform.h>
+#include <linux/of.h>
+#include <linux/platform_device.h>
 #include <linux/poll.h>
 #include <linux/slab.h>
 #include <linux/clk.h>
@@ -636,7 +637,7 @@ static int xsdfec_table_write(struct xsdfec_dev *xsdfec, u32 offset,
 	}
 
 	for (i = 0; i < nr_pages; i++) {
-		addr = kmap(pages[i]);
+		addr = kmap_local_page(pages[i]);
 		do {
 			xsdfec_regwrite(xsdfec,
 					base_addr + ((offset + reg) *
@@ -645,6 +646,7 @@ static int xsdfec_table_write(struct xsdfec_dev *xsdfec, u32 offset,
 			reg++;
 		} while ((reg < len) &&
 			 ((reg * XSDFEC_REG_WIDTH_JUMP) % PAGE_SIZE));
+		kunmap_local(addr);
 		unpin_user_page(pages[i]);
 	}
 	return 0;
@@ -854,16 +856,6 @@ static int xsdfec_cfg_axi_streams(struct xsdfec_dev *xsdfec)
 	return 0;
 }
 
-static int xsdfec_dev_open(struct inode *iptr, struct file *fptr)
-{
-	return 0;
-}
-
-static int xsdfec_dev_release(struct inode *iptr, struct file *fptr)
-{
-	return 0;
-}
-
 static int xsdfec_start(struct xsdfec_dev *xsdfec)
 {
 	u32 regread;
@@ -944,8 +936,8 @@ static long xsdfec_dev_ioctl(struct file *fptr, unsigned int cmd,
 			     unsigned long data)
 {
 	struct xsdfec_dev *xsdfec;
-	void __user *arg = NULL;
-	int rval = -EINVAL;
+	void __user *arg = (void __user *)data;
+	int rval;
 
 	xsdfec = container_of(fptr->private_data, struct xsdfec_dev, miscdev);
 
@@ -954,16 +946,6 @@ static long xsdfec_dev_ioctl(struct file *fptr, unsigned int cmd,
 	    (cmd != XSDFEC_SET_DEFAULT_CONFIG && cmd != XSDFEC_GET_STATUS &&
 	     cmd != XSDFEC_GET_STATS && cmd != XSDFEC_CLEAR_STATS)) {
 		return -EPERM;
-	}
-
-	if (_IOC_TYPE(cmd) != XSDFEC_MAGIC)
-		return -ENOTTY;
-
-	/* check if ioctl argument is present and valid */
-	if (_IOC_DIR(cmd) != _IOC_NONE) {
-		arg = (void __user *)data;
-		if (!arg)
-			return rval;
 	}
 
 	switch (cmd) {
@@ -1010,19 +992,11 @@ static long xsdfec_dev_ioctl(struct file *fptr, unsigned int cmd,
 		rval = xsdfec_is_active(xsdfec, (bool __user *)arg);
 		break;
 	default:
-		/* Should not get here */
+		rval = -ENOTTY;
 		break;
 	}
 	return rval;
 }
-
-#ifdef CONFIG_COMPAT
-static long xsdfec_dev_compat_ioctl(struct file *file, unsigned int cmd,
-				    unsigned long data)
-{
-	return xsdfec_dev_ioctl(file, cmd, (unsigned long)compat_ptr(data));
-}
-#endif
 
 static __poll_t xsdfec_poll(struct file *file, poll_table *wait)
 {
@@ -1030,9 +1004,6 @@ static __poll_t xsdfec_poll(struct file *file, poll_table *wait)
 	struct xsdfec_dev *xsdfec;
 
 	xsdfec = container_of(file->private_data, struct xsdfec_dev, miscdev);
-
-	if (!xsdfec)
-		return EPOLLNVAL | EPOLLHUP;
 
 	poll_wait(file, &xsdfec->waitq, wait);
 
@@ -1050,13 +1021,9 @@ static __poll_t xsdfec_poll(struct file *file, poll_table *wait)
 
 static const struct file_operations xsdfec_fops = {
 	.owner = THIS_MODULE,
-	.open = xsdfec_dev_open,
-	.release = xsdfec_dev_release,
 	.unlocked_ioctl = xsdfec_dev_ioctl,
 	.poll = xsdfec_poll,
-#ifdef CONFIG_COMPAT
-	.compat_ioctl = xsdfec_dev_compat_ioctl,
-#endif
+	.compat_ioctl = compat_ptr_ioctl,
 };
 
 static int xsdfec_parse_of(struct xsdfec_dev *xsdfec)
@@ -1381,7 +1348,6 @@ static int xsdfec_probe(struct platform_device *pdev)
 {
 	struct xsdfec_dev *xsdfec;
 	struct device *dev;
-	struct resource *res;
 	int err;
 	bool irq_enabled = true;
 
@@ -1397,8 +1363,7 @@ static int xsdfec_probe(struct platform_device *pdev)
 		return err;
 
 	dev = xsdfec->dev;
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	xsdfec->regs = devm_ioremap_resource(dev, res);
+	xsdfec->regs = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(xsdfec->regs)) {
 		err = PTR_ERR(xsdfec->regs);
 		goto err_xsdfec_dev;
@@ -1455,7 +1420,7 @@ err_xsdfec_dev:
 	return err;
 }
 
-static int xsdfec_remove(struct platform_device *pdev)
+static void xsdfec_remove(struct platform_device *pdev)
 {
 	struct xsdfec_dev *xsdfec;
 
@@ -1463,7 +1428,6 @@ static int xsdfec_remove(struct platform_device *pdev)
 	misc_deregister(&xsdfec->miscdev);
 	ida_free(&dev_nrs, xsdfec->dev_id);
 	xsdfec_disable_all_clks(&xsdfec->clks);
-	return 0;
 }
 
 static const struct of_device_id xsdfec_of_match[] = {
@@ -1480,7 +1444,7 @@ static struct platform_driver xsdfec_driver = {
 		.of_match_table = xsdfec_of_match,
 	},
 	.probe = xsdfec_probe,
-	.remove =  xsdfec_remove,
+	.remove_new =  xsdfec_remove,
 };
 
 module_platform_driver(xsdfec_driver);

@@ -1,23 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * NXP Wireless LAN device driver: commands and events
  *
  * Copyright 2011-2020 NXP
- *
- * This software file (the "File") is distributed by NXP
- * under the terms of the GNU General Public License Version 2, June 1991
- * (the "License").  You may use, redistribute and/or modify this File in
- * accordance with the terms and conditions of the License, a copy of which
- * is available by writing to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA or on the
- * worldwide web at http://www.gnu.org/licenses/old-licenses/gpl-2.0.txt.
- *
- * THE FILE IS DISTRIBUTED AS-IS, WITHOUT WARRANTY OF ANY KIND, AND THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE
- * ARE EXPRESSLY DISCLAIMED.  The License provides additional details about
- * this warranty disclaimer.
  */
 
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include "decl.h"
 #include "ioctl.h"
 #include "util.h"
@@ -187,7 +175,7 @@ static int mwifiex_dnld_cmd_to_fw(struct mwifiex_private *priv,
 	host_cmd = (struct host_cmd_ds_command *) (cmd_node->cmd_skb->data);
 
 	/* Sanity test */
-	if (host_cmd == NULL || host_cmd->size == 0) {
+	if (host_cmd->size == 0) {
 		mwifiex_dbg(adapter, ERROR,
 			    "DNLD_CMD: host_cmd is null\t"
 			    "or cmd size is 0, not sending\n");
@@ -494,7 +482,7 @@ int mwifiex_process_event(struct mwifiex_adapter *adapter)
 	if ((adapter->event_cause & EVENT_ID_MASK) == EVENT_RADAR_DETECTED) {
 		for (i = 0; i < adapter->priv_num; i++) {
 			priv = adapter->priv[i];
-			if (priv && mwifiex_is_11h_active(priv)) {
+			if (mwifiex_is_11h_active(priv)) {
 				adapter->event_cause |=
 					((priv->bss_num & 0xff) << 16) |
 					((priv->bss_type & 0xff) << 24);
@@ -608,6 +596,11 @@ int mwifiex_send_cmd(struct mwifiex_private *priv, u16 cmd_no,
 		return -1;
 	}
 
+	if (priv->adapter->hs_activated_manually &&
+	    cmd_no != HostCmd_CMD_802_11_HS_CFG_ENH) {
+		mwifiex_cancel_hs(priv, MWIFIEX_ASYNC_CMD);
+		priv->adapter->hs_activated_manually = false;
+	}
 
 	/* Get a new command node */
 	cmd_node = mwifiex_get_cmd_node(adapter);
@@ -642,6 +635,8 @@ int mwifiex_send_cmd(struct mwifiex_private *priv, u16 cmd_no,
 		case HostCmd_CMD_UAP_STA_DEAUTH:
 		case HOST_CMD_APCMD_SYS_RESET:
 		case HOST_CMD_APCMD_STA_LIST:
+		case HostCmd_CMD_CHAN_REPORT_REQUEST:
+		case HostCmd_CMD_ADD_NEW_STATION:
 			ret = mwifiex_uap_prepare_cmd(priv, cmd_no, cmd_action,
 						      cmd_oid, data_buf,
 						      cmd_ptr);
@@ -712,6 +707,15 @@ mwifiex_insert_cmd_to_pending_q(struct mwifiex_adapter *adapter,
 			if (adapter->ps_state != PS_STATE_AWAKE)
 				add_tail = false;
 		}
+	}
+
+	/* Same with exit host sleep cmd, luckily that can't happen at the same time as EXIT_PS */
+	if (command == HostCmd_CMD_802_11_HS_CFG_ENH) {
+		struct host_cmd_ds_802_11_hs_cfg_enh *hs_cfg =
+			&host_cmd->params.opt_hs_cfg;
+
+		if (le16_to_cpu(hs_cfg->action) == HS_ACTIVATE)
+				add_tail = false;
 	}
 
 	spin_lock_bh(&adapter->cmd_pending_q_lock);
@@ -920,6 +924,26 @@ int mwifiex_process_cmdresp(struct mwifiex_adapter *adapter)
 	}
 
 	return ret;
+}
+
+void mwifiex_process_assoc_resp(struct mwifiex_adapter *adapter)
+{
+	struct cfg80211_rx_assoc_resp_data assoc_resp = {
+		.uapsd_queues = -1,
+	};
+	struct mwifiex_private *priv =
+		mwifiex_get_priv(adapter, MWIFIEX_BSS_ROLE_STA);
+
+	if (priv->assoc_rsp_size) {
+		assoc_resp.links[0].bss = priv->req_bss;
+		assoc_resp.buf = priv->assoc_rsp_buf;
+		assoc_resp.len = priv->assoc_rsp_size;
+		wiphy_lock(priv->wdev.wiphy);
+		cfg80211_rx_assoc_resp(priv->netdev,
+				       &assoc_resp);
+		wiphy_unlock(priv->wdev.wiphy);
+		priv->assoc_rsp_size = 0;
+	}
 }
 
 /*
@@ -1216,6 +1240,13 @@ mwifiex_process_hs_config(struct mwifiex_adapter *adapter)
 		    __func__);
 
 	adapter->if_ops.wakeup(adapter);
+
+	if (adapter->hs_activated_manually) {
+		mwifiex_cancel_hs(mwifiex_get_priv (adapter, MWIFIEX_BSS_ROLE_ANY),
+				  MWIFIEX_ASYNC_CMD);
+		adapter->hs_activated_manually = false;
+	}
+
 	adapter->hs_activated = false;
 	clear_bit(MWIFIEX_IS_HS_CONFIGURED, &adapter->work_flags);
 	clear_bit(MWIFIEX_IS_SUSPENDED, &adapter->work_flags);
@@ -1235,8 +1266,6 @@ mwifiex_process_sleep_confirm_resp(struct mwifiex_adapter *adapter,
 				   u8 *pbuf, u32 upld_len)
 {
 	struct host_cmd_ds_command *cmd = (struct host_cmd_ds_command *) pbuf;
-	struct mwifiex_private *priv =
-		mwifiex_get_priv(adapter, MWIFIEX_BSS_ROLE_ANY);
 	uint16_t result = le16_to_cpu(cmd->result);
 	uint16_t command = le16_to_cpu(cmd->command);
 	uint16_t seq_num = le16_to_cpu(cmd->seq_num);
@@ -1250,12 +1279,6 @@ mwifiex_process_sleep_confirm_resp(struct mwifiex_adapter *adapter,
 	mwifiex_dbg(adapter, CMD,
 		    "cmd: CMD_RESP: 0x%x, result %d, len %d, seqno 0x%x\n",
 		    command, result, le16_to_cpu(cmd->size), seq_num);
-
-	/* Get BSS number and corresponding priv */
-	priv = mwifiex_get_priv_by_id(adapter, HostCmd_GET_BSS_NO(seq_num),
-				      HostCmd_GET_BSS_TYPE(seq_num));
-	if (!priv)
-		priv = mwifiex_get_priv(adapter, MWIFIEX_BSS_ROLE_ANY);
 
 	/* Update sequence number */
 	seq_num = HostCmd_GET_SEQ_NO(seq_num);
@@ -1598,6 +1621,11 @@ int mwifiex_ret_get_hw_spec(struct mwifiex_private *priv,
 						    api_rev->major_ver,
 						    api_rev->minor_ver);
 					break;
+				case FW_HOTFIX_VER_ID:
+					mwifiex_dbg(adapter, INFO,
+						    "Firmware hotfix version %d\n",
+						    api_rev->major_ver);
+					break;
 				default:
 					mwifiex_dbg(adapter, FATAL,
 						    "Unknown api_id: %d\n",
@@ -1665,6 +1693,13 @@ int mwifiex_ret_get_hw_spec(struct mwifiex_private *priv,
 
 	if (adapter->fw_api_ver == MWIFIEX_FW_V15)
 		adapter->scan_chan_gap_enabled = true;
+
+	if (adapter->key_api_major_ver != KEY_API_VER_MAJOR_V2)
+		adapter->host_mlme_enabled = false;
+
+	mwifiex_dbg(adapter, MSG, "host_mlme: %s, key_api: %d\n",
+		    adapter->host_mlme_enabled ? "enable" : "disable",
+		    adapter->key_api_major_ver);
 
 	return 0;
 }

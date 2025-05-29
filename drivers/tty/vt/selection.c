@@ -7,7 +7,7 @@
  *     'int set_selection_kernel(struct tiocl_selection *, struct tty_struct *)'
  *     'void clear_selection(void)'
  *     'int paste_selection(struct tty_struct *)'
- *     'int sel_loadlut(char __user *)'
+ *     'int sel_loadlut(u32 __user *)'
  *
  * Now that /dev/vcs exists, most of this can disappear again.
  */
@@ -33,7 +33,7 @@
 #include <linux/sched/signal.h>
 
 /* Don't take this from <ctype.h>: 011-015 on the screen aren't spaces */
-#define isspace(c)	((c) == ' ')
+#define is_space_on_vt(c)	((c) == ' ')
 
 /* FIXME: all this needs locking */
 static struct vc_selection {
@@ -68,14 +68,17 @@ sel_pos(int n, bool unicode)
 {
 	if (unicode)
 		return screen_glyph_unicode(vc_sel.cons, n / 2);
-	return inverse_translate(vc_sel.cons, screen_glyph(vc_sel.cons, n), 0);
+	return inverse_translate(vc_sel.cons, screen_glyph(vc_sel.cons, n),
+			false);
 }
 
 /**
- *	clear_selection		-	remove current selection
+ * clear_selection - remove current selection
  *
- *	Remove the current selection highlight, if any from the console
- *	holding the selection. The caller must hold the console lock.
+ * Remove the current selection highlight, if any from the console holding the
+ * selection.
+ *
+ * Locking: The caller must hold the console lock.
  */
 void clear_selection(void)
 {
@@ -87,7 +90,7 @@ void clear_selection(void)
 }
 EXPORT_SYMBOL_GPL(clear_selection);
 
-bool vc_is_sel(struct vc_data *vc)
+bool vc_is_sel(const struct vc_data *vc)
 {
 	return vc == vc_sel.cons;
 }
@@ -109,18 +112,25 @@ static inline int inword(const u32 c)
 }
 
 /**
- *	set loadlut		-	load the LUT table
- *	@p: user table
+ * sel_loadlut() - load the LUT table
+ * @lut: user table
  *
- *	Load the LUT table from user space. The caller must hold the console
- *	lock. Make a temporary copy so a partial update doesn't make a mess.
+ * Load the LUT table from user space. Make a temporary copy so a partial
+ * update doesn't make a mess.
+ *
+ * Locking: The console lock is acquired.
  */
-int sel_loadlut(char __user *p)
+int sel_loadlut(u32 __user *lut)
 {
 	u32 tmplut[ARRAY_SIZE(inwordLut)];
-	if (copy_from_user(tmplut, (u32 __user *)(p+4), sizeof(inwordLut)))
+
+	if (copy_from_user(tmplut, lut, sizeof(inwordLut)))
 		return -EFAULT;
+
+	console_lock();
 	memcpy(inwordLut, tmplut, sizeof(inwordLut));
+	console_unlock();
+
 	return 0;
 }
 
@@ -165,14 +175,14 @@ static int store_utf8(u32 c, char *p)
 }
 
 /**
- *	set_selection_user	-	set the current selection.
- *	@sel: user selection info
- *	@tty: the console tty
+ * set_selection_user - set the current selection.
+ * @sel: user selection info
+ * @tty: the console tty
  *
- *	Invoked by the ioctl handle for the vt layer.
+ * Invoked by the ioctl handle for the vt layer.
  *
- *	The entire selection process is managed under the console_lock. It's
- *	 a lot under the lock but its hardly a performance path
+ * Locking: The entire selection process is managed under the console_lock.
+ * It's a lot under the lock but its hardly a performance path.
  */
 int set_selection_user(const struct tiocl_selection __user *sel,
 		       struct tty_struct *tty)
@@ -209,7 +219,7 @@ static int vc_selection_store_chars(struct vc_data *vc, bool unicode)
 			bp += store_utf8(c, bp);
 		else
 			*bp++ = c;
-		if (!isspace(c))
+		if (!is_space_on_vt(c))
 			obp = bp;
 		if (!((i + 2) % vc->vc_size_row)) {
 			/* strip trailing blanks from line and add newline,
@@ -238,9 +248,9 @@ static int vc_do_selection(struct vc_data *vc, unsigned short mode, int ps,
 		new_sel_end = pe;
 		break;
 	case TIOCL_SELWORD:	/* word-by-word selection */
-		spc = isspace(sel_pos(ps, unicode));
+		spc = is_space_on_vt(sel_pos(ps, unicode));
 		for (new_sel_start = ps; ; ps -= 2) {
-			if ((spc && !isspace(sel_pos(ps, unicode))) ||
+			if ((spc && !is_space_on_vt(sel_pos(ps, unicode))) ||
 			    (!spc && !inword(sel_pos(ps, unicode))))
 				break;
 			new_sel_start = ps;
@@ -248,9 +258,9 @@ static int vc_do_selection(struct vc_data *vc, unsigned short mode, int ps,
 				break;
 		}
 
-		spc = isspace(sel_pos(pe, unicode));
+		spc = is_space_on_vt(sel_pos(pe, unicode));
 		for (new_sel_end = pe; ; pe += 2) {
-			if ((spc && !isspace(sel_pos(pe, unicode))) ||
+			if ((spc && !is_space_on_vt(sel_pos(pe, unicode))) ||
 			    (!spc && !inword(sel_pos(pe, unicode))))
 				break;
 			new_sel_end = pe;
@@ -276,12 +286,12 @@ static int vc_do_selection(struct vc_data *vc, unsigned short mode, int ps,
 	/* select to end of line if on trailing space */
 	if (new_sel_end > new_sel_start &&
 		!atedge(new_sel_end, vc->vc_size_row) &&
-		isspace(sel_pos(new_sel_end, unicode))) {
+		is_space_on_vt(sel_pos(new_sel_end, unicode))) {
 		for (pe = new_sel_end + 2; ; pe += 2)
-			if (!isspace(sel_pos(pe, unicode)) ||
+			if (!is_space_on_vt(sel_pos(pe, unicode)) ||
 			    atedge(pe, vc->vc_size_row))
 				break;
-		if (isspace(sel_pos(pe, unicode)))
+		if (is_space_on_vt(sel_pos(pe, unicode)))
 			new_sel_end = pe;
 	}
 	if (vc_sel.start == -1)	/* no current selection */
@@ -375,7 +385,7 @@ int paste_selection(struct tty_struct *tty)
 {
 	struct vc_data *vc = tty->driver_data;
 	int	pasted = 0;
-	unsigned int count;
+	size_t count;
 	struct  tty_ldisc *ld;
 	DECLARE_WAITQUEUE(wait, current);
 	int ret = 0;

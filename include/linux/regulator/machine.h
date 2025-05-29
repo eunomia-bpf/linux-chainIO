@@ -49,6 +49,13 @@ struct regulator;
 #define DISABLE_IN_SUSPEND	1
 #define ENABLE_IN_SUSPEND	2
 
+/*
+ * Default time window (in milliseconds) following a critical under-voltage
+ * event during which less critical actions can be safely carried out by the
+ * system.
+ */
+#define REGULATOR_DEF_UV_LESS_CRITICAL_WINDOW_MS	10
+
 /* Regulator active discharge flags */
 enum regulator_active_discharge {
 	REGULATOR_ACTIVE_DISCHARGE_DEFAULT,
@@ -83,6 +90,14 @@ struct regulator_state {
 	bool changeable;
 };
 
+#define REGULATOR_NOTIF_LIMIT_DISABLE -1
+#define REGULATOR_NOTIF_LIMIT_ENABLE -2
+struct notification_limit {
+	int prot;
+	int err;
+	int warn;
+};
+
 /**
  * struct regulation_constraints - regulator operating constraints.
  *
@@ -100,6 +115,11 @@ struct regulator_state {
  * @ilim_uA: Maximum input current.
  * @system_load: Load that isn't captured by any consumer requests.
  *
+ * @over_curr_limits:		Limits for acting on over current.
+ * @over_voltage_limits:	Limits for acting on over voltage.
+ * @under_voltage_limits:	Limits for acting on under voltage.
+ * @temp_limits:		Limits for acting on over temperature.
+ *
  * @max_spread: Max possible spread between coupled regulators
  * @max_uV_step: Max possible step change in voltage
  * @valid_modes_mask: Mask of modes which may be configured by consumers.
@@ -114,7 +134,14 @@ struct regulator_state {
  * @ramp_disable: Disable ramp delay when initialising or when setting voltage.
  * @soft_start: Enable soft start so that voltage ramps slowly.
  * @pull_down: Enable pull down when regulator is disabled.
+ * @system_critical: Set if the regulator is critical to system stability or
+ *                   functionality.
  * @over_current_protection: Auto disable on over current event.
+ *
+ * @over_current_detection: Configure over current limits.
+ * @over_voltage_detection: Configure over voltage limits.
+ * @under_voltage_detection: Configure under voltage limits.
+ * @over_temp_detection: Configure over temperature limits.
  *
  * @input_uV: Input voltage for regulator when supplied by another regulator.
  *
@@ -135,6 +162,13 @@ struct regulator_state {
  *		      regulator_active_discharge values are used for
  *		      initialisation.
  * @enable_time: Turn-on time of the rails (unit: microseconds)
+ * @uv_less_critical_window_ms: Specifies the time window (in milliseconds)
+ *                              following a critical under-voltage (UV) event
+ *                              during which less critical actions can be
+ *                              safely carried out by the system (for example
+ *                              logging). After this time window more critical
+ *                              actions should be done (for example prevent
+ *                              HW damage).
  */
 struct regulation_constraints {
 
@@ -172,6 +206,10 @@ struct regulation_constraints {
 	struct regulator_state state_disk;
 	struct regulator_state state_mem;
 	struct regulator_state state_standby;
+	struct notification_limit over_curr_limits;
+	struct notification_limit over_voltage_limits;
+	struct notification_limit under_voltage_limits;
+	struct notification_limit temp_limits;
 	suspend_state_t initial_state; /* suspend state to set at init */
 
 	/* mode to set on startup */
@@ -182,6 +220,7 @@ struct regulation_constraints {
 	unsigned int settling_time_up;
 	unsigned int settling_time_down;
 	unsigned int enable_time;
+	unsigned int uv_less_critical_window_ms;
 
 	unsigned int active_discharge;
 
@@ -192,7 +231,12 @@ struct regulation_constraints {
 	unsigned ramp_disable:1; /* disable ramp delay */
 	unsigned soft_start:1;	/* ramp voltage slowly */
 	unsigned pull_down:1;	/* pull down resistor when regulator off */
+	unsigned system_critical:1;	/* critical to system stability */
 	unsigned over_current_protection:1; /* auto disable on over current */
+	unsigned over_current_detection:1; /* notify on over current */
+	unsigned over_voltage_detection:1; /* notify on over voltage */
+	unsigned under_voltage_detection:1; /* notify on under voltage */
+	unsigned over_temp_detection:1; /* notify on over temperature */
 };
 
 /**
@@ -229,8 +273,6 @@ struct regulator_consumer_supply {
  *               be usable.
  * @num_consumer_supplies: Number of consumer device supplies.
  * @consumer_supplies: Consumer device supply configuration.
- *
- * @regulator_init: Callback invoked when the regulator has been registered.
  * @driver_data: Data passed to regulator_init.
  */
 struct regulator_init_data {
@@ -241,8 +283,7 @@ struct regulator_init_data {
 	int num_consumer_supplies;
 	struct regulator_consumer_supply *consumer_supplies;
 
-	/* optional regulator machine specific init */
-	int (*regulator_init)(void *driver_data);
+	/* optional regulator machine specific data */
 	void *driver_data;	/* core does not touch this */
 };
 

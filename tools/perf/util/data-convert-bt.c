@@ -19,9 +19,8 @@
 #include <babeltrace/ctf-writer/event-fields.h>
 #include <babeltrace/ctf-ir/utils.h>
 #include <babeltrace/ctf/events.h>
-#include <traceevent/event-parse.h>
 #include "asm/bug.h"
-#include "data-convert-bt.h"
+#include "data-convert.h"
 #include "session.h"
 #include "debug.h"
 #include "tool.h"
@@ -34,6 +33,11 @@
 #include <linux/time64.h>
 #include "util.h"
 #include "clockid.h"
+#include "util/sample.h"
+
+#ifdef HAVE_LIBTRACEEVENT
+#include <event-parse.h>
+#endif
 
 #define pr_N(n, fmt, ...) \
 	eprintf(n, debug_data_convert, fmt, ##__VA_ARGS__)
@@ -318,6 +322,8 @@ static int add_tracepoint_field_value(struct ctf_writer *cw,
 		offset = tmp_val;
 		len = offset >> 16;
 		offset &= 0xffff;
+		if (tep_field_is_relative(flags))
+			offset += fmtf->offset + fmtf->size;
 	}
 
 	if (flags & TEP_FIELD_IS_ARRAY) {
@@ -786,7 +792,7 @@ static bool is_flush_needed(struct ctf_stream *cs)
 	return cs->count >= STREAM_FLUSH_COUNT;
 }
 
-static int process_sample_event(struct perf_tool *tool,
+static int process_sample_event(const struct perf_tool *tool,
 				union perf_event *_event,
 				struct perf_sample *sample,
 				struct evsel *evsel,
@@ -865,7 +871,7 @@ do {							\
 } while(0)
 
 #define __FUNC_PROCESS_NON_SAMPLE(_name, body) 	\
-static int process_##_name##_event(struct perf_tool *tool,	\
+static int process_##_name##_event(const struct perf_tool *tool,	\
 				   union perf_event *_event,	\
 				   struct perf_sample *sample,	\
 				   struct machine *machine)	\
@@ -948,8 +954,8 @@ static char *change_name(char *name, char *orig_name, int dup)
 		goto out;
 	/*
 	 * Add '_' prefix to potential keywork.  According to
-	 * Mathieu Desnoyers (https://lkml.org/lkml/2015/1/23/652),
-	 * futher CTF spec updating may require us to use '$'.
+	 * Mathieu Desnoyers (https://lore.kernel.org/lkml/1074266107.40857.1422045946295.JavaMail.zimbra@efficios.com),
+	 * further CTF spec updating may require us to use '$'.
 	 */
 	if (dup < 0)
 		len = strlen(name) + sizeof("_");
@@ -1437,7 +1443,7 @@ static struct bt_ctf_field_type *create_int_type(int size, bool sign, bool hex)
 	    bt_ctf_field_type_integer_set_base(type, BT_CTF_INTEGER_BASE_HEXADECIMAL))
 		goto err;
 
-#if __BYTE_ORDER == __BIG_ENDIAN
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
 	bt_ctf_field_type_set_byte_order(type, BT_CTF_BYTE_ORDER_BIG_ENDIAN);
 #else
 	bt_ctf_field_type_set_byte_order(type, BT_CTF_BYTE_ORDER_LITTLE_ENDIAN);
@@ -1601,24 +1607,22 @@ int bt_convert__perf2ctf(const char *input, const char *path,
 		.mode      = PERF_DATA_MODE_READ,
 		.force     = opts->force,
 	};
-	struct convert c = {
-		.tool = {
-			.sample          = process_sample_event,
-			.mmap            = perf_event__process_mmap,
-			.mmap2           = perf_event__process_mmap2,
-			.comm            = perf_event__process_comm,
-			.exit            = perf_event__process_exit,
-			.fork            = perf_event__process_fork,
-			.lost            = perf_event__process_lost,
-			.tracing_data    = perf_event__process_tracing_data,
-			.build_id        = perf_event__process_build_id,
-			.namespaces      = perf_event__process_namespaces,
-			.ordered_events  = true,
-			.ordering_requires_timestamps = true,
-		},
-	};
+	struct convert c = {};
 	struct ctf_writer *cw = &c.writer;
 	int err;
+
+	perf_tool__init(&c.tool, /*ordered_events=*/true);
+	c.tool.sample          = process_sample_event;
+	c.tool.mmap            = perf_event__process_mmap;
+	c.tool.mmap2           = perf_event__process_mmap2;
+	c.tool.comm            = perf_event__process_comm;
+	c.tool.exit            = perf_event__process_exit;
+	c.tool.fork            = perf_event__process_fork;
+	c.tool.lost            = perf_event__process_lost;
+	c.tool.tracing_data    = perf_event__process_tracing_data;
+	c.tool.build_id        = perf_event__process_build_id;
+	c.tool.namespaces      = perf_event__process_namespaces;
+	c.tool.ordering_requires_timestamps = true;
 
 	if (opts->all) {
 		c.tool.comm = process_comm_event;
@@ -1634,7 +1638,7 @@ int bt_convert__perf2ctf(const char *input, const char *path,
 
 	err = -1;
 	/* perf.data session */
-	session = perf_session__new(&data, 0, &c.tool);
+	session = perf_session__new(&data, &c.tool);
 	if (IS_ERR(session))
 		return PTR_ERR(session);
 

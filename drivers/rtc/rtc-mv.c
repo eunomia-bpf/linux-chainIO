@@ -200,11 +200,6 @@ static irqreturn_t mv_rtc_interrupt(int irq, void *data)
 static const struct rtc_class_ops mv_rtc_ops = {
 	.read_time	= mv_rtc_read_time,
 	.set_time	= mv_rtc_set_time,
-};
-
-static const struct rtc_class_ops mv_rtc_alarm_ops = {
-	.read_time	= mv_rtc_read_time,
-	.set_time	= mv_rtc_set_time,
 	.read_alarm	= mv_rtc_read_alarm,
 	.set_alarm	= mv_rtc_set_alarm,
 	.alarm_irq_enable = mv_rtc_alarm_irq_enable,
@@ -268,17 +263,16 @@ static int __init mv_rtc_probe(struct platform_device *pdev)
 		}
 	}
 
-	if (pdata->irq >= 0) {
+	if (pdata->irq >= 0)
 		device_init_wakeup(&pdev->dev, 1);
-		pdata->rtc->ops = &mv_rtc_alarm_ops;
-	} else {
-		pdata->rtc->ops = &mv_rtc_ops;
-	}
+	else
+		clear_bit(RTC_FEATURE_ALARM, pdata->rtc->features);
 
+	pdata->rtc->ops = &mv_rtc_ops;
 	pdata->rtc->range_min = RTC_TIMESTAMP_BEGIN_2000;
 	pdata->rtc->range_max = RTC_TIMESTAMP_END_2099;
 
-	ret = rtc_register_device(pdata->rtc);
+	ret = devm_rtc_register_device(pdata->rtc);
 	if (!ret)
 		return 0;
 out:
@@ -288,7 +282,7 @@ out:
 	return ret;
 }
 
-static int __exit mv_rtc_remove(struct platform_device *pdev)
+static void __exit mv_rtc_remove(struct platform_device *pdev)
 {
 	struct rtc_plat_data *pdata = platform_get_drvdata(pdev);
 
@@ -297,8 +291,6 @@ static int __exit mv_rtc_remove(struct platform_device *pdev)
 
 	if (!IS_ERR(pdata->clk))
 		clk_disable_unprepare(pdata->clk);
-
-	return 0;
 }
 
 #ifdef CONFIG_OF
@@ -309,7 +301,13 @@ static const struct of_device_id rtc_mv_of_match_table[] = {
 MODULE_DEVICE_TABLE(of, rtc_mv_of_match_table);
 #endif
 
-static struct platform_driver mv_rtc_driver = {
+/*
+ * mv_rtc_remove() lives in .exit.text. For drivers registered via
+ * module_platform_driver_probe() this is ok because they cannot get unbound at
+ * runtime. So mark the driver struct with __refdata to prevent modpost
+ * triggering a section mismatch warning.
+ */
+static struct platform_driver mv_rtc_driver __refdata = {
 	.remove		= __exit_p(mv_rtc_remove),
 	.driver		= {
 		.name	= "rtc-mv",

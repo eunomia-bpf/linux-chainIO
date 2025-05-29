@@ -9,7 +9,7 @@ controllers), BFQ's main features are:
 - BFQ guarantees a high system and application responsiveness, and a
   low latency for time-sensitive applications, such as audio or video
   players;
-- BFQ distributes bandwidth, and not just time, among processes or
+- BFQ distributes bandwidth, not just time, among processes or
   groups (switching back to time distribution when needed to keep
   throughput high).
 
@@ -111,7 +111,7 @@ Higher speed for code-development tasks
 
 If some additional workload happens to be executed in parallel, then
 BFQ executes the I/O-related components of typical code-development
-tasks (compilation, checkout, merge, ...) much more quickly than CFQ,
+tasks (compilation, checkout, merge, etc.) much more quickly than CFQ,
 NOOP or DEADLINE.
 
 High throughput
@@ -127,9 +127,9 @@ Strong fairness, bandwidth and delay guarantees
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 BFQ distributes the device throughput, and not just the device time,
-among I/O-bound applications in proportion their weights, with any
+among I/O-bound applications in proportion to their weights, with any
 workload and regardless of the device parameters. From these bandwidth
-guarantees, it is possible to compute tight per-I/O-request delay
+guarantees, it is possible to compute a tight per-I/O-request delay
 guarantees by a simple formula. If not configured for strict service
 guarantees, BFQ switches to time-based resource sharing (only) for
 applications that would otherwise cause a throughput loss.
@@ -199,7 +199,7 @@ plus a lot of code, are borrowed from CFQ.
 
      - On flash-based storage with internal queueing of commands
        (typically NCQ), device idling happens to be always detrimental
-       for throughput. So, with these devices, BFQ performs idling
+       to throughput. So, with these devices, BFQ performs idling
        only when strictly needed for service guarantees, i.e., for
        guaranteeing low latency or fairness. In these cases, overall
        throughput may be sub-optimal. No solution currently exists to
@@ -212,7 +212,7 @@ plus a lot of code, are borrowed from CFQ.
     and to reduce their latency. The most important action taken to
     achieve this goal is to give to the queues associated with these
     applications more than their fair share of the device
-    throughput. For brevity, we call just "weight-raising" the whole
+    throughput. For brevity, we call it just "weight-raising" the whole
     sets of actions taken by BFQ to privilege these queues. In
     particular, BFQ provides a milder form of weight-raising for
     interactive applications, and a stronger form for soft real-time
@@ -231,7 +231,7 @@ plus a lot of code, are borrowed from CFQ.
     responsive in detecting interleaved I/O (cooperating processes),
     that it enables BFQ to achieve a high throughput, by queue
     merging, even for queues for which CFQ needs a different
-    mechanism, preemption, to get a high throughput. As such EQM is a
+    mechanism, preemption, to get a high throughput. As such, EQM is a
     unified mechanism to achieve a high throughput with interleaved
     I/O.
 
@@ -254,7 +254,7 @@ plus a lot of code, are borrowed from CFQ.
     - First, with any proportional-share scheduler, the maximum
       deviation with respect to an ideal service is proportional to
       the maximum budget (slice) assigned to queues. As a consequence,
-      BFQ can keep this deviation tight not only because of the
+      BFQ can keep this deviation tight, not only because of the
       accurate service of B-WF2Q+, but also because BFQ *does not*
       need to assign a larger budget to a queue to let the queue
       receive a higher fraction of the device throughput.
@@ -327,7 +327,7 @@ applications. Unset this tunable if you need/want to control weights.
 slice_idle
 ----------
 
-This parameter specifies how long BFQ should idle for next I/O
+This parameter specifies how long BFQ should idle for the next I/O
 request, when certain sync BFQ queues become empty. By default
 slice_idle is a non-zero value. Idling has a double purpose: boosting
 throughput and making sure that the desired throughput distribution is
@@ -365,7 +365,7 @@ terms of I/O-request dispatches. To guarantee that the actual service
 order then corresponds to the dispatch order, the strict_guarantees
 tunable must be set too.
 
-There is an important flipside for idling: apart from the above cases
+There is an important flip side to idling: apart from the above cases
 where it is beneficial also for throughput, idling can severely impact
 throughput. One important case is random workload. Because of this
 issue, BFQ tends to avoid idling as much as possible, when it is not
@@ -430,13 +430,13 @@ fifo_expire_async
 -----------------
 
 This parameter is used to set the timeout of asynchronous requests. Default
-value of this is 248ms.
+value of this is 250ms.
 
 fifo_expire_sync
 ----------------
 
 This parameter is used to set the timeout of synchronous requests. Default
-value of this is 124ms. In case to favor synchronous requests over asynchronous
+value of this is 125ms. In case to favor synchronous requests over asynchronous
 one, this value should be decreased relative to fifo_expire_async.
 
 low_latency
@@ -475,7 +475,7 @@ max_budget
 
 Maximum amount of service, measured in sectors, that can be provided
 to a BFQ queue once it is set in service (of course within the limits
-of the above timeout). According to what said in the description of
+of the above timeout). According to what was said in the description of
 the algorithm, larger values increase the throughput in proportion to
 the percentage of sequential I/O requests issued. The price of larger
 values is that they coarsen the granularity of short-term bandwidth
@@ -553,20 +553,36 @@ throughput sustainable with bfq, because updating the blkio.bfq.*
 stats is rather costly, especially for some of the stats enabled by
 CONFIG_BFQ_CGROUP_DEBUG.
 
-Parameters to set
------------------
+Parameters
+----------
 
-For each group, there is only the following parameter to set.
+For each group, the following parameters can be set:
 
-weight (namely blkio.bfq.weight or io.bfq-weight): the weight of the
-group inside its parent. Available values: 1..1000 (default 100). The
-linear mapping between ioprio and weights, described at the beginning
-of the tunable section, is still valid, but all weights higher than
-IOPRIO_BE_NR*10 are mapped to ioprio 0.
+  weight
+        This specifies the default weight for the cgroup inside its parent.
+        Available values: 1..1000 (default: 100).
 
-Recall that, if low-latency is set, then BFQ automatically raises the
-weight of the queues associated with interactive and soft real-time
-applications. Unset this tunable if you need/want to control weights.
+        For cgroup v1, it is set by writing the value to `blkio.bfq.weight`.
+
+        For cgroup v2, it is set by writing the value to `io.bfq.weight`.
+        (with an optional prefix of `default` and a space).
+
+        The linear mapping between ioprio and weights, described at the beginning
+        of the tunable section, is still valid, but all weights higher than
+        IOPRIO_BE_NR*10 are mapped to ioprio 0.
+
+        Recall that, if low-latency is set, then BFQ automatically raises the
+        weight of the queues associated with interactive and soft real-time
+        applications. Unset this tunable if you need/want to control weights.
+
+  weight_device
+        This specifies a per-device weight for the cgroup. The syntax is
+        `minor:major weight`. A weight of `0` may be used to reset to the default
+        weight.
+
+        For cgroup v1, it is set by writing the value to `blkio.bfq.weight_device`.
+
+        For cgroup v2, the file name is `io.bfq.weight`.
 
 
 [1]

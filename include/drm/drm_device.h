@@ -6,16 +6,12 @@
 #include <linux/mutex.h>
 #include <linux/idr.h>
 
-#include <drm/drm_hashtab.h>
 #include <drm/drm_mode_config.h>
 
 struct drm_driver;
 struct drm_minor;
 struct drm_master;
-struct drm_device_dma;
 struct drm_vblank_crtc;
-struct drm_sg_mem;
-struct drm_local_map;
 struct drm_vma_offset_manager;
 struct drm_vram_mm;
 struct drm_fb_helper;
@@ -27,7 +23,7 @@ struct pci_controller;
 
 
 /**
- * enum drm_switch_power - power state of drm device
+ * enum switch_power_state - power state of drm device
  */
 
 enum switch_power_state {
@@ -51,13 +47,6 @@ enum switch_power_state {
  * may contain multiple heads.
  */
 struct drm_device {
-	/**
-	 * @legacy_dev_list:
-	 *
-	 * List of devices per driver for stealth attach cleanup
-	 */
-	struct list_head legacy_dev_list;
-
 	/** @if_version: Highest interface version set */
 	int if_version;
 
@@ -83,7 +72,7 @@ struct drm_device {
 	} managed;
 
 	/** @driver: DRM driver managing the device */
-	struct drm_driver *driver;
+	const struct drm_driver *driver;
 
 	/**
 	 * @dev_private:
@@ -97,11 +86,27 @@ struct drm_device {
 	 */
 	void *dev_private;
 
-	/** @primary: Primary node */
+	/**
+	 * @primary:
+	 *
+	 * Primary node. Drivers should not interact with this
+	 * directly. debugfs interfaces can be registered with
+	 * drm_debugfs_add_file(), and sysfs should be directly added on the
+	 * hardware (and not character device node) struct device @dev.
+	 */
 	struct drm_minor *primary;
 
-	/** @render: Render node */
+	/**
+	 * @render:
+	 *
+	 * Render node. Drivers should not interact with this directly ever.
+	 * Drivers should not expose any additional interfaces in debugfs or
+	 * sysfs on this node.
+	 */
 	struct drm_minor *render;
+
+	/** @accel: Compute Acceleration node */
+	struct drm_minor *accel;
 
 	/**
 	 * @registered:
@@ -147,8 +152,8 @@ struct drm_device {
 	 *
 	 * Lock for others (not &drm_minor.master and &drm_file.is_master)
 	 *
-	 * WARNING:
-	 * Only drivers annotated with DRIVER_LEGACY should be using this.
+	 * TODO: This lock used to be the BKL of the DRM subsystem. Move the
+	 *       lock into i915, which is the only remaining user.
 	 */
 	struct mutex struct_mutex;
 
@@ -199,20 +204,6 @@ struct drm_device {
 	struct list_head clientlist;
 
 	/**
-	 * @irq_enabled:
-	 *
-	 * Indicates that interrupt handling is enabled, specifically vblank
-	 * handling. Drivers which don't use drm_irq_install() need to set this
-	 * to true manually.
-	 */
-	bool irq_enabled;
-
-	/**
-	 * @irq: Used by the drm_irq_install() and drm_irq_unistall() helpers.
-	 */
-	int irq;
-
-	/**
 	 * @vblank_disable_immediate:
 	 *
 	 * If true, vblank interrupt will be disabled immediately when the
@@ -222,8 +213,9 @@ struct drm_device {
 	 * This can be set to true it the hardware has a working vblank counter
 	 * with high-precision timestamping (otherwise there are races) and the
 	 * driver uses drm_crtc_vblank_on() and drm_crtc_vblank_off()
-	 * appropriately. See also @max_vblank_count and
-	 * &drm_crtc_funcs.get_vblank_counter.
+	 * appropriately. Also, see @max_vblank_count,
+	 * &drm_crtc_funcs.get_vblank_counter and
+	 * &drm_vblank_crtc_config.disable_immediate.
 	 */
 	bool vblank_disable_immediate;
 
@@ -283,16 +275,6 @@ struct drm_device {
 	 */
 	spinlock_t event_lock;
 
-	/** @agp: AGP data */
-	struct drm_agp_head *agp;
-
-	/** @pdev: PCI device structure */
-	struct pci_dev *pdev;
-
-#ifdef __alpha__
-	/** @hose: PCI hose, only used on ALPHA platforms. */
-	struct pci_controller *hose;
-#endif
 	/** @num_crtcs: Number of CRTCs on this device */
 	unsigned int num_crtcs;
 
@@ -329,56 +311,12 @@ struct drm_device {
 	 */
 	struct drm_fb_helper *fb_helper;
 
-	/* Everything below here is for legacy driver, never use! */
-	/* private: */
-#if IS_ENABLED(CONFIG_DRM_LEGACY)
-	/* Context handle management - linked list of context handles */
-	struct list_head ctxlist;
-
-	/* Context handle management - mutex for &ctxlist */
-	struct mutex ctxlist_mutex;
-
-	/* Context handle management */
-	struct idr ctx_idr;
-
-	/* Memory management - linked list of regions */
-	struct list_head maplist;
-
-	/* Memory management - user token hash table for maps */
-	struct drm_open_hash map_hash;
-
-	/* Context handle management - list of vmas (for debugging) */
-	struct list_head vmalist;
-
-	/* Optional pointer for DMA support */
-	struct drm_device_dma *dma;
-
-	/* Context swapping flag */
-	__volatile__ long context_flag;
-
-	/* Last current context */
-	int last_context;
-
-	/* Lock for &buf_use and a few other things. */
-	spinlock_t buf_lock;
-
-	/* Usage counter for buffers in use -- cannot alloc */
-	int buf_use;
-
-	/* Buffer allocation in progress */
-	atomic_t buf_alloc;
-
-	struct {
-		int context;
-		struct drm_hw_lock *lock;
-	} sigdata;
-
-	struct drm_local_map *agp_buffer_map;
-	unsigned int agp_buffer_token;
-
-	/* Scatter gather memory */
-	struct drm_sg_mem *sg;
-#endif
+	/**
+	 * @debugfs_root:
+	 *
+	 * Root directory for debugfs files.
+	 */
+	struct dentry *debugfs_root;
 };
 
 #endif

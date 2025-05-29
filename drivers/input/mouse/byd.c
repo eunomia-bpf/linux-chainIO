@@ -191,7 +191,7 @@
 
 /*
  * The touchpad generates a mixture of absolute and relative packets, indicated
- * by the the last byte of each packet being set to one of the following:
+ * by the last byte of each packet being set to one of the following:
  */
 #define BYD_PACKET_ABSOLUTE			0xf8
 #define BYD_PACKET_RELATIVE			0x00
@@ -254,12 +254,11 @@ static void byd_clear_touch(struct timer_list *t)
 	struct byd_data *priv = from_timer(priv, t, timer);
 	struct psmouse *psmouse = priv->psmouse;
 
-	serio_pause_rx(psmouse->ps2dev.serio);
+	guard(serio_pause_rx)(psmouse->ps2dev.serio);
+
 	priv->touch = false;
 
 	byd_report_input(psmouse);
-
-	serio_continue_rx(psmouse->ps2dev.serio);
 
 	/*
 	 * Move cursor back to center of pad when we lose touch - this

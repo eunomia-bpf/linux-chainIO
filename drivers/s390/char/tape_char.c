@@ -52,7 +52,6 @@ static const struct file_operations tape_fops =
 #endif
 	.open = tapechar_open,
 	.release = tapechar_release,
-	.llseek = no_llseek,
 };
 
 static int tapechar_major = TAPECHAR_MAJOR;
@@ -371,8 +370,6 @@ __tapechar_ioctl(struct tape_device *device,
 			case MTSEEK:
 				if (device->required_tapemarks)
 					tape_std_terminate_write(device);
-			default:
-				;
 		}
 		rc = tape_mtop(device, op.mt_op, op.mt_count);
 

@@ -29,36 +29,35 @@
  *
  * @table: newly allocated or validated PD/PT
  */
-static int amdgpu_vm_cpu_map_table(struct amdgpu_bo *table)
+static int amdgpu_vm_cpu_map_table(struct amdgpu_bo_vm *table)
 {
-	return amdgpu_bo_kmap(table, NULL);
+	table->bo.flags |= AMDGPU_GEM_CREATE_CPU_ACCESS_REQUIRED;
+	return amdgpu_bo_kmap(&table->bo, NULL);
 }
 
 /**
  * amdgpu_vm_cpu_prepare - prepare page table update with the CPU
  *
  * @p: see amdgpu_vm_update_params definition
- * @owner: owner we need to sync to
- * @exclusive: exclusive move fence we need to sync to
+ * @sync: sync obj with fences to wait on
  *
  * Returns:
  * Negativ errno, 0 for success.
  */
 static int amdgpu_vm_cpu_prepare(struct amdgpu_vm_update_params *p,
-				 struct dma_resv *resv,
-				 enum amdgpu_sync_mode sync_mode)
+				 struct amdgpu_sync *sync)
 {
-	if (!resv)
+	if (!sync)
 		return 0;
 
-	return amdgpu_bo_sync_wait_resv(p->adev, resv, sync_mode, p->vm, true);
+	return amdgpu_sync_wait(sync, true);
 }
 
 /**
  * amdgpu_vm_cpu_update - helper to update page tables via CPU
  *
  * @p: see amdgpu_vm_update_params definition
- * @bo: PD/PT to update
+ * @vmbo: PD/PT to update
  * @pe: byte offset of the PDE/PTE, relative to start of PDB/PTB
  * @addr: dst addr to write into pe
  * @count: number of page entries to update
@@ -68,21 +67,20 @@ static int amdgpu_vm_cpu_prepare(struct amdgpu_vm_update_params *p,
  * Write count number of PT/PD entries directly.
  */
 static int amdgpu_vm_cpu_update(struct amdgpu_vm_update_params *p,
-				struct amdgpu_bo *bo, uint64_t pe,
+				struct amdgpu_bo_vm *vmbo, uint64_t pe,
 				uint64_t addr, unsigned count, uint32_t incr,
 				uint64_t flags)
 {
 	unsigned int i;
 	uint64_t value;
-	int r;
+	long r;
 
-	if (bo->tbo.moving) {
-		r = dma_fence_wait(bo->tbo.moving, true);
-		if (r)
-			return r;
-	}
+	r = dma_resv_wait_timeout(vmbo->bo.tbo.base.resv, DMA_RESV_USAGE_KERNEL,
+				  true, MAX_SCHEDULE_TIMEOUT);
+	if (r < 0)
+		return r;
 
-	pe += (unsigned long)amdgpu_bo_kptr(bo);
+	pe += (unsigned long)amdgpu_bo_kptr(&vmbo->bo);
 
 	trace_amdgpu_vm_set_ptes(pe, addr, count, incr, flags, p->immediate);
 
@@ -108,9 +106,11 @@ static int amdgpu_vm_cpu_update(struct amdgpu_vm_update_params *p,
 static int amdgpu_vm_cpu_commit(struct amdgpu_vm_update_params *p,
 				struct dma_fence **fence)
 {
-	/* Flush HDP */
+	if (p->needs_flush)
+		atomic64_inc(&p->vm->tlb_seq);
+
 	mb();
-	amdgpu_asic_flush_hdp(p->adev, NULL);
+	amdgpu_device_flush_hdp(p->adev, NULL);
 	return 0;
 }
 

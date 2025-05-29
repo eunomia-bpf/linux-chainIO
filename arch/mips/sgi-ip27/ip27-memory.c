@@ -23,6 +23,7 @@
 #include <asm/page.h>
 #include <asm/pgalloc.h>
 #include <asm/sections.h>
+#include <asm/sgialib.h>
 
 #include <asm/sn/arch.h>
 #include <asm/sn/agent.h>
@@ -34,7 +35,6 @@
 #define PFN_NASIDSHFT		(NASID_SHFT - PAGE_SHIFT)
 
 struct node_data *__node_data[MAX_NUMNODES];
-
 EXPORT_SYMBOL(__node_data);
 
 static u64 gen_region_mask(void)
@@ -341,7 +341,8 @@ static void __init szmem(void)
 				continue;
 			}
 			memblock_add_node(PFN_PHYS(slot_getbasepfn(node, slot)),
-					  PFN_PHYS(slot_psize), node);
+					  PFN_PHYS(slot_psize), node,
+					  MEMBLOCK_NONE);
 		}
 	}
 }
@@ -359,6 +360,7 @@ static void __init node_mem_init(nasid_t node)
 	 */
 	__node_data[node] = __va(slot_freepfn << PAGE_SHIFT);
 	memset(__node_data[node], 0, PAGE_SIZE);
+	node_data[node] = &__node_data[node]->pglist;
 
 	NODE_DATA(node)->node_start_pfn = start_pfn;
 	NODE_DATA(node)->node_spanned_pages = end_pfn - start_pfn;
@@ -404,11 +406,6 @@ void __init prom_meminit(void)
 	}
 }
 
-void __init prom_free_prom_memory(void)
-{
-	/* We got nothing to free here ...  */
-}
-
 extern void setup_zero_pages(void);
 
 void __init paging_init(void)
@@ -425,5 +422,4 @@ void __init mem_init(void)
 	high_memory = (void *) __va(get_num_physpages() << PAGE_SHIFT);
 	memblock_free_all();
 	setup_zero_pages();	/* This comes from node 0 */
-	mem_init_print_info(NULL);
 }

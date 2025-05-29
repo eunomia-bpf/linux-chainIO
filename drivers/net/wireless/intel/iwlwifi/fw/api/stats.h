@@ -1,67 +1,13 @@
-/******************************************************************************
- *
- * This file is provided under a dual BSD/GPLv2 license.  When using or
- * redistributing this file, you may do so under either license.
- *
- * GPL LICENSE SUMMARY
- *
- * Copyright(c) 2013 - 2015 Intel Mobile Communications GmbH
- * Copyright(c) 2016 - 2017 Intel Deutschland GmbH
- * Copyright(c) 2012 - 2014, 2018, 2020 Intel Corporation
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of version 2 of the GNU General Public License as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * The full GNU General Public License is included in this distribution
- * in the file called COPYING.
- *
- * Contact Information:
- *  Intel Linux Wireless <linuxwifi@intel.com>
- * Intel Corporation, 5200 N.E. Elam Young Parkway, Hillsboro, OR 97124-6497
- *
- * BSD LICENSE
- *
- * Copyright(c) 2013 - 2015 Intel Mobile Communications GmbH
- * Copyright(c) 2012 - 2014, 2018, 2020 Intel Corporation
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- *  * Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *  * Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *  * Neither the name Intel Corporation nor the names of its
- *    contributors may be used to endorse or promote products derived
- *    from this software without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- * OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- *****************************************************************************/
-
+/* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
+/*
+ * Copyright (C) 2012-2014, 2018, 2020 - 2021, 2023 - 2024 Intel Corporation
+ * Copyright (C) 2013-2015 Intel Mobile Communications GmbH
+ * Copyright (C) 2016-2017 Intel Deutschland GmbH
+ */
 #ifndef __iwl_fw_api_stats_h__
 #define __iwl_fw_api_stats_h__
 #include "mac.h"
+#include "mac-cfg.h"
 
 struct mvm_statistics_dbg {
 	__le32 burst_check;
@@ -95,7 +41,7 @@ struct mvm_statistics_div {
  * @interference_data_flag: flag for interference data availability. 1 when data
  *	is available.
  * @channel_load: counts RX Enable time in uSec
- * @beacon_rssi_a: beacon RSSI on anntena A
+ * @beacon_rssi_a: beacon RSSI on antenna A
  * @beacon_rssi_b: beacon RSSI on antenna B
  * @beacon_rssi_c: beacon RSSI on antenna C
  * @beacon_energy_a: beacon energy on antenna A
@@ -381,14 +327,14 @@ struct mvm_statistics_load {
 	__le32 air_time[MAC_INDEX_AUX];
 	__le32 byte_count[MAC_INDEX_AUX];
 	__le32 pkt_count[MAC_INDEX_AUX];
-	u8 avg_energy[IWL_MVM_STATION_COUNT_MAX];
+	u8 avg_energy[IWL_STATION_COUNT_MAX];
 } __packed; /* STATISTICS_RX_MAC_STATION_S_VER_3 */
 
 struct mvm_statistics_load_v1 {
 	__le32 air_time[NUM_MAC_INDEX];
 	__le32 byte_count[NUM_MAC_INDEX];
 	__le32 pkt_count[NUM_MAC_INDEX];
-	u8 avg_energy[IWL_MVM_STATION_COUNT_MAX];
+	u8 avg_energy[IWL_STATION_COUNT_MAX];
 } __packed; /* STATISTICS_RX_MAC_STATION_S_VER_1 */
 
 struct mvm_statistics_rx {
@@ -467,6 +413,49 @@ struct iwl_statistics_cmd {
 #define MAX_BCAST_FILTER_NUM		8
 
 /**
+ * enum iwl_statistics_notify_type_id - type_id used in system statistics
+ *	command
+ * @IWL_STATS_NTFY_TYPE_ID_OPER: request legacy statistics
+ * @IWL_STATS_NTFY_TYPE_ID_OPER_PART1: request operational part1 statistics
+ * @IWL_STATS_NTFY_TYPE_ID_OPER_PART2: request operational part2 statistics
+ * @IWL_STATS_NTFY_TYPE_ID_OPER_PART3: request operational part3 statistics
+ * @IWL_STATS_NTFY_TYPE_ID_OPER_PART4: request operational part4 statistics
+ */
+enum iwl_statistics_notify_type_id {
+	IWL_STATS_NTFY_TYPE_ID_OPER		= BIT(0),
+	IWL_STATS_NTFY_TYPE_ID_OPER_PART1	= BIT(1),
+	IWL_STATS_NTFY_TYPE_ID_OPER_PART2	= BIT(2),
+	IWL_STATS_NTFY_TYPE_ID_OPER_PART3	= BIT(3),
+	IWL_STATS_NTFY_TYPE_ID_OPER_PART4	= BIT(4),
+};
+
+/**
+ * enum iwl_statistics_cfg_flags - cfg_mask used in system statistics command
+ * @IWL_STATS_CFG_FLG_DISABLE_NTFY_MSK: 0 for enable, 1 for disable
+ * @IWL_STATS_CFG_FLG_ON_DEMAND_NTFY_MSK: 0 for periodic, 1 for on-demand
+ * @IWL_STATS_CFG_FLG_RESET_MSK: 0 for reset statistics after
+ *	sending the notification, 1 for do not reset statistics after sending
+ *	the notification
+ */
+enum iwl_statistics_cfg_flags {
+	IWL_STATS_CFG_FLG_DISABLE_NTFY_MSK	= BIT(0),
+	IWL_STATS_CFG_FLG_ON_DEMAND_NTFY_MSK	= BIT(1),
+	IWL_STATS_CFG_FLG_RESET_MSK		= BIT(2),
+};
+
+/**
+ * struct iwl_system_statistics_cmd - system statistics command
+ * @cfg_mask: configuration mask, &enum iwl_statistics_cfg_flags
+ * @config_time_sec: time in sec for periodic notification
+ * @type_id_mask: type_id masks, &enum iwl_statistics_notify_type_id
+ */
+struct iwl_system_statistics_cmd {
+	__le32 cfg_mask;
+	__le32 config_time_sec;
+	__le32 type_id_mask;
+} __packed; /* STATISTICS_FW_CMD_API_S_VER_1 */
+
+/**
  * enum iwl_fw_statistics_type
  *
  * @FW_STATISTICS_OPERATIONAL: operational statistics
@@ -487,6 +476,7 @@ enum iwl_fw_statistics_type {
 	FW_STATISTICS_HE,
 }; /* FW_STATISTICS_TYPE_API_E_VER_1 */
 
+#define IWL_STATISTICS_TYPE_MSK 0x7f
 /**
  * struct iwl_statistics_ntfy_hdr
  *
@@ -501,7 +491,175 @@ struct iwl_statistics_ntfy_hdr {
 }; /* STATISTICS_NTFY_HDR_API_S_VER_1 */
 
 /**
+ * struct iwl_stats_ntfy_per_link
+ *
+ * @beacon_filter_average_energy: Average energy [-dBm] of the 2
+ *	 antennas.
+ * @air_time: air time
+ * @beacon_counter: all beacons (both filtered and not filtered)
+ * @beacon_average_energy: Average energy [-dBm] of all beacons
+ *	(both filtered and not filtered)
+ * @beacon_rssi_a: beacon RSSI on antenna A
+ * @beacon_rssi_b: beacon RSSI on antenna B
+ * @rx_bytes: RX byte count
+ */
+struct iwl_stats_ntfy_per_link {
+	__le32 beacon_filter_average_energy;
+	__le32 air_time;
+	__le32 beacon_counter;
+	__le32 beacon_average_energy;
+	__le32 beacon_rssi_a;
+	__le32 beacon_rssi_b;
+	__le32 rx_bytes;
+} __packed; /* STATISTICS_NTFY_PER_LINK_API_S_VER_1 */
+
+/**
+ * struct iwl_stats_ntfy_part1_per_link
+ *
+ * @rx_time: rx time
+ * @tx_time: tx time
+ * @rx_action: action frames handled by FW
+ * @tx_action: action frames generated and transmitted by FW
+ * @cca_defers: cca defer count
+ * @beacon_filtered: filtered out beacons
+ */
+struct iwl_stats_ntfy_part1_per_link {
+	__le64 rx_time;
+	__le64 tx_time;
+	__le32 rx_action;
+	__le32 tx_action;
+	__le32 cca_defers;
+	__le32 beacon_filtered;
+} __packed; /* STATISTICS_FW_NTFY_OPERATIONAL_PART1_PER_LINK_API_S_VER_1 */
+
+/**
+ * struct iwl_stats_ntfy_per_mac
+ *
+ * @beacon_filter_average_energy: Average energy [-dBm] of the 2
+ *	 antennas.
+ * @air_time: air time
+ * @beacon_counter: all beacons (both filtered and not filtered)
+ * @beacon_average_energy: all beacons (both filtered and not
+ *	 filtered)
+ * @beacon_rssi_a: beacon RSSI on antenna A
+ * @beacon_rssi_b: beacon RSSI on antenna B
+ * @rx_bytes: RX byte count
+ */
+struct iwl_stats_ntfy_per_mac {
+	__le32 beacon_filter_average_energy;
+	__le32 air_time;
+	__le32 beacon_counter;
+	__le32 beacon_average_energy;
+	__le32 beacon_rssi_a;
+	__le32 beacon_rssi_b;
+	__le32 rx_bytes;
+} __packed; /* STATISTICS_NTFY_PER_MAC_API_S_VER_1 */
+
+#define IWL_STATS_MAX_BW_INDEX 5
+/** struct iwl_stats_ntfy_per_phy
+ * @channel_load: channel load
+ * @channel_load_by_us: device contribution to MCLM
+ * @channel_load_not_by_us: other devices' contribution to MCLM
+ * @clt: CLT HW timer (TIM_CH_LOAD2)
+ * @act: active accumulator SW
+ * @elp: elapsed time accumulator SW
+ * @rx_detected_per_ch_width: number of deferred TX per channel width,
+ *	0 - 20, 1/2/3 - 40/80/160
+ * @success_per_ch_width: number of frames that got ACK/BACK/CTS
+ *	per channel BW. note, BACK counted as 1
+ * @fail_per_ch_width: number of frames that didn't get ACK/BACK/CTS
+ *	per channel BW. note BACK counted as 1
+ * @last_tx_ch_width_indx: last txed frame channel width index
+ */
+struct iwl_stats_ntfy_per_phy {
+	__le32 channel_load;
+	__le32 channel_load_by_us;
+	__le32 channel_load_not_by_us;
+	__le32 clt;
+	__le32 act;
+	__le32 elp;
+	__le32 rx_detected_per_ch_width[IWL_STATS_MAX_BW_INDEX];
+	__le32 success_per_ch_width[IWL_STATS_MAX_BW_INDEX];
+	__le32 fail_per_ch_width[IWL_STATS_MAX_BW_INDEX];
+	__le32 last_tx_ch_width_indx;
+} __packed; /* STATISTICS_NTFY_PER_PHY_API_S_VER_1 */
+
+/**
+ * struct iwl_stats_ntfy_per_sta
+ *
+ * @average_energy: in fact it is minus the energy..
+ */
+struct iwl_stats_ntfy_per_sta {
+	__le32 average_energy;
+} __packed; /* STATISTICS_NTFY_PER_STA_API_S_VER_1 */
+
+#define IWL_STATS_MAX_PHY_OPERATIONAL 3
+#define IWL_STATS_MAX_FW_LINKS	(IWL_FW_MAX_LINK_ID + 1)
+
+/**
+ * struct iwl_system_statistics_notif_oper
+ *
+ * @time_stamp: time when the notification is sent from firmware
+ * @per_link: per link statistics, &struct iwl_stats_ntfy_per_link
+ * @per_phy: per phy statistics, &struct iwl_stats_ntfy_per_phy
+ * @per_sta: per sta statistics, &struct iwl_stats_ntfy_per_sta
+ */
+struct iwl_system_statistics_notif_oper {
+	__le32 time_stamp;
+	struct iwl_stats_ntfy_per_link per_link[IWL_STATS_MAX_FW_LINKS];
+	struct iwl_stats_ntfy_per_phy per_phy[IWL_STATS_MAX_PHY_OPERATIONAL];
+	struct iwl_stats_ntfy_per_sta per_sta[IWL_STATION_COUNT_MAX];
+} __packed; /* STATISTICS_FW_NTFY_OPERATIONAL_API_S_VER_3 */
+
+/**
+ * struct iwl_system_statistics_part1_notif_oper
+ *
+ * @time_stamp: time when the notification is sent from firmware
+ * @per_link: per link statistics &struct iwl_stats_ntfy_part1_per_link
+ * @per_phy_crc_error_stats: per phy crc error statistics
+ */
+struct iwl_system_statistics_part1_notif_oper {
+	__le32 time_stamp;
+	struct iwl_stats_ntfy_part1_per_link per_link[IWL_STATS_MAX_FW_LINKS];
+	__le32 per_phy_crc_error_stats[IWL_STATS_MAX_PHY_OPERATIONAL];
+} __packed; /* STATISTICS_FW_NTFY_OPERATIONAL_PART1_API_S_VER_4 */
+
+/**
+ * struct iwl_system_statistics_end_notif
+ *
+ * @time_stamp: time when the notification is sent from firmware
+ */
+struct iwl_system_statistics_end_notif {
+	__le32 time_stamp;
+} __packed; /* STATISTICS_FW_NTFY_END_API_S_VER_1 */
+
+/**
  * struct iwl_statistics_operational_ntfy
+ *
+ * @hdr: general statistics header
+ * @flags: bitmap of possible notification structures
+ * @per_mac: per mac statistics, &struct iwl_stats_ntfy_per_mac
+ * @per_phy: per phy statistics, &struct iwl_stats_ntfy_per_phy
+ * @per_sta: per sta statistics, &struct iwl_stats_ntfy_per_sta
+ * @rx_time: rx time
+ * @tx_time: usec the radio is transmitting.
+ * @on_time_rf: The total time in usec the RF is awake.
+ * @on_time_scan: usec the radio is awake due to scan.
+ */
+struct iwl_statistics_operational_ntfy {
+	struct iwl_statistics_ntfy_hdr hdr;
+	__le32 flags;
+	struct iwl_stats_ntfy_per_mac per_mac[MAC_INDEX_AUX];
+	struct iwl_stats_ntfy_per_phy per_phy[IWL_STATS_MAX_PHY_OPERATIONAL];
+	struct iwl_stats_ntfy_per_sta per_sta[IWL_STATION_COUNT_MAX];
+	__le64 rx_time;
+	__le64 tx_time;
+	__le64 on_time_rf;
+	__le64 on_time_scan;
+} __packed; /* STATISTICS_OPERATIONAL_NTFY_API_S_VER_15 */
+
+/**
+ * struct iwl_statistics_operational_ntfy_ver_14
  *
  * @hdr: general statistics header
  * @flags: bitmap of possible notification structures
@@ -524,7 +682,7 @@ struct iwl_statistics_ntfy_hdr {
  * @average_energy: in fact it is minus the energy..
  * @reserved: reserved
  */
-struct iwl_statistics_operational_ntfy {
+struct iwl_statistics_operational_ntfy_ver_14 {
 	struct iwl_statistics_ntfy_hdr hdr;
 	__le32 flags;
 	__le32 mac_id;
@@ -541,7 +699,7 @@ struct iwl_statistics_operational_ntfy {
 	__le64 tx_time;
 	__le64 on_time_rf;
 	__le64 on_time_scan;
-	__le32 average_energy[IWL_MVM_STATION_COUNT_MAX];
+	__le32 average_energy[IWL_STATION_COUNT_MAX];
 	__le32 reserved;
 } __packed; /* STATISTICS_OPERATIONAL_NTFY_API_S_VER_14 */
 

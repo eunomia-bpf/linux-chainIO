@@ -2,11 +2,11 @@
 #ifndef _ASM_X86_SPECIAL_INSNS_H
 #define _ASM_X86_SPECIAL_INSNS_H
 
-
 #ifdef __KERNEL__
-
 #include <asm/nops.h>
 #include <asm/processor-flags.h>
+
+#include <linux/errno.h>
 #include <linux/irqflags.h>
 #include <linux/jump_label.h>
 
@@ -104,43 +104,20 @@ static inline void wrpkru(u32 pkru)
 		     : : "a" (pkru), "c"(ecx), "d"(edx));
 }
 
-static inline void __write_pkru(u32 pkru)
-{
-	/*
-	 * WRPKRU is relatively expensive compared to RDPKRU.
-	 * Avoid WRPKRU when it would not change the value.
-	 */
-	if (pkru == rdpkru())
-		return;
-
-	wrpkru(pkru);
-}
-
 #else
 static inline u32 rdpkru(void)
 {
 	return 0;
 }
 
-static inline void __write_pkru(u32 pkru)
+static inline void wrpkru(u32 pkru)
 {
 }
 #endif
 
-static inline void native_wbinvd(void)
+static __always_inline void native_wbinvd(void)
 {
 	asm volatile("wbinvd": : :"memory");
-}
-
-extern asmlinkage void asm_load_gs_index(unsigned int selector);
-
-static inline void native_load_gs_index(unsigned int selector)
-{
-	unsigned long flags;
-
-	local_irq_save(flags);
-	asm_load_gs_index(selector);
-	local_irq_restore(flags);
 }
 
 static inline unsigned long __read_cr4(void)
@@ -191,31 +168,22 @@ static inline void __write_cr4(unsigned long x)
 	native_write_cr4(x);
 }
 
-static inline void wbinvd(void)
+static __always_inline void wbinvd(void)
 {
 	native_wbinvd();
 }
 
-#ifdef CONFIG_X86_64
-
-static inline void load_gs_index(unsigned int selector)
-{
-	native_load_gs_index(selector);
-}
-
-#endif
-
 #endif /* CONFIG_PARAVIRT_XXL */
 
-static inline void clflush(volatile void *__p)
+static __always_inline void clflush(volatile void *__p)
 {
 	asm volatile("clflush %0" : "+m" (*(volatile char __force *)__p));
 }
 
 static inline void clflushopt(volatile void *__p)
 {
-	alternative_io(".byte " __stringify(NOP_DS_PREFIX) "; clflush %P0",
-		       ".byte 0x66; clflush %P0",
+	alternative_io(".byte 0x3e; clflush %0",
+		       ".byte 0x66; clflush %0",
 		       X86_FEATURE_CLFLUSHOPT,
 		       "+m" (*(volatile char __force *)__p));
 }
@@ -225,7 +193,7 @@ static inline void clwb(volatile void *__p)
 	volatile struct { char x[64]; } *p = __p;
 
 	asm volatile(ALTERNATIVE_2(
-		".byte " __stringify(NOP_DS_PREFIX) "; clflush (%[pax])",
+		".byte 0x3e; clflush (%[pax])",
 		".byte 0x66; clflush (%[pax])", /* clflushopt (%%rax) */
 		X86_FEATURE_CLFLUSHOPT,
 		".byte 0x66, 0x0f, 0xae, 0x30",  /* clwb (%%rax) */
@@ -233,6 +201,19 @@ static inline void clwb(volatile void *__p)
 		: [p] "+m" (*p)
 		: [pax] "a" (p));
 }
+
+#ifdef CONFIG_X86_USER_SHADOW_STACK
+static inline int write_user_shstk_64(u64 __user *addr, u64 val)
+{
+	asm goto("1: wrussq %[val], %[addr]\n"
+			  _ASM_EXTABLE(1b, %l[fail])
+			  :: [addr] "m" (*addr), [val] "r" (val)
+			  :: fail);
+	return 0;
+fail:
+	return -EFAULT;
+}
+#endif /* CONFIG_X86_USER_SHADOW_STACK */
 
 #define nop() asm volatile ("nop")
 
@@ -264,6 +245,11 @@ static inline void movdir64b(void *dst, const void *src)
 		     :  "m" (*__src), "a" (__dst), "d" (__src));
 }
 
+static inline void movdir64b_io(void __iomem *dst, const void *src)
+{
+	movdir64b((void __force *)dst, src);
+}
+
 /**
  * enqcmds - Enqueue a command in supervisor (CPL0) mode
  * @dst: destination, in MMIO space (must be 512-bit aligned)
@@ -286,8 +272,8 @@ static inline void movdir64b(void *dst, const void *src)
 static inline int enqcmds(void __iomem *dst, const void *src)
 {
 	const struct { char _[64]; } *__src = src;
-	struct { char _[64]; } *__dst = dst;
-	int zf;
+	struct { char _[64]; } __iomem *__dst = dst;
+	bool zf;
 
 	/*
 	 * ENQCMDS %(rdx), rax
@@ -304,6 +290,15 @@ static inline int enqcmds(void __iomem *dst, const void *src)
 		return -EAGAIN;
 
 	return 0;
+}
+
+static __always_inline void tile_release(void)
+{
+	/*
+	 * Instruction opcode for TILERELEASE; supported in binutils
+	 * version >= 2.36.
+	 */
+	asm volatile(".byte 0xc4, 0xe2, 0x78, 0x49, 0xc0");
 }
 
 #endif /* __KERNEL__ */

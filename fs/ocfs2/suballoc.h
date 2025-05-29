@@ -1,7 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/* -*- mode: c; c-basic-offset: 8; -*-
- * vim: noexpandtab sw=8 ts=8 sts=0:
- *
+/*
  * suballoc.h
  *
  * Defines sub allocator api
@@ -81,12 +79,16 @@ void ocfs2_rollback_alloc_dinode_counts(struct inode *inode,
 			 struct buffer_head *di_bh,
 			 u32 num_bits,
 			 u16 chain);
+u16 ocfs2_find_max_contig_free_bits(void *bitmap,
+			 u16 total_bits, u16 start);
 int ocfs2_block_group_set_bits(handle_t *handle,
 			 struct inode *alloc_inode,
 			 struct ocfs2_group_desc *bg,
 			 struct buffer_head *group_bh,
 			 unsigned int bit_off,
-			 unsigned int num_bits);
+			 unsigned int num_bits,
+			 unsigned int max_contig_bits,
+			 int fastpath);
 
 int ocfs2_claim_metadata(handle_t *handle,
 			 struct ocfs2_alloc_context *ac,
@@ -108,7 +110,7 @@ int ocfs2_claim_clusters(handle_t *handle,
 			 u32 *cluster_start,
 			 u32 *num_clusters);
 /*
- * Use this variant of ocfs2_claim_clusters to specify a maxiumum
+ * Use this variant of ocfs2_claim_clusters to specify a maximum
  * number of clusters smaller than the allocation reserved.
  */
 int __ocfs2_claim_clusters(handle_t *handle,

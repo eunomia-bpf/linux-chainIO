@@ -4,7 +4,9 @@
 #include <linux/net_tstamp.h>
 #include <linux/phy.h>
 #include <linux/rtnetlink.h>
+#include <linux/ptp_clock_kernel.h>
 
+#include "netlink.h"
 #include "common.h"
 
 const char netdev_features_strings[NETDEV_FEATURE_COUNT][ETH_GSTRING_LEN] = {
@@ -23,8 +25,6 @@ const char netdev_features_strings[NETDEV_FEATURE_COUNT][ETH_GSTRING_LEN] = {
 	[NETIF_F_HW_VLAN_STAG_FILTER_BIT] = "rx-vlan-stag-filter",
 	[NETIF_F_VLAN_CHALLENGED_BIT] =  "vlan-challenged",
 	[NETIF_F_GSO_BIT] =              "tx-generic-segmentation",
-	[NETIF_F_LLTX_BIT] =             "tx-lockless",
-	[NETIF_F_NETNS_LOCAL_BIT] =      "netns-local",
 	[NETIF_F_GRO_BIT] =              "rx-gro",
 	[NETIF_F_GRO_HW_BIT] =           "rx-gro-hw",
 	[NETIF_F_LRO_BIT] =              "rx-lro",
@@ -50,7 +50,6 @@ const char netdev_features_strings[NETDEV_FEATURE_COUNT][ETH_GSTRING_LEN] = {
 
 	[NETIF_F_FCOE_CRC_BIT] =         "tx-checksum-fcoe-crc",
 	[NETIF_F_SCTP_CRC_BIT] =        "tx-checksum-sctp",
-	[NETIF_F_FCOE_MTU_BIT] =         "fcoe-mtu",
 	[NETIF_F_NTUPLE_BIT] =           "rx-ntuple-filter",
 	[NETIF_F_RXHASH_BIT] =           "rx-hashing",
 	[NETIF_F_RXCSUM_BIT] =           "rx-checksum",
@@ -68,6 +67,11 @@ const char netdev_features_strings[NETDEV_FEATURE_COUNT][ETH_GSTRING_LEN] = {
 	[NETIF_F_HW_TLS_RX_BIT] =	 "tls-hw-rx-offload",
 	[NETIF_F_GRO_FRAGLIST_BIT] =	 "rx-gro-list",
 	[NETIF_F_HW_MACSEC_BIT] =	 "macsec-hw-offload",
+	[NETIF_F_GRO_UDP_FWD_BIT] =	 "rx-udp-gro-forwarding",
+	[NETIF_F_HW_HSR_TAG_INS_BIT] =	 "hsr-tag-ins-offload",
+	[NETIF_F_HW_HSR_TAG_RM_BIT] =	 "hsr-tag-rm-offload",
+	[NETIF_F_HW_HSR_FWD_BIT] =	 "hsr-fwd-offload",
+	[NETIF_F_HW_HSR_DUP_BIT] =	 "hsr-dup-offload",
 };
 
 const char
@@ -83,6 +87,7 @@ tunable_strings[__ETHTOOL_TUNABLE_COUNT][ETH_GSTRING_LEN] = {
 	[ETHTOOL_RX_COPYBREAK]	= "rx-copybreak",
 	[ETHTOOL_TX_COPYBREAK]	= "tx-copybreak",
 	[ETHTOOL_PFC_PREVENTION_TOUT] = "pfc-prevention-tout",
+	[ETHTOOL_TX_COPYBREAK_BUF_SIZE] = "tx-copybreak-buf-size",
 };
 
 const char
@@ -194,8 +199,184 @@ const char link_mode_names[][ETH_GSTRING_LEN] = {
 	__DEFINE_LINK_MODE_NAME(400000, CR4, Full),
 	__DEFINE_LINK_MODE_NAME(100, FX, Half),
 	__DEFINE_LINK_MODE_NAME(100, FX, Full),
+	__DEFINE_LINK_MODE_NAME(10, T1L, Full),
+	__DEFINE_LINK_MODE_NAME(800000, CR8, Full),
+	__DEFINE_LINK_MODE_NAME(800000, KR8, Full),
+	__DEFINE_LINK_MODE_NAME(800000, DR8, Full),
+	__DEFINE_LINK_MODE_NAME(800000, DR8_2, Full),
+	__DEFINE_LINK_MODE_NAME(800000, SR8, Full),
+	__DEFINE_LINK_MODE_NAME(800000, VR8, Full),
+	__DEFINE_LINK_MODE_NAME(10, T1S, Full),
+	__DEFINE_LINK_MODE_NAME(10, T1S, Half),
+	__DEFINE_LINK_MODE_NAME(10, T1S_P2MP, Half),
+	__DEFINE_LINK_MODE_NAME(10, T1BRR, Full),
 };
 static_assert(ARRAY_SIZE(link_mode_names) == __ETHTOOL_LINK_MODE_MASK_NBITS);
+
+#define __LINK_MODE_LANES_CR		1
+#define __LINK_MODE_LANES_CR2		2
+#define __LINK_MODE_LANES_CR4		4
+#define __LINK_MODE_LANES_CR8		8
+#define __LINK_MODE_LANES_DR		1
+#define __LINK_MODE_LANES_DR2		2
+#define __LINK_MODE_LANES_DR4		4
+#define __LINK_MODE_LANES_DR8		8
+#define __LINK_MODE_LANES_KR		1
+#define __LINK_MODE_LANES_KR2		2
+#define __LINK_MODE_LANES_KR4		4
+#define __LINK_MODE_LANES_KR8		8
+#define __LINK_MODE_LANES_SR		1
+#define __LINK_MODE_LANES_SR2		2
+#define __LINK_MODE_LANES_SR4		4
+#define __LINK_MODE_LANES_SR8		8
+#define __LINK_MODE_LANES_ER		1
+#define __LINK_MODE_LANES_KX		1
+#define __LINK_MODE_LANES_KX4		4
+#define __LINK_MODE_LANES_LR		1
+#define __LINK_MODE_LANES_LR4		4
+#define __LINK_MODE_LANES_LR4_ER4	4
+#define __LINK_MODE_LANES_LR_ER_FR	1
+#define __LINK_MODE_LANES_LR2_ER2_FR2	2
+#define __LINK_MODE_LANES_LR4_ER4_FR4	4
+#define __LINK_MODE_LANES_LR8_ER8_FR8	8
+#define __LINK_MODE_LANES_LRM		1
+#define __LINK_MODE_LANES_MLD2		2
+#define __LINK_MODE_LANES_T		1
+#define __LINK_MODE_LANES_T1		1
+#define __LINK_MODE_LANES_X		1
+#define __LINK_MODE_LANES_FX		1
+#define __LINK_MODE_LANES_T1L		1
+#define __LINK_MODE_LANES_T1S		1
+#define __LINK_MODE_LANES_T1S_P2MP	1
+#define __LINK_MODE_LANES_VR8		8
+#define __LINK_MODE_LANES_DR8_2		8
+#define __LINK_MODE_LANES_T1BRR		1
+
+#define __DEFINE_LINK_MODE_PARAMS(_speed, _type, _duplex)	\
+	[ETHTOOL_LINK_MODE(_speed, _type, _duplex)] = {		\
+		.speed  = SPEED_ ## _speed, \
+		.lanes  = __LINK_MODE_LANES_ ## _type, \
+		.duplex	= __DUPLEX_ ## _duplex \
+	}
+#define __DUPLEX_Half DUPLEX_HALF
+#define __DUPLEX_Full DUPLEX_FULL
+#define __DEFINE_SPECIAL_MODE_PARAMS(_mode) \
+	[ETHTOOL_LINK_MODE_ ## _mode ## _BIT] = { \
+		.speed	= SPEED_UNKNOWN, \
+		.lanes	= 0, \
+		.duplex	= DUPLEX_UNKNOWN, \
+	}
+
+const struct link_mode_info link_mode_params[] = {
+	__DEFINE_LINK_MODE_PARAMS(10, T, Half),
+	__DEFINE_LINK_MODE_PARAMS(10, T, Full),
+	__DEFINE_LINK_MODE_PARAMS(100, T, Half),
+	__DEFINE_LINK_MODE_PARAMS(100, T, Full),
+	__DEFINE_LINK_MODE_PARAMS(1000, T, Half),
+	__DEFINE_LINK_MODE_PARAMS(1000, T, Full),
+	__DEFINE_SPECIAL_MODE_PARAMS(Autoneg),
+	__DEFINE_SPECIAL_MODE_PARAMS(TP),
+	__DEFINE_SPECIAL_MODE_PARAMS(AUI),
+	__DEFINE_SPECIAL_MODE_PARAMS(MII),
+	__DEFINE_SPECIAL_MODE_PARAMS(FIBRE),
+	__DEFINE_SPECIAL_MODE_PARAMS(BNC),
+	__DEFINE_LINK_MODE_PARAMS(10000, T, Full),
+	__DEFINE_SPECIAL_MODE_PARAMS(Pause),
+	__DEFINE_SPECIAL_MODE_PARAMS(Asym_Pause),
+	__DEFINE_LINK_MODE_PARAMS(2500, X, Full),
+	__DEFINE_SPECIAL_MODE_PARAMS(Backplane),
+	__DEFINE_LINK_MODE_PARAMS(1000, KX, Full),
+	__DEFINE_LINK_MODE_PARAMS(10000, KX4, Full),
+	__DEFINE_LINK_MODE_PARAMS(10000, KR, Full),
+	[ETHTOOL_LINK_MODE_10000baseR_FEC_BIT] = {
+		.speed	= SPEED_10000,
+		.lanes	= 1,
+		.duplex = DUPLEX_FULL,
+	},
+	__DEFINE_LINK_MODE_PARAMS(20000, MLD2, Full),
+	__DEFINE_LINK_MODE_PARAMS(20000, KR2, Full),
+	__DEFINE_LINK_MODE_PARAMS(40000, KR4, Full),
+	__DEFINE_LINK_MODE_PARAMS(40000, CR4, Full),
+	__DEFINE_LINK_MODE_PARAMS(40000, SR4, Full),
+	__DEFINE_LINK_MODE_PARAMS(40000, LR4, Full),
+	__DEFINE_LINK_MODE_PARAMS(56000, KR4, Full),
+	__DEFINE_LINK_MODE_PARAMS(56000, CR4, Full),
+	__DEFINE_LINK_MODE_PARAMS(56000, SR4, Full),
+	__DEFINE_LINK_MODE_PARAMS(56000, LR4, Full),
+	__DEFINE_LINK_MODE_PARAMS(25000, CR, Full),
+	__DEFINE_LINK_MODE_PARAMS(25000, KR, Full),
+	__DEFINE_LINK_MODE_PARAMS(25000, SR, Full),
+	__DEFINE_LINK_MODE_PARAMS(50000, CR2, Full),
+	__DEFINE_LINK_MODE_PARAMS(50000, KR2, Full),
+	__DEFINE_LINK_MODE_PARAMS(100000, KR4, Full),
+	__DEFINE_LINK_MODE_PARAMS(100000, SR4, Full),
+	__DEFINE_LINK_MODE_PARAMS(100000, CR4, Full),
+	__DEFINE_LINK_MODE_PARAMS(100000, LR4_ER4, Full),
+	__DEFINE_LINK_MODE_PARAMS(50000, SR2, Full),
+	__DEFINE_LINK_MODE_PARAMS(1000, X, Full),
+	__DEFINE_LINK_MODE_PARAMS(10000, CR, Full),
+	__DEFINE_LINK_MODE_PARAMS(10000, SR, Full),
+	__DEFINE_LINK_MODE_PARAMS(10000, LR, Full),
+	__DEFINE_LINK_MODE_PARAMS(10000, LRM, Full),
+	__DEFINE_LINK_MODE_PARAMS(10000, ER, Full),
+	__DEFINE_LINK_MODE_PARAMS(2500, T, Full),
+	__DEFINE_LINK_MODE_PARAMS(5000, T, Full),
+	__DEFINE_SPECIAL_MODE_PARAMS(FEC_NONE),
+	__DEFINE_SPECIAL_MODE_PARAMS(FEC_RS),
+	__DEFINE_SPECIAL_MODE_PARAMS(FEC_BASER),
+	__DEFINE_LINK_MODE_PARAMS(50000, KR, Full),
+	__DEFINE_LINK_MODE_PARAMS(50000, SR, Full),
+	__DEFINE_LINK_MODE_PARAMS(50000, CR, Full),
+	__DEFINE_LINK_MODE_PARAMS(50000, LR_ER_FR, Full),
+	__DEFINE_LINK_MODE_PARAMS(50000, DR, Full),
+	__DEFINE_LINK_MODE_PARAMS(100000, KR2, Full),
+	__DEFINE_LINK_MODE_PARAMS(100000, SR2, Full),
+	__DEFINE_LINK_MODE_PARAMS(100000, CR2, Full),
+	__DEFINE_LINK_MODE_PARAMS(100000, LR2_ER2_FR2, Full),
+	__DEFINE_LINK_MODE_PARAMS(100000, DR2, Full),
+	__DEFINE_LINK_MODE_PARAMS(200000, KR4, Full),
+	__DEFINE_LINK_MODE_PARAMS(200000, SR4, Full),
+	__DEFINE_LINK_MODE_PARAMS(200000, LR4_ER4_FR4, Full),
+	__DEFINE_LINK_MODE_PARAMS(200000, DR4, Full),
+	__DEFINE_LINK_MODE_PARAMS(200000, CR4, Full),
+	__DEFINE_LINK_MODE_PARAMS(100, T1, Full),
+	__DEFINE_LINK_MODE_PARAMS(1000, T1, Full),
+	__DEFINE_LINK_MODE_PARAMS(400000, KR8, Full),
+	__DEFINE_LINK_MODE_PARAMS(400000, SR8, Full),
+	__DEFINE_LINK_MODE_PARAMS(400000, LR8_ER8_FR8, Full),
+	__DEFINE_LINK_MODE_PARAMS(400000, DR8, Full),
+	__DEFINE_LINK_MODE_PARAMS(400000, CR8, Full),
+	__DEFINE_SPECIAL_MODE_PARAMS(FEC_LLRS),
+	__DEFINE_LINK_MODE_PARAMS(100000, KR, Full),
+	__DEFINE_LINK_MODE_PARAMS(100000, SR, Full),
+	__DEFINE_LINK_MODE_PARAMS(100000, LR_ER_FR, Full),
+	__DEFINE_LINK_MODE_PARAMS(100000, DR, Full),
+	__DEFINE_LINK_MODE_PARAMS(100000, CR, Full),
+	__DEFINE_LINK_MODE_PARAMS(200000, KR2, Full),
+	__DEFINE_LINK_MODE_PARAMS(200000, SR2, Full),
+	__DEFINE_LINK_MODE_PARAMS(200000, LR2_ER2_FR2, Full),
+	__DEFINE_LINK_MODE_PARAMS(200000, DR2, Full),
+	__DEFINE_LINK_MODE_PARAMS(200000, CR2, Full),
+	__DEFINE_LINK_MODE_PARAMS(400000, KR4, Full),
+	__DEFINE_LINK_MODE_PARAMS(400000, SR4, Full),
+	__DEFINE_LINK_MODE_PARAMS(400000, LR4_ER4_FR4, Full),
+	__DEFINE_LINK_MODE_PARAMS(400000, DR4, Full),
+	__DEFINE_LINK_MODE_PARAMS(400000, CR4, Full),
+	__DEFINE_LINK_MODE_PARAMS(100, FX, Half),
+	__DEFINE_LINK_MODE_PARAMS(100, FX, Full),
+	__DEFINE_LINK_MODE_PARAMS(10, T1L, Full),
+	__DEFINE_LINK_MODE_PARAMS(800000, CR8, Full),
+	__DEFINE_LINK_MODE_PARAMS(800000, KR8, Full),
+	__DEFINE_LINK_MODE_PARAMS(800000, DR8, Full),
+	__DEFINE_LINK_MODE_PARAMS(800000, DR8_2, Full),
+	__DEFINE_LINK_MODE_PARAMS(800000, SR8, Full),
+	__DEFINE_LINK_MODE_PARAMS(800000, VR8, Full),
+	__DEFINE_LINK_MODE_PARAMS(10, T1S, Full),
+	__DEFINE_LINK_MODE_PARAMS(10, T1S, Half),
+	__DEFINE_LINK_MODE_PARAMS(10, T1S_P2MP, Half),
+	__DEFINE_LINK_MODE_PARAMS(10, T1BRR, Full),
+};
+static_assert(ARRAY_SIZE(link_mode_params) == __ETHTOOL_LINK_MODE_MASK_NBITS);
 
 const char netif_msg_class_names[][ETH_GSTRING_LEN] = {
 	[NETIF_MSG_DRV_BIT]		= "drv",
@@ -244,6 +425,9 @@ const char sof_timestamping_names[][ETH_GSTRING_LEN] = {
 	[const_ilog2(SOF_TIMESTAMPING_OPT_STATS)]    = "option-stats",
 	[const_ilog2(SOF_TIMESTAMPING_OPT_PKTINFO)]  = "option-pktinfo",
 	[const_ilog2(SOF_TIMESTAMPING_OPT_TX_SWHW)]  = "option-tx-swhw",
+	[const_ilog2(SOF_TIMESTAMPING_BIND_PHC)]     = "bind-phc",
+	[const_ilog2(SOF_TIMESTAMPING_OPT_ID_TCP)]   = "option-id-tcp",
+	[const_ilog2(SOF_TIMESTAMPING_OPT_RX_FILTER)] = "option-rx-filter",
 };
 static_assert(ARRAY_SIZE(sof_timestamping_names) == __SOF_TIMESTAMPING_CNT);
 
@@ -339,40 +523,238 @@ int __ethtool_get_link(struct net_device *dev)
 	return netif_running(dev) && dev->ethtool_ops->get_link(dev);
 }
 
-int ethtool_get_max_rxfh_channel(struct net_device *dev, u32 *max)
+static int ethtool_get_rxnfc_rule_count(struct net_device *dev)
 {
+	const struct ethtool_ops *ops = dev->ethtool_ops;
+	struct ethtool_rxnfc info = {
+		.cmd = ETHTOOL_GRXCLSRLCNT,
+	};
+	int err;
+
+	err = ops->get_rxnfc(dev, &info, NULL);
+	if (err)
+		return err;
+
+	return info.rule_cnt;
+}
+
+/* Max offset for one RSS context */
+static u32 ethtool_get_rss_ctx_max_channel(struct ethtool_rxfh_context *ctx)
+{
+	u32 max_ring = 0;
+	u32 i, *tbl;
+
+	if (WARN_ON_ONCE(!ctx))
+		return 0;
+	tbl = ethtool_rxfh_context_indir(ctx);
+	for (i = 0; i < ctx->indir_size; i++)
+		max_ring = max(max_ring, tbl[i]);
+	return max_ring;
+}
+
+static int ethtool_get_max_rxnfc_channel(struct net_device *dev, u64 *max)
+{
+	const struct ethtool_ops *ops = dev->ethtool_ops;
+	struct ethtool_rxnfc *info;
+	int err, i, rule_cnt;
+	u64 max_ring = 0;
+
+	if (!ops->get_rxnfc)
+		return -EOPNOTSUPP;
+
+	rule_cnt = ethtool_get_rxnfc_rule_count(dev);
+	if (rule_cnt <= 0)
+		return -EINVAL;
+
+	info = kvzalloc(struct_size(info, rule_locs, rule_cnt), GFP_KERNEL);
+	if (!info)
+		return -ENOMEM;
+
+	info->cmd = ETHTOOL_GRXCLSRLALL;
+	info->rule_cnt = rule_cnt;
+	err = ops->get_rxnfc(dev, info, info->rule_locs);
+	if (err)
+		goto err_free_info;
+
+	for (i = 0; i < rule_cnt; i++) {
+		struct ethtool_rxnfc rule_info = {
+			.cmd = ETHTOOL_GRXCLSRULE,
+			.fs.location = info->rule_locs[i],
+		};
+
+		err = ops->get_rxnfc(dev, &rule_info, NULL);
+		if (err)
+			goto err_free_info;
+
+		if (rule_info.fs.ring_cookie != RX_CLS_FLOW_DISC &&
+		    rule_info.fs.ring_cookie != RX_CLS_FLOW_WAKE &&
+		    !ethtool_get_flow_spec_ring_vf(rule_info.fs.ring_cookie)) {
+			u64 ring = rule_info.fs.ring_cookie;
+
+			if (rule_info.flow_type & FLOW_RSS) {
+				struct ethtool_rxfh_context *ctx;
+
+				ctx = xa_load(&dev->ethtool->rss_ctx,
+					      rule_info.rss_context);
+				ring += ethtool_get_rss_ctx_max_channel(ctx);
+			}
+			max_ring = max_t(u64, max_ring, ring);
+		}
+	}
+
+	kvfree(info);
+	*max = max_ring;
+	return 0;
+
+err_free_info:
+	kvfree(info);
+	return err;
+}
+
+/* Max offset across all of a device's RSS contexts */
+static u32 ethtool_get_max_rss_ctx_channel(struct net_device *dev)
+{
+	struct ethtool_rxfh_context *ctx;
+	unsigned long context;
+	u32 max_ring = 0;
+
+	mutex_lock(&dev->ethtool->rss_lock);
+	xa_for_each(&dev->ethtool->rss_ctx, context, ctx)
+		max_ring = max(max_ring, ethtool_get_rss_ctx_max_channel(ctx));
+	mutex_unlock(&dev->ethtool->rss_lock);
+
+	return max_ring;
+}
+
+static u32 ethtool_get_max_rxfh_channel(struct net_device *dev)
+{
+	struct ethtool_rxfh_param rxfh = {};
 	u32 dev_size, current_max = 0;
-	u32 *indir;
 	int ret;
+
+	/* While we do track whether RSS context has an indirection
+	 * table explicitly set by the user, no driver looks at that bit.
+	 * Assume drivers won't auto-regenerate the additional tables,
+	 * to be safe.
+	 */
+	current_max = ethtool_get_max_rss_ctx_channel(dev);
+
+	if (!netif_is_rxfh_configured(dev))
+		return current_max;
 
 	if (!dev->ethtool_ops->get_rxfh_indir_size ||
 	    !dev->ethtool_ops->get_rxfh)
-		return -EOPNOTSUPP;
+		return current_max;
 	dev_size = dev->ethtool_ops->get_rxfh_indir_size(dev);
 	if (dev_size == 0)
-		return -EOPNOTSUPP;
+		return current_max;
 
-	indir = kcalloc(dev_size, sizeof(indir[0]), GFP_USER);
-	if (!indir)
-		return -ENOMEM;
+	rxfh.indir = kcalloc(dev_size, sizeof(rxfh.indir[0]), GFP_USER);
+	if (!rxfh.indir)
+		return U32_MAX;
 
-	ret = dev->ethtool_ops->get_rxfh(dev, indir, NULL, NULL);
-	if (ret)
-		goto out;
+	ret = dev->ethtool_ops->get_rxfh(dev, &rxfh);
+	if (ret) {
+		current_max = U32_MAX;
+		goto out_free;
+	}
 
 	while (dev_size--)
-		current_max = max(current_max, indir[dev_size]);
+		current_max = max(current_max, rxfh.indir[dev_size]);
 
-	*max = current_max;
+out_free:
+	kfree(rxfh.indir);
+	return current_max;
+}
 
-out:
-	kfree(indir);
-	return ret;
+int ethtool_check_max_channel(struct net_device *dev,
+			      struct ethtool_channels channels,
+			      struct genl_info *info)
+{
+	u64 max_rxnfc_in_use;
+	u32 max_rxfh_in_use;
+	int max_mp_in_use;
+
+	/* ensure the new Rx count fits within the configured Rx flow
+	 * indirection table/rxnfc settings
+	 */
+	if (ethtool_get_max_rxnfc_channel(dev, &max_rxnfc_in_use))
+		max_rxnfc_in_use = 0;
+	max_rxfh_in_use = ethtool_get_max_rxfh_channel(dev);
+	if (channels.combined_count + channels.rx_count <= max_rxfh_in_use) {
+		if (info)
+			GENL_SET_ERR_MSG_FMT(info, "requested channel counts are too low for existing indirection table (%d)", max_rxfh_in_use);
+		return -EINVAL;
+	}
+	if (channels.combined_count + channels.rx_count <= max_rxnfc_in_use) {
+		if (info)
+			GENL_SET_ERR_MSG(info, "requested channel counts are too low for existing ntuple filter settings");
+		return -EINVAL;
+	}
+
+	max_mp_in_use = dev_get_min_mp_channel_count(dev);
+	if (channels.combined_count + channels.rx_count <= max_mp_in_use) {
+		if (info)
+			GENL_SET_ERR_MSG_FMT(info, "requested channel counts are too low for existing memory provider setting (%d)", max_mp_in_use);
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+int ethtool_check_rss_ctx_busy(struct net_device *dev, u32 rss_context)
+{
+	const struct ethtool_ops *ops = dev->ethtool_ops;
+	struct ethtool_rxnfc *info;
+	int rc, i, rule_cnt;
+
+	if (!ops->get_rxnfc)
+		return 0;
+
+	rule_cnt = ethtool_get_rxnfc_rule_count(dev);
+	if (!rule_cnt)
+		return 0;
+
+	if (rule_cnt < 0)
+		return -EINVAL;
+
+	info = kvzalloc(struct_size(info, rule_locs, rule_cnt), GFP_KERNEL);
+	if (!info)
+		return -ENOMEM;
+
+	info->cmd = ETHTOOL_GRXCLSRLALL;
+	info->rule_cnt = rule_cnt;
+	rc = ops->get_rxnfc(dev, info, info->rule_locs);
+	if (rc)
+		goto out_free;
+
+	for (i = 0; i < rule_cnt; i++) {
+		struct ethtool_rxnfc rule_info = {
+			.cmd = ETHTOOL_GRXCLSRULE,
+			.fs.location = info->rule_locs[i],
+		};
+
+		rc = ops->get_rxnfc(dev, &rule_info, NULL);
+		if (rc)
+			goto out_free;
+
+		if (rule_info.fs.flow_type & FLOW_RSS &&
+		    rule_info.rss_context == rss_context) {
+			rc = -EBUSY;
+			goto out_free;
+		}
+	}
+
+out_free:
+	kvfree(info);
+	return rc;
 }
 
 int ethtool_check_ops(const struct ethtool_ops *ops)
 {
 	if (WARN_ON(ops->set_coalesce && !ops->supported_coalesce_params))
+		return -EINVAL;
+	if (WARN_ON(ops->rxfh_max_num_contexts == 1))
 		return -EINVAL;
 	/* NOTE: sufficiently insane drivers may swap ethtool_ops at runtime,
 	 * the fact that ops are checked at registration time does not
@@ -381,32 +763,101 @@ int ethtool_check_ops(const struct ethtool_ops *ops)
 	return 0;
 }
 
-int __ethtool_get_ts_info(struct net_device *dev, struct ethtool_ts_info *info)
+int __ethtool_get_ts_info(struct net_device *dev, struct kernel_ethtool_ts_info *info)
 {
 	const struct ethtool_ops *ops = dev->ethtool_ops;
 	struct phy_device *phydev = dev->phydev;
+	int err = 0;
 
 	memset(info, 0, sizeof(*info));
 	info->cmd = ETHTOOL_GET_TS_INFO;
-
-	if (phy_has_tsinfo(phydev))
-		return phy_ts_info(phydev, info);
-	if (ops->get_ts_info)
-		return ops->get_ts_info(dev, info);
-
-	info->so_timestamping = SOF_TIMESTAMPING_RX_SOFTWARE |
-				SOF_TIMESTAMPING_SOFTWARE;
 	info->phc_index = -1;
 
-	return 0;
+	if (phy_is_default_hwtstamp(phydev) && phy_has_tsinfo(phydev))
+		err = phy_ts_info(phydev, info);
+	else if (ops->get_ts_info)
+		err = ops->get_ts_info(dev, info);
+
+	info->so_timestamping |= SOF_TIMESTAMPING_RX_SOFTWARE |
+				 SOF_TIMESTAMPING_SOFTWARE;
+
+	return err;
 }
+
+int ethtool_get_phc_vclocks(struct net_device *dev, int **vclock_index)
+{
+	struct kernel_ethtool_ts_info info = { };
+	int num = 0;
+
+	if (!__ethtool_get_ts_info(dev, &info))
+		num = ptp_get_vclocks_index(info.phc_index, vclock_index);
+
+	return num;
+}
+EXPORT_SYMBOL(ethtool_get_phc_vclocks);
+
+int ethtool_get_ts_info_by_layer(struct net_device *dev, struct kernel_ethtool_ts_info *info)
+{
+	return __ethtool_get_ts_info(dev, info);
+}
+EXPORT_SYMBOL(ethtool_get_ts_info_by_layer);
 
 const struct ethtool_phy_ops *ethtool_phy_ops;
 
 void ethtool_set_ethtool_phy_ops(const struct ethtool_phy_ops *ops)
 {
-	rtnl_lock();
+	ASSERT_RTNL();
 	ethtool_phy_ops = ops;
-	rtnl_unlock();
 }
 EXPORT_SYMBOL_GPL(ethtool_set_ethtool_phy_ops);
+
+void
+ethtool_params_from_link_mode(struct ethtool_link_ksettings *link_ksettings,
+			      enum ethtool_link_mode_bit_indices link_mode)
+{
+	const struct link_mode_info *link_info;
+
+	if (WARN_ON_ONCE(link_mode >= __ETHTOOL_LINK_MODE_MASK_NBITS))
+		return;
+
+	link_info = &link_mode_params[link_mode];
+	link_ksettings->base.speed = link_info->speed;
+	link_ksettings->lanes = link_info->lanes;
+	link_ksettings->base.duplex = link_info->duplex;
+}
+EXPORT_SYMBOL_GPL(ethtool_params_from_link_mode);
+
+/**
+ * ethtool_forced_speed_maps_init
+ * @maps: Pointer to an array of Ethtool forced speed map
+ * @size: Array size
+ *
+ * Initialize an array of Ethtool forced speed map to Ethtool link modes. This
+ * should be called during driver module init.
+ */
+void
+ethtool_forced_speed_maps_init(struct ethtool_forced_speed_map *maps, u32 size)
+{
+	for (u32 i = 0; i < size; i++) {
+		struct ethtool_forced_speed_map *map = &maps[i];
+
+		linkmode_set_bit_array(map->cap_arr, map->arr_size, map->caps);
+		map->cap_arr = NULL;
+		map->arr_size = 0;
+	}
+}
+EXPORT_SYMBOL_GPL(ethtool_forced_speed_maps_init);
+
+void ethtool_rxfh_context_lost(struct net_device *dev, u32 context_id)
+{
+	struct ethtool_rxfh_context *ctx;
+
+	WARN_ONCE(!rtnl_is_locked() &&
+		  !lockdep_is_held_type(&dev->ethtool->rss_lock, -1),
+		  "RSS context lock assertion failed\n");
+
+	netdev_err(dev, "device error, RSS context %d lost\n", context_id);
+	ctx = xa_erase(&dev->ethtool->rss_ctx, context_id);
+	kfree(ctx);
+}
+EXPORT_SYMBOL(ethtool_rxfh_context_lost);

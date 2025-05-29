@@ -63,10 +63,9 @@ will want to turn on ``CONFIG_DEBUG_INFO`` which is called
 It is advised, but not required, that you turn on the
 ``CONFIG_FRAME_POINTER`` kernel option which is called :menuselection:`Compile
 the kernel with frame pointers` in the config menu. This option inserts code
-to into the compiled executable which saves the frame information in
-registers or on the stack at different points which allows a debugger
-such as gdb to more accurately construct stack back traces while
-debugging the kernel.
+into the compiled executable which saves the frame information in registers
+or on the stack at different points which allows a debugger such as gdb to
+more accurately construct stack back traces while debugging the kernel.
 
 If the architecture that you are using supports the kernel option
 ``CONFIG_STRICT_KERNEL_RWX``, you should consider turning it off. This
@@ -76,11 +75,11 @@ supports it for the architecture you are using, you can use hardware
 breakpoints if you desire to run with the ``CONFIG_STRICT_KERNEL_RWX``
 option turned on, else you need to turn off this option.
 
-Next you should choose one of more I/O drivers to interconnect debugging
+Next you should choose one or more I/O drivers to interconnect the debugging
 host and debugged target. Early boot debugging requires a KGDB I/O
 driver that supports early debugging and the driver must be built into
 the kernel directly. Kgdb I/O driver configuration takes place via
-kernel or module parameters which you can learn more about in the in the
+kernel or module parameters which you can learn more about in the
 section that describes the parameter kgdboc.
 
 Here is an example set of ``.config`` symbols to enable or disable for kgdb::
@@ -202,8 +201,8 @@ Using loadable module or built-in
 Configure kgdboc at runtime with sysfs
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-At run time you can enable or disable kgdboc by echoing a parameters
-into the sysfs. Here are two examples:
+At run time you can enable or disable kgdboc by writing parameters
+into sysfs. Here are two examples:
 
 1. Enable kgdboc on ttyS0::
 
@@ -330,7 +329,7 @@ ways to activate this feature.
 
 2. Use sysfs before configuring an I/O driver::
 
-	echo 1 > /sys/module/kgdb/parameters/kgdb_use_con
+	echo 1 > /sys/module/debug_core/parameters/kgdb_use_con
 
 .. note::
 
@@ -375,10 +374,10 @@ default behavior is always set to 0.
 Kernel parameter: ``nokaslr``
 -----------------------------
 
-If the architecture that you are using enable KASLR by default,
+If the architecture that you are using enables KASLR by default,
 you should consider turning it off.  KASLR randomizes the
-virtual address where the kernel image is mapped and confuse
-gdb which resolve kernel symbol address from symbol table
+virtual address where the kernel image is mapped and confuses
+gdb which resolves addresses of kernel symbols from the symbol table
 of vmlinux.
 
 Using kdb
@@ -403,7 +402,7 @@ This is a quick example of how to use kdb.
 2. Enter the kernel debugger manually or by waiting for an oops or
    fault. There are several ways you can enter the kernel debugger
    manually; all involve using the :kbd:`SysRq-G`, which means you must have
-   enabled ``CONFIG_MAGIC_SysRq=y`` in your kernel config.
+   enabled ``CONFIG_MAGIC_SYSRQ=y`` in your kernel config.
 
    -  When logged in as root or with a super user session you can run::
 
@@ -462,7 +461,7 @@ This is a quick example of how to use kdb with a keyboard.
 2. Enter the kernel debugger manually or by waiting for an oops or
    fault. There are several ways you can enter the kernel debugger
    manually; all involve using the :kbd:`SysRq-G`, which means you must have
-   enabled ``CONFIG_MAGIC_SysRq=y`` in your kernel config.
+   enabled ``CONFIG_MAGIC_SYSRQ=y`` in your kernel config.
 
    -  When logged in as root or with a super user session you can run::
 
@@ -558,7 +557,7 @@ Connecting with gdb to a serial port
    Example (using a directly connected port)::
 
            % gdb ./vmlinux
-           (gdb) set remotebaud 115200
+           (gdb) set serial baud 115200
            (gdb) target remote /dev/ttyS0
 
 
@@ -631,8 +630,6 @@ automatically changes into kgdb mode.
 1. From kdb issue the command::
 
 	kgdb
-
-   Now disconnect your terminal program and connect gdb in its place
 
 2. At the kdb prompt, disconnect the terminal program and connect gdb in
    its place.
@@ -750,7 +747,7 @@ The kernel debugger is organized into a number of components:
    helper functions in some of the other kernel components to make it
    possible for kdb to examine and report information about the kernel
    without taking locks that could cause a kernel deadlock. The kdb core
-   contains implements the following functionality.
+   implements the following functionality.
 
    -  A simple shell
 

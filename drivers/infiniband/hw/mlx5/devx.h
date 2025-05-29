@@ -16,7 +16,7 @@ struct devx_obj {
 	u32			dinbox[MLX5_MAX_DESTROY_INBOX_SIZE_DW];
 	u32			flags;
 	union {
-		struct mlx5_ib_devx_mr	devx_mr;
+		struct mlx5_ib_mkey	mkey;
 		struct mlx5_core_dct	core_dct;
 		struct mlx5_core_cq	core_cq;
 		u32			flow_counter_bulk_size;
@@ -28,6 +28,7 @@ int mlx5_ib_devx_create(struct mlx5_ib_dev *dev, bool is_user);
 void mlx5_ib_devx_destroy(struct mlx5_ib_dev *dev, u16 uid);
 int mlx5_ib_devx_init(struct mlx5_ib_dev *dev);
 void mlx5_ib_devx_cleanup(struct mlx5_ib_dev *dev);
+void mlx5_ib_ufile_hw_cleanup(struct ib_uverbs_file *ufile);
 #else
 static inline int mlx5_ib_devx_create(struct mlx5_ib_dev *dev, bool is_user)
 {
@@ -39,6 +40,9 @@ static inline int mlx5_ib_devx_init(struct mlx5_ib_dev *dev)
 	return 0;
 }
 static inline void mlx5_ib_devx_cleanup(struct mlx5_ib_dev *dev)
+{
+}
+static inline void mlx5_ib_ufile_hw_cleanup(struct ib_uverbs_file *ufile)
 {
 }
 #endif

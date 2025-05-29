@@ -119,7 +119,7 @@ static int init_freecom(struct us_data *us);
 { USB_DEVICE_VER(id_vendor, id_product, bcdDeviceMin, bcdDeviceMax), \
   .driver_info = (flags) }
 
-static struct usb_device_id freecom_usb_ids[] = {
+static const struct usb_device_id freecom_usb_ids[] = {
 #	include "unusual_freecom.h"
 	{ }		/* Terminating entry */
 };
@@ -141,7 +141,7 @@ MODULE_DEVICE_TABLE(usb, freecom_usb_ids);
 	.initFunction = init_function,	\
 }
 
-static struct us_unusual_dev freecom_unusual_dev_list[] = {
+static const struct us_unusual_dev freecom_unusual_dev_list[] = {
 #	include "unusual_freecom.h"
 	{ }		/* Terminating entry */
 };
@@ -431,7 +431,6 @@ static int freecom_transport(struct scsi_cmnd *srb, struct us_data *us)
 			     us->srb->sc_data_direction);
 		/* Return fail, SCSI seems to handle this better. */
 		return USB_STOR_TRANSPORT_FAILED;
-		break;
 	}
 
 	return USB_STOR_TRANSPORT_GOOD;
@@ -535,7 +534,6 @@ static void pdump(struct us_data *us, void *ibuffer, int length)
 	}
 	line[offset] = 0;
 	usb_stor_dbg(us, "%s\n", line);
-	offset = 0;
 }
 #endif
 

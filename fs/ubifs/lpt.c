@@ -851,7 +851,7 @@ int ubifs_create_dflt_lpt(struct ubifs_info *c, int *main_lebs, int lpt_first,
 	dbg_lp("lsave_sz %d", c->lsave_sz);
 	dbg_lp("lsave_cnt %d", c->lsave_cnt);
 	dbg_lp("lpt_hght %d", c->lpt_hght);
-	dbg_lp("big_lpt %d", c->big_lpt);
+	dbg_lp("big_lpt %u", c->big_lpt);
 	dbg_lp("LPT root is at %d:%d", c->lpt_lnum, c->lpt_offs);
 	dbg_lp("LPT head is at %d:%d", c->nhead_lnum, c->nhead_offs);
 	dbg_lp("LPT ltab is at %d:%d", c->ltab_lnum, c->ltab_offs);
@@ -1824,7 +1824,7 @@ static int lpt_init_rd(struct ubifs_info *c)
 	dbg_lp("lsave_sz %d", c->lsave_sz);
 	dbg_lp("lsave_cnt %d", c->lsave_cnt);
 	dbg_lp("lpt_hght %d", c->lpt_hght);
-	dbg_lp("big_lpt %d", c->big_lpt);
+	dbg_lp("big_lpt %u", c->big_lpt);
 	dbg_lp("LPT root is at %d:%d", c->lpt_lnum, c->lpt_offs);
 	dbg_lp("LPT head is at %d:%d", c->nhead_lnum, c->nhead_offs);
 	dbg_lp("LPT ltab is at %d:%d", c->ltab_lnum, c->ltab_offs);
@@ -1918,6 +1918,7 @@ out_err:
  * @pnode: where to keep a pnode
  * @cnode: where to keep a cnode
  * @in_tree: is the node in the tree in memory
+ * @ptr: union of node pointers
  * @ptr.nnode: pointer to the nnode (if it is an nnode) which may be here or in
  * the tree
  * @ptr.pnode: ditto for pnode

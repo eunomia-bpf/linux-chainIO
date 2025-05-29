@@ -36,7 +36,7 @@ struct adc0832 {
 	 */
 	u8 data[24] __aligned(8);
 
-	u8 tx_buf[2] ____cacheline_aligned;
+	u8 tx_buf[2] __aligned(IIO_DMA_MINALIGN);
 	u8 rx_buf[2];
 };
 
@@ -211,8 +211,7 @@ static irqreturn_t adc0832_trigger_handler(int irq, void *p)
 
 	mutex_lock(&adc->lock);
 
-	for_each_set_bit(scan_index, indio_dev->active_scan_mask,
-			 indio_dev->masklength) {
+	iio_for_each_active_channel(indio_dev, scan_index) {
 		const struct iio_chan_spec *scan_chan =
 				&indio_dev->channels[scan_index];
 		int ret = adc0832_adc_conversion(adc, scan_chan->channel,
@@ -234,6 +233,11 @@ out:
 	iio_trigger_notify_done(indio_dev->trig);
 
 	return IRQ_HANDLED;
+}
+
+static void adc0832_reg_disable(void *reg)
+{
+	regulator_disable(reg);
 }
 
 static int adc0832_probe(struct spi_device *spi)
@@ -287,36 +291,17 @@ static int adc0832_probe(struct spi_device *spi)
 	if (ret)
 		return ret;
 
-	spi_set_drvdata(spi, indio_dev);
-
-	ret = iio_triggered_buffer_setup(indio_dev, NULL,
-					 adc0832_trigger_handler, NULL);
+	ret = devm_add_action_or_reset(&spi->dev, adc0832_reg_disable,
+				       adc->reg);
 	if (ret)
-		goto err_reg_disable;
+		return ret;
 
-	ret = iio_device_register(indio_dev);
+	ret = devm_iio_triggered_buffer_setup(&spi->dev, indio_dev, NULL,
+					      adc0832_trigger_handler, NULL);
 	if (ret)
-		goto err_buffer_cleanup;
+		return ret;
 
-	return 0;
-err_buffer_cleanup:
-	iio_triggered_buffer_cleanup(indio_dev);
-err_reg_disable:
-	regulator_disable(adc->reg);
-
-	return ret;
-}
-
-static int adc0832_remove(struct spi_device *spi)
-{
-	struct iio_dev *indio_dev = spi_get_drvdata(spi);
-	struct adc0832 *adc = iio_priv(indio_dev);
-
-	iio_device_unregister(indio_dev);
-	iio_triggered_buffer_cleanup(indio_dev);
-	regulator_disable(adc->reg);
-
-	return 0;
+	return devm_iio_device_register(&spi->dev, indio_dev);
 }
 
 static const struct of_device_id adc0832_dt_ids[] = {
@@ -324,7 +309,7 @@ static const struct of_device_id adc0832_dt_ids[] = {
 	{ .compatible = "ti,adc0832", },
 	{ .compatible = "ti,adc0834", },
 	{ .compatible = "ti,adc0838", },
-	{}
+	{ }
 };
 MODULE_DEVICE_TABLE(of, adc0832_dt_ids);
 
@@ -333,7 +318,7 @@ static const struct spi_device_id adc0832_id[] = {
 	{ "adc0832", adc0832 },
 	{ "adc0834", adc0834 },
 	{ "adc0838", adc0838 },
-	{}
+	{ }
 };
 MODULE_DEVICE_TABLE(spi, adc0832_id);
 
@@ -343,7 +328,6 @@ static struct spi_driver adc0832_driver = {
 		.of_match_table = adc0832_dt_ids,
 	},
 	.probe = adc0832_probe,
-	.remove = adc0832_remove,
 	.id_table = adc0832_id,
 };
 module_spi_driver(adc0832_driver);

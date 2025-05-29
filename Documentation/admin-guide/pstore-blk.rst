@@ -35,7 +35,7 @@ module parameters have priority over Kconfig.
 
 Here is an example for module parameters::
 
-        pstore_blk.blkdev=179:7 pstore_blk.kmsg_size=64
+        pstore_blk.blkdev=/dev/mmcblk0p7 pstore_blk.kmsg_size=64 best_effort=y
 
 The detail of each configurations may be of interest to you.
 
@@ -45,15 +45,18 @@ blkdev
 The block device to use. Most of the time, it is a partition of block device.
 It's required for pstore/blk. It is also used for MTD device.
 
-It accepts the following variants for block device:
+When pstore/blk is built as a module, "blkdev" accepts the following variants:
 
-1. <hex_major><hex_minor> device number in hexadecimal represents itself; no
-   leading 0x, for example b302.
-#. /dev/<disk_name> represents the device number of disk
+1. /dev/<disk_name> represents the device number of disk
 #. /dev/<disk_name><decimal> represents the device number of partition - device
    number of disk plus the partition number
 #. /dev/<disk_name>p<decimal> - same as the above; this form is used when disk
    name of partitioned disk ends with a digit.
+
+When pstore/blk is built into the kernel, "blkdev" accepts the following variants:
+
+#. <hex_major><hex_minor> device number in hexadecimal representation,
+   with no leading 0x, for example b302.
 #. PARTUUID=00112233-4455-6677-8899-AABBCCDDEEFF represents the unique id of
    a partition if the partition table provides it. The UUID may be either an
    EFI/GPT UUID, or refer to an MSDOS partition using the format SSSSSSSS-PP,
@@ -73,7 +76,7 @@ kmsg_size
 ~~~~~~~~~
 
 The chunk size in KB for oops/panic front-end. It **MUST** be a multiple of 4.
-It's optional if you do not care oops/panic log.
+It's optional if you do not care about the oops/panic log.
 
 There are multiple chunks for oops/panic front-end depending on the remaining
 space except other pstore front-ends.
@@ -85,7 +88,7 @@ pmsg_size
 ~~~~~~~~~
 
 The chunk size in KB for pmsg front-end. It **MUST** be a multiple of 4.
-It's optional if you do not care pmsg log.
+It's optional if you do not care about the pmsg log.
 
 Unlike oops/panic front-end, there is only one chunk for pmsg front-end.
 
@@ -97,7 +100,7 @@ console_size
 ~~~~~~~~~~~~
 
 The chunk size in KB for console front-end.  It **MUST** be a multiple of 4.
-It's optional if you do not care console log.
+It's optional if you do not care about the console log.
 
 Similar to pmsg front-end, there is only one chunk for console front-end.
 
@@ -108,7 +111,7 @@ ftrace_size
 ~~~~~~~~~~~
 
 The chunk size in KB for ftrace front-end. It **MUST** be a multiple of 4.
-It's optional if you do not care console log.
+It's optional if you do not care about the ftrace log.
 
 Similar to oops front-end, there are multiple chunks for ftrace front-end
 depending on the count of cpu processors. Each chunk size is equal to
@@ -151,10 +154,7 @@ otherwise KMSG_DUMP_MAX.
 Configurations for driver
 -------------------------
 
-Only a block device driver cares about these configurations. A block device
-driver uses ``register_pstore_blk`` to register to pstore/blk.
-
-A non-block device driver uses ``register_pstore_device`` with
+A device driver uses ``register_pstore_device`` with
 ``struct pstore_device_info`` to register to pstore/blk.
 
 .. kernel-doc:: fs/pstore/blk.c
@@ -228,9 +228,6 @@ For developer reference, here are all the important structures and APIs:
    :internal:
 
 .. kernel-doc:: include/linux/pstore_zone.h
-   :internal:
-
-.. kernel-doc:: fs/pstore/blk.c
    :internal:
 
 .. kernel-doc:: include/linux/pstore_blk.h

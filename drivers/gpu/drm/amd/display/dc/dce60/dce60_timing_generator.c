@@ -111,13 +111,14 @@ static void program_timing(struct timing_generator *tg,
 	int vstartup_start,
 	int vupdate_offset,
 	int vupdate_width,
+	int pstate_keepout,
 	const enum signal_type signal,
 	bool use_vbios)
 {
 	if (!use_vbios)
 		program_pix_dur(tg, timing->pix_clk_100hz);
 
-	dce110_tg_program_timing(tg, timing, 0, 0, 0, 0, 0, use_vbios);
+	dce110_tg_program_timing(tg, timing, 0, 0, 0, 0, 0, 0, use_vbios);
 }
 
 static void dce60_timing_generator_enable_advanced_request(
@@ -189,8 +190,8 @@ static bool dce60_is_tg_enabled(struct timing_generator *tg)
 	return field == 1;
 }
 
-bool dce60_configure_crc(struct timing_generator *tg,
-			  const struct crc_params *params)
+static bool dce60_configure_crc(struct timing_generator *tg,
+				const struct crc_params *params)
 {
 	/* Cannot configure crc on a CRTC that is disabled */
 	if (!dce60_is_tg_enabled(tg))

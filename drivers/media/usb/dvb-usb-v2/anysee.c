@@ -46,23 +46,14 @@ static int anysee_ctrl_msg(struct dvb_usb_device *d,
 
 	dev_dbg(&d->udev->dev, "%s: >>> %*ph\n", __func__, slen, state->buf);
 
-	/* We need receive one message more after dvb_usb_generic_rw due
-	   to weird transaction flow, which is 1 x send + 2 x receive. */
+	/*
+	 * We need receive one message more after dvb_usbv2_generic_rw_locked()
+	 * due to weird transaction flow, which is 1 x send + 2 x receive.
+	 */
 	ret = dvb_usbv2_generic_rw_locked(d, state->buf, sizeof(state->buf),
 			state->buf, sizeof(state->buf));
 	if (ret)
 		goto error_unlock;
-
-	/* TODO FIXME: dvb_usb_generic_rw() fails rarely with error code -32
-	 * (EPIPE, Broken pipe). Function supports currently msleep() as a
-	 * parameter but I would not like to use it, since according to
-	 * Documentation/timers/timers-howto.rst it should not be used such
-	 * short, under < 20ms, sleeps. Repeating failed message would be
-	 * better choice as not to add unwanted delays...
-	 * Fixing that correctly is one of those or both;
-	 * 1) use repeat if possible
-	 * 2) add suitable delay
-	 */
 
 	/* get answer, retry few times if error returned */
 	for (i = 0; i < 3; i++) {
@@ -202,14 +193,14 @@ static int anysee_master_xfer(struct i2c_adapter *adap, struct i2c_msg *msg,
 
 	while (i < num) {
 		if (num > i + 1 && (msg[i+1].flags & I2C_M_RD)) {
-			if (msg[i].len > 2 || msg[i+1].len > 60) {
+			if (msg[i].len < 1 || msg[i].len > 2 || msg[i + 1].len > 60) {
 				ret = -EOPNOTSUPP;
 				break;
 			}
 			buf[0] = CMD_I2C_READ;
 			buf[1] = (msg[i].addr << 1) | 0x01;
 			buf[2] = msg[i].buf[0];
-			buf[3] = msg[i].buf[1];
+			buf[3] = (msg[i].len < 2) ? 0 : msg[i].buf[1];
 			buf[4] = msg[i].len-1;
 			buf[5] = msg[i+1].len;
 			ret = anysee_ctrl_msg(d, buf, 6, msg[i+1].buf,
@@ -1171,14 +1162,9 @@ static int anysee_ci_write_attribute_mem(struct dvb_ca_en50221 *ci, int slot,
 	int addr, u8 val)
 {
 	struct dvb_usb_device *d = ci->data;
-	int ret;
 	u8 buf[] = {CMD_CI, 0x03, 0x40 | addr >> 8, addr & 0xff, 0x00, 1, val};
 
-	ret = anysee_ctrl_msg(d, buf, sizeof(buf), NULL, 0);
-	if (ret)
-		return ret;
-
-	return 0;
+	return anysee_ctrl_msg(d, buf, sizeof(buf), NULL, 0);
 }
 
 static int anysee_ci_read_cam_control(struct dvb_ca_en50221 *ci, int slot,
@@ -1200,14 +1186,9 @@ static int anysee_ci_write_cam_control(struct dvb_ca_en50221 *ci, int slot,
 	u8 addr, u8 val)
 {
 	struct dvb_usb_device *d = ci->data;
-	int ret;
 	u8 buf[] = {CMD_CI, 0x05, 0x40, addr, 0x00, 1, val};
 
-	ret = anysee_ctrl_msg(d, buf, sizeof(buf), NULL, 0);
-	if (ret)
-		return ret;
-
-	return 0;
+	return anysee_ctrl_msg(d, buf, sizeof(buf), NULL, 0);
 }
 
 static int anysee_ci_slot_reset(struct dvb_ca_en50221 *ci, int slot)
@@ -1252,13 +1233,8 @@ static int anysee_ci_slot_shutdown(struct dvb_ca_en50221 *ci, int slot)
 static int anysee_ci_slot_ts_enable(struct dvb_ca_en50221 *ci, int slot)
 {
 	struct dvb_usb_device *d = ci->data;
-	int ret;
 
-	ret = anysee_wr_reg_mask(d, REG_IOD, (0 << 1), 0x02);
-	if (ret)
-		return ret;
-
-	return 0;
+	return anysee_wr_reg_mask(d, REG_IOD, (0 << 1), 0x02);
 }
 
 static int anysee_ci_poll_slot_status(struct dvb_ca_en50221 *ci, int slot,

@@ -17,6 +17,11 @@ properties:
           - asahi-kasei,ak8963
           - asahi-kasei,ak09911
           - asahi-kasei,ak09912
+          - asahi-kasei,ak09916
+      - items:
+          # ak09918 is register compatible with ak09912.
+          - const: asahi-kasei,ak09918
+          - const: asahi-kasei,ak09912
       - enum:
           - ak8975
           - ak8963
@@ -43,10 +48,16 @@ properties:
       an optional regulator that needs to be on to provide VDD power to
       the sensor.
 
+  vid-supply:
+    description: |
+      an optional regulator that needs to be on to provide VID power to
+      the sensor.
+
   mount-matrix:
     description: an optional 3x3 mounting rotation matrix.
 
   reset-gpios:
+    maxItems: 1
     description: |
       an optional pin needed for AK09911 to set the reset state. This should
       be usually active low

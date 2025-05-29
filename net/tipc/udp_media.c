@@ -64,6 +64,11 @@
  *
  * This is the bearer level originating address used in neighbor discovery
  * messages, and all fields should be in network byte order
+ *
+ * @proto: Ethernet protocol in use
+ * @port: port being used
+ * @ipv4: IPv4 address of neighbor
+ * @ipv6: IPv6 address of neighbor
  */
 struct udp_media_addr {
 	__be16	proto;
@@ -88,6 +93,7 @@ struct udp_replicast {
  * @ubsock:	bearer associated socket
  * @ifindex:	local address scope
  * @work:	used to schedule deferred work on a bearer
+ * @rcast:	associated udp_replicast container
  */
 struct udp_bearer {
 	struct tipc_bearer __rcu *bearer;
@@ -129,8 +135,11 @@ static int tipc_udp_addr2str(struct tipc_media_addr *a, char *buf, int size)
 		snprintf(buf, size, "%pI4:%u", &ua->ipv4, ntohs(ua->port));
 	else if (ntohs(ua->proto) == ETH_P_IPV6)
 		snprintf(buf, size, "%pI6:%u", &ua->ipv6, ntohs(ua->port));
-	else
+	else {
 		pr_err("Invalid UDP media address\n");
+		return 1;
+	}
+
 	return 0;
 }
 
@@ -168,7 +177,7 @@ static int tipc_udp_xmit(struct net *net, struct sk_buff *skb,
 	local_bh_disable();
 	ndst = dst_cache_get(cache);
 	if (dst->proto == htons(ETH_P_IP)) {
-		struct rtable *rt = (struct rtable *)ndst;
+		struct rtable *rt = dst_rtable(ndst);
 
 		if (!rt) {
 			struct flowi4 fl = {
@@ -408,8 +417,10 @@ static int enable_mcast(struct udp_bearer *ub, struct udp_media_addr *remote)
 		err = ip_mc_join_group(sk, &mreqn);
 #if IS_ENABLED(CONFIG_IPV6)
 	} else {
+		lock_sock(sk);
 		err = ipv6_stub->ipv6_sock_mc_join(sk, ub->ifindex,
 						   &remote->ipv6);
+		release_sock(sk);
 #endif
 	}
 	return err;
@@ -457,7 +468,7 @@ int tipc_udp_nl_dump_remoteip(struct sk_buff *skb, struct netlink_callback *cb)
 	int i;
 
 	if (!bid && !skip_cnt) {
-		struct nlattr **attrs = genl_dumpit_info(cb)->attrs;
+		struct nlattr **attrs = genl_dumpit_info(cb)->info.attrs;
 		struct net *net = sock_net(skb->sk);
 		struct nlattr *battrs[TIPC_NLA_BEARER_MAX + 1];
 		char *bname;
@@ -730,11 +741,7 @@ static int tipc_udp_enable(struct net *net, struct tipc_bearer *b,
 			udp_conf.local_ip.s_addr = local.ipv4.s_addr;
 		udp_conf.use_udp_checksums = false;
 		ub->ifindex = dev->ifindex;
-		if (tipc_mtu_bad(dev, sizeof(struct iphdr) +
-				      sizeof(struct udphdr))) {
-			err = -EINVAL;
-			goto err;
-		}
+		b->encap_hlen = sizeof(struct iphdr) + sizeof(struct udphdr);
 		b->mtu = b->media->mtu;
 #if IS_ENABLED(CONFIG_IPV6)
 	} else if (local.proto == htons(ETH_P_IPV6)) {
@@ -752,6 +759,7 @@ static int tipc_udp_enable(struct net *net, struct tipc_bearer *b,
 		else
 			udp_conf.local_ip6 = local.ipv6;
 		ub->ifindex = dev->ifindex;
+		b->encap_hlen = sizeof(struct ipv6hdr) + sizeof(struct udphdr);
 		b->mtu = 1280;
 #endif
 	} else {
@@ -772,7 +780,7 @@ static int tipc_udp_enable(struct net *net, struct tipc_bearer *b,
 	if (err)
 		goto free;
 
-	/**
+	/*
 	 * The bcast media address port is used for all peers and the ip
 	 * is used if it's a multicast address.
 	 */
@@ -806,6 +814,7 @@ static void cleanup_bearer(struct work_struct *work)
 		kfree_rcu(rcast, rcu);
 	}
 
+	atomic_dec(&tipc_net(sock_net(ub->ubsock->sk))->wq_count);
 	dst_cache_destroy(&ub->rcast.dst_cache);
 	udp_tunnel_sock_release(ub->ubsock);
 	synchronize_net();
@@ -826,6 +835,7 @@ static void tipc_udp_disable(struct tipc_bearer *b)
 	RCU_INIT_POINTER(ub->bearer, NULL);
 
 	/* sock_release need to be done outside of rtnl lock */
+	atomic_inc(&tipc_net(sock_net(ub->ubsock->sk))->wq_count);
 	INIT_WORK(&ub->work, cleanup_bearer);
 	schedule_work(&ub->work);
 }

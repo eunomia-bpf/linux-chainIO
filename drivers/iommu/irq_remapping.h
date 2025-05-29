@@ -41,10 +41,7 @@ struct irq_remap_ops {
 	int  (*reenable)(int);
 
 	/* Enable fault handling */
-	int  (*enable_faulting)(void);
-
-	/* Get the irqdomain associated to IOMMU device */
-	struct irq_domain *(*get_irq_domain)(struct irq_alloc_info *);
+	int  (*enable_faulting)(unsigned int);
 };
 
 extern struct irq_remap_ops intel_irq_remap_ops;

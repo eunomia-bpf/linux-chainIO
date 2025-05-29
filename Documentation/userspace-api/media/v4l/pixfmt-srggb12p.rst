@@ -31,7 +31,7 @@ Below is an example of a small V4L2_PIX_FMT_SBGGR12P image:
 **Byte Order.**
 Each cell is one byte.
 
-.. tabularcolumns:: |p{2.2cm}|p{1.2cm}|p{1.2cm}|p{3.1cm}|p{1.2cm}|p{1.2cm}|p{3.1cm}|
+.. tabularcolumns:: |p{2.2cm}|p{1.2cm}|p{1.2cm}|p{3.1cm}|p{1.2cm}|p{1.2cm}|p{6.4cm}|
 
 
 .. flat-table::
@@ -60,7 +60,7 @@ Each cell is one byte.
           G\ :sub:`10low`\ (bits 3--0)
        -  G\ :sub:`12high`
        -  R\ :sub:`13high`
-       -  R\ :sub:`13low`\ (bits 3--2)
+       -  R\ :sub:`13low`\ (bits 7--4)
 
           G\ :sub:`12low`\ (bits 3--0)
     -  -  start + 12:
@@ -82,6 +82,6 @@ Each cell is one byte.
           G\ :sub:`30low`\ (bits 3--0)
        -  G\ :sub:`32high`
        -  R\ :sub:`33high`
-       -  R\ :sub:`33low`\ (bits 3--2)
+       -  R\ :sub:`33low`\ (bits 7--4)
 
           G\ :sub:`32low`\ (bits 3--0)

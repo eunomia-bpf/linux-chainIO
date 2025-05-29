@@ -5,7 +5,6 @@
  *
  ******************************************************************************/
 #include <drv_types.h>
-#include <rtw_debug.h>
 #include <rtw_btcoex.h>
 #include <hal_btcoex.h>
 
@@ -21,19 +20,11 @@ void rtw_btcoex_MediaStatusNotify(struct adapter *padapter, u8 mediaStatus)
 
 void rtw_btcoex_HaltNotify(struct adapter *padapter)
 {
-	if (!padapter->bup) {
-		DBG_871X(FUNC_ADPT_FMT ": bup =%d Skip!\n",
-			FUNC_ADPT_ARG(padapter), padapter->bup);
-
+	if (!padapter->bup)
 		return;
-	}
 
-	if (padapter->bSurpriseRemoved) {
-		DBG_871X(FUNC_ADPT_FMT ": bSurpriseRemoved =%d Skip!\n",
-			FUNC_ADPT_ARG(padapter), padapter->bSurpriseRemoved);
-
+	if (padapter->bSurpriseRemoved)
 		return;
-	}
 
 	hal_btcoex_HaltNotify(padapter);
 }

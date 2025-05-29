@@ -60,8 +60,7 @@ static int vega10_copy_table_from_smc(struct pp_hwmgr *hwmgr,
 			priv->smu_tables.entry[table_id].table_id,
 			NULL);
 
-	/* flush hdp cache */
-	amdgpu_asic_flush_hdp(adev, NULL);
+	amdgpu_asic_invalidate_hdp(adev, NULL);
 
 	memcpy(table, priv->smu_tables.entry[table_id].table,
 			priv->smu_tables.entry[table_id].size);
@@ -131,13 +130,17 @@ int vega10_get_enabled_smc_features(struct pp_hwmgr *hwmgr,
 			    uint64_t *features_enabled)
 {
 	uint32_t enabled_features;
+	int ret;
 
 	if (features_enabled == NULL)
 		return -EINVAL;
 
-	smum_send_msg_to_smc(hwmgr,
+	ret = smum_send_msg_to_smc(hwmgr,
 			PPSMC_MSG_GetEnabledSmuFeatures,
 			&enabled_features);
+	if (ret)
+		return ret;
+
 	*features_enabled = enabled_features;
 
 	return 0;
@@ -209,13 +212,11 @@ static int vega10_smu_init(struct pp_hwmgr *hwmgr)
 	int ret;
 	struct cgs_firmware_info info = {0};
 
-	if (!amdgpu_sriov_vf((struct amdgpu_device *)hwmgr->adev)) {
-		ret = cgs_get_firmware_info(hwmgr->device,
-						CGS_UCODE_ID_SMU,
-						&info);
-		if (ret || !info.kptr)
-			return -EINVAL;
-	}
+	ret = cgs_get_firmware_info(hwmgr->device,
+					CGS_UCODE_ID_SMU,
+					&info);
+	if (ret || !info.kptr)
+		return -EINVAL;
 
 	priv = kzalloc(sizeof(struct vega10_smumgr), GFP_KERNEL);
 

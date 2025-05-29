@@ -8,7 +8,9 @@
 #include <linux/backlight.h>
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
+#include <linux/media-bus-format.h>
 #include <linux/module.h>
+#include <linux/of.h>
 #include <linux/regulator/consumer.h>
 
 #include <video/mipi_display.h>
@@ -21,7 +23,8 @@
 
 /* Manufacturer specific Commands send via DSI */
 #define MANTIX_CMD_OTP_STOP_RELOAD_MIPI 0x41
-#define MANTIX_CMD_INT_CANCEL           0x4C
+#define MANTIX_CMD_INT_CANCEL           0x4c
+#define MANTIX_CMD_SPI_FINISH           0x90
 
 struct mantix {
 	struct device *dev;
@@ -33,6 +36,8 @@ struct mantix {
 	struct regulator *avdd;
 	struct regulator *avee;
 	struct regulator *vddi;
+
+	const struct drm_display_mode *default_mode;
 };
 
 static inline struct mantix *panel_to_mantix(struct drm_panel *panel)
@@ -40,86 +45,57 @@ static inline struct mantix *panel_to_mantix(struct drm_panel *panel)
 	return container_of(panel, struct mantix, panel);
 }
 
-#define dsi_generic_write_seq(dsi, seq...) do {				\
-		static const u8 d[] = { seq };				\
-		int ret;						\
-		ret = mipi_dsi_generic_write(dsi, d, ARRAY_SIZE(d));	\
-		if (ret < 0)						\
-			return ret;					\
-	} while (0)
-
-static int mantix_init_sequence(struct mantix *ctx)
+static void mantix_init_sequence(struct mipi_dsi_multi_context *dsi_ctx)
 {
-	struct mipi_dsi_device *dsi = to_mipi_dsi_device(ctx->dev);
-	struct device *dev = ctx->dev;
-
 	/*
 	 * Init sequence was supplied by the panel vendor.
 	 */
-	dsi_generic_write_seq(dsi, MANTIX_CMD_OTP_STOP_RELOAD_MIPI, 0x5A);
+	mipi_dsi_generic_write_seq_multi(dsi_ctx, MANTIX_CMD_OTP_STOP_RELOAD_MIPI, 0x5a);
 
-	dsi_generic_write_seq(dsi, MANTIX_CMD_INT_CANCEL, 0x03);
-	dsi_generic_write_seq(dsi, MANTIX_CMD_OTP_STOP_RELOAD_MIPI, 0x5A, 0x03);
-	dsi_generic_write_seq(dsi, 0x80, 0xA9, 0x00);
+	mipi_dsi_generic_write_seq_multi(dsi_ctx, MANTIX_CMD_INT_CANCEL, 0x03);
+	mipi_dsi_generic_write_seq_multi(dsi_ctx, MANTIX_CMD_OTP_STOP_RELOAD_MIPI, 0x5a, 0x03);
+	mipi_dsi_generic_write_seq_multi(dsi_ctx, 0x80, 0xa9, 0x00);
 
-	dsi_generic_write_seq(dsi, MANTIX_CMD_OTP_STOP_RELOAD_MIPI, 0x5A, 0x09);
-	dsi_generic_write_seq(dsi, 0x80, 0x64, 0x00, 0x64, 0x00, 0x00);
-	msleep(20);
+	mipi_dsi_generic_write_seq_multi(dsi_ctx, MANTIX_CMD_OTP_STOP_RELOAD_MIPI, 0x5a, 0x09);
+	mipi_dsi_generic_write_seq_multi(dsi_ctx, 0x80, 0x64, 0x00, 0x64, 0x00, 0x00);
+	mipi_dsi_msleep(dsi_ctx, 20);
 
-	dev_dbg(dev, "Panel init sequence done\n");
-	return 0;
+	mipi_dsi_generic_write_seq_multi(dsi_ctx, MANTIX_CMD_SPI_FINISH, 0xa5);
+	mipi_dsi_generic_write_seq_multi(dsi_ctx, MANTIX_CMD_OTP_STOP_RELOAD_MIPI, 0x00, 0x2f);
+	mipi_dsi_msleep(dsi_ctx, 20);
 }
 
 static int mantix_enable(struct drm_panel *panel)
 {
 	struct mantix *ctx = panel_to_mantix(panel);
-	struct device *dev = ctx->dev;
-	struct mipi_dsi_device *dsi = to_mipi_dsi_device(dev);
-	int ret;
+	struct mipi_dsi_device *dsi = to_mipi_dsi_device(ctx->dev);
+	struct mipi_dsi_multi_context dsi_ctx = { .dsi = dsi };
 
-	ret = mantix_init_sequence(ctx);
-	if (ret < 0) {
-		dev_err(ctx->dev, "Panel init sequence failed: %d\n", ret);
-		return ret;
-	}
+	mantix_init_sequence(&dsi_ctx);
+	if (!dsi_ctx.accum_err)
+		dev_dbg(ctx->dev, "Panel init sequence done\n");
 
-	ret = mipi_dsi_dcs_exit_sleep_mode(dsi);
-	if (ret < 0) {
-		dev_err(dev, "Failed to exit sleep mode\n");
-		return ret;
-	}
-	msleep(20);
+	mipi_dsi_dcs_exit_sleep_mode_multi(&dsi_ctx);
+	mipi_dsi_msleep(&dsi_ctx, 20);
 
-	ret = mipi_dsi_dcs_set_display_on(dsi);
-	if (ret)
-		return ret;
-	usleep_range(10000, 12000);
+	mipi_dsi_dcs_set_display_on_multi(&dsi_ctx);
+	mipi_dsi_usleep_range(&dsi_ctx, 10000, 12000);
 
-	ret = mipi_dsi_turn_on_peripheral(dsi);
-	if (ret < 0) {
-		dev_err(dev, "Failed to turn on peripheral\n");
-		return ret;
-	}
+	mipi_dsi_turn_on_peripheral_multi(&dsi_ctx);
 
-	return 0;
+	return dsi_ctx.accum_err;
 }
 
 static int mantix_disable(struct drm_panel *panel)
 {
 	struct mantix *ctx = panel_to_mantix(panel);
 	struct mipi_dsi_device *dsi = to_mipi_dsi_device(ctx->dev);
-	int ret;
+	struct mipi_dsi_multi_context dsi_ctx = { .dsi = dsi };
 
-	ret = mipi_dsi_dcs_set_display_off(dsi);
-	if (ret < 0)
-		dev_err(ctx->dev, "Failed to turn off the display: %d\n", ret);
+	mipi_dsi_dcs_set_display_off_multi(&dsi_ctx);
+	mipi_dsi_dcs_enter_sleep_mode_multi(&dsi_ctx);
 
-	ret = mipi_dsi_dcs_enter_sleep_mode(dsi);
-	if (ret < 0)
-		dev_err(ctx->dev, "Failed to enter sleep mode: %d\n", ret);
-
-
-	return 0;
+	return dsi_ctx.accum_err;
 }
 
 static int mantix_unprepare(struct drm_panel *panel)
@@ -182,7 +158,7 @@ static int mantix_prepare(struct drm_panel *panel)
 	return 0;
 }
 
-static const struct drm_display_mode default_mode = {
+static const struct drm_display_mode default_mode_mantix = {
 	.hdisplay    = 720,
 	.hsync_start = 720 + 45,
 	.hsync_end   = 720 + 45 + 14,
@@ -197,17 +173,36 @@ static const struct drm_display_mode default_mode = {
 	.height_mm   = 130,
 };
 
+static const struct drm_display_mode default_mode_ys = {
+	.hdisplay    = 720,
+	.hsync_start = 720 + 45,
+	.hsync_end   = 720 + 45 + 14,
+	.htotal	     = 720 + 45 + 14 + 25,
+	.vdisplay    = 1440,
+	.vsync_start = 1440 + 175,
+	.vsync_end   = 1440 + 175 + 8,
+	.vtotal	     = 1440 + 175 + 8 + 50,
+	.clock	     = 85298,
+	.flags	     = DRM_MODE_FLAG_NHSYNC | DRM_MODE_FLAG_NVSYNC,
+	.width_mm    = 65,
+	.height_mm   = 130,
+};
+
+static const u32 mantix_bus_formats[] = {
+	MEDIA_BUS_FMT_RGB888_1X24,
+};
+
 static int mantix_get_modes(struct drm_panel *panel,
 			    struct drm_connector *connector)
 {
 	struct mantix *ctx = panel_to_mantix(panel);
 	struct drm_display_mode *mode;
 
-	mode = drm_mode_duplicate(connector->dev, &default_mode);
+	mode = drm_mode_duplicate(connector->dev, ctx->default_mode);
 	if (!mode) {
 		dev_err(ctx->dev, "Failed to add mode %ux%u@%u\n",
-			default_mode.hdisplay, default_mode.vdisplay,
-			drm_mode_vrefresh(&default_mode));
+			ctx->default_mode->hdisplay, ctx->default_mode->vdisplay,
+			drm_mode_vrefresh(ctx->default_mode));
 		return -ENOMEM;
 	}
 
@@ -217,6 +212,10 @@ static int mantix_get_modes(struct drm_panel *panel,
 	connector->display_info.width_mm = mode->width_mm;
 	connector->display_info.height_mm = mode->height_mm;
 	drm_mode_probed_add(connector, mode);
+
+	drm_display_info_set_bus_formats(&connector->display_info,
+					 mantix_bus_formats,
+					 ARRAY_SIZE(mantix_bus_formats));
 
 	return 1;
 }
@@ -238,6 +237,7 @@ static int mantix_probe(struct mipi_dsi_device *dsi)
 	ctx = devm_kzalloc(dev, sizeof(*ctx), GFP_KERNEL);
 	if (!ctx)
 		return -ENOMEM;
+	ctx->default_mode = of_device_get_match_data(dev);
 
 	ctx->reset_gpio = devm_gpiod_get(dev, "reset", GPIOD_OUT_HIGH);
 	if (IS_ERR(ctx->reset_gpio)) {
@@ -288,8 +288,8 @@ static int mantix_probe(struct mipi_dsi_device *dsi)
 	}
 
 	dev_info(dev, "%ux%u@%u %ubpp dsi %udl - ready\n",
-		 default_mode.hdisplay, default_mode.vdisplay,
-		 drm_mode_vrefresh(&default_mode),
+		 ctx->default_mode->hdisplay, ctx->default_mode->vdisplay,
+		 drm_mode_vrefresh(ctx->default_mode),
 		 mipi_dsi_pixel_format_to_bpp(dsi->format), dsi->lanes);
 
 	return 0;
@@ -303,7 +303,7 @@ static void mantix_shutdown(struct mipi_dsi_device *dsi)
 	drm_panel_disable(&ctx->panel);
 }
 
-static int mantix_remove(struct mipi_dsi_device *dsi)
+static void mantix_remove(struct mipi_dsi_device *dsi)
 {
 	struct mantix *ctx = mipi_dsi_get_drvdata(dsi);
 
@@ -311,12 +311,11 @@ static int mantix_remove(struct mipi_dsi_device *dsi)
 
 	mipi_dsi_detach(dsi);
 	drm_panel_remove(&ctx->panel);
-
-	return 0;
 }
 
 static const struct of_device_id mantix_of_match[] = {
-	{ .compatible = "mantix,mlaf057we51-x" },
+	{ .compatible = "mantix,mlaf057we51-x", .data = &default_mode_mantix },
+	{ .compatible = "ys,ys57pss36bh5gq", .data = &default_mode_ys },
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, mantix_of_match);

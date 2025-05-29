@@ -45,6 +45,7 @@ enum mlx5_module_id {
 	MLX5_MODULE_ID_QSFP             = 0xC,
 	MLX5_MODULE_ID_QSFP_PLUS        = 0xD,
 	MLX5_MODULE_ID_QSFP28           = 0x11,
+	MLX5_MODULE_ID_DSFP		= 0x1B,
 };
 
 enum mlx5_an_status {
@@ -55,12 +56,19 @@ enum mlx5_an_status {
 	MLX5_AN_LINK_DOWN   = 4,
 };
 
-#define MLX5_EEPROM_MAX_BYTES			32
-#define MLX5_EEPROM_IDENTIFIER_BYTE_MASK	0x000000ff
 #define MLX5_I2C_ADDR_LOW		0x50
 #define MLX5_I2C_ADDR_HIGH		0x51
 #define MLX5_EEPROM_PAGE_LENGTH		256
 #define MLX5_EEPROM_HIGH_PAGE_LENGTH	128
+
+struct mlx5_module_eeprom_query_params {
+	u16 size;
+	u16 offset;
+	u16 i2c_address;
+	u32 page;
+	u32 bank;
+	u32 module_number;
+};
 
 enum mlx5e_link_mode {
 	MLX5E_1000BASE_CX_SGMII	 = 0,
@@ -107,8 +115,9 @@ enum mlx5e_ext_link_mode {
 	MLX5E_100GAUI_1_100GBASE_CR_KR		= 11,
 	MLX5E_200GAUI_4_200GBASE_CR4_KR4	= 12,
 	MLX5E_200GAUI_2_200GBASE_CR2_KR2	= 13,
-	MLX5E_400GAUI_8				= 15,
+	MLX5E_400GAUI_8_400GBASE_CR8		= 15,
 	MLX5E_400GAUI_4_400GBASE_CR4_KR4	= 16,
+	MLX5E_800GAUI_8_800GBASE_CR8_KR8	= 19,
 	MLX5E_EXT_LINK_MODES_NUMBER,
 };
 
@@ -133,17 +142,24 @@ enum mlx5_ptys_width {
 	MLX5_PTYS_WIDTH_12X	= 1 << 4,
 };
 
-#define MLX5E_PROT_MASK(link_mode) (1 << link_mode)
+struct mlx5_port_eth_proto {
+	u32 cap;
+	u32 admin;
+	u32 oper;
+};
+
+#define MLX5E_PROT_MASK(link_mode) (1U << link_mode)
 #define MLX5_GET_ETH_PROTO(reg, out, ext, field)	\
 	(ext ? MLX5_GET(reg, out, ext_##field) :	\
 	MLX5_GET(reg, out, field))
 
 int mlx5_set_port_caps(struct mlx5_core_dev *dev, u8 port_num, u32 caps);
 int mlx5_query_port_ptys(struct mlx5_core_dev *dev, u32 *ptys,
-			 int ptys_size, int proto_mask, u8 local_port);
+			 int ptys_size, int proto_mask,
+			 u8 local_port, u8 plane_index);
 
 int mlx5_query_ib_port_oper(struct mlx5_core_dev *dev, u16 *link_width_oper,
-			    u16 *proto_oper, u8 local_port);
+			    u16 *proto_oper, u8 local_port, u8 plane_index);
 void mlx5_toggle_port_link(struct mlx5_core_dev *dev);
 int mlx5_set_port_admin_status(struct mlx5_core_dev *dev,
 			       enum mlx5_port_status status);
@@ -200,6 +216,8 @@ void mlx5_query_port_fcs(struct mlx5_core_dev *mdev, bool *supported,
 			 bool *enabled);
 int mlx5_query_module_eeprom(struct mlx5_core_dev *dev,
 			     u16 offset, u16 size, u8 *data);
+int mlx5_query_module_eeprom_by_page(struct mlx5_core_dev *dev,
+				     struct mlx5_module_eeprom_query_params *params, u8 *data);
 
 int mlx5_query_port_dcbx_param(struct mlx5_core_dev *mdev, u32 *out);
 int mlx5_set_port_dcbx_param(struct mlx5_core_dev *mdev, u32 *in);
@@ -208,4 +226,14 @@ int mlx5_set_trust_state(struct mlx5_core_dev *mdev, u8 trust_state);
 int mlx5_query_trust_state(struct mlx5_core_dev *mdev, u8 *trust_state);
 int mlx5_set_dscp2prio(struct mlx5_core_dev *mdev, u8 dscp, u8 prio);
 int mlx5_query_dscp2prio(struct mlx5_core_dev *mdev, u8 *dscp2prio);
+
+int mlx5_port_query_eth_proto(struct mlx5_core_dev *dev, u8 port, bool ext,
+			      struct mlx5_port_eth_proto *eproto);
+bool mlx5_ptys_ext_supported(struct mlx5_core_dev *mdev);
+u32 mlx5_port_ptys2speed(struct mlx5_core_dev *mdev, u32 eth_proto_oper,
+			 bool force_legacy);
+u32 mlx5_port_speed2linkmodes(struct mlx5_core_dev *mdev, u32 speed,
+			      bool force_legacy);
+int mlx5_port_max_linkspeed(struct mlx5_core_dev *mdev, u32 *speed);
+
 #endif /* __MLX5_PORT_H__ */

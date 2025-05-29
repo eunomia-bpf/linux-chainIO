@@ -6,7 +6,7 @@
  * This uses the XDP data_meta infrastructure, and is a cooperation
  * between two bpf-programs (1) XDP and (2) clsact at TC-ingress hook.
  *
- * Notice: This example does not use the BPF C-loader (bpf_load.c),
+ * Notice: This example does not use the BPF C-loader,
  * but instead rely on the iproute2 TC tool for loading BPF-objects.
  */
 #include <uapi/linux/bpf.h>
@@ -32,7 +32,7 @@ SEC("xdp_mark")
 int _xdp_mark(struct xdp_md *ctx)
 {
 	struct meta_info *meta;
-	void *data, *data_end;
+	void *data;
 	int ret;
 
 	/* Reserve space in-front of data pointer for our meta info.

@@ -10,9 +10,10 @@
 #include <crypto/internal/poly1305.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
-void poly1305_init_generic(struct poly1305_desc_ctx *desc, const u8 *key)
+void poly1305_init_generic(struct poly1305_desc_ctx *desc,
+			   const u8 key[POLY1305_KEY_SIZE])
 {
 	poly1305_core_setkey(&desc->core_r, key);
 	desc->s[0] = get_unaligned_le32(key + 16);
@@ -75,3 +76,4 @@ EXPORT_SYMBOL_GPL(poly1305_final_generic);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Martin Willi <martin@strongswan.org>");
+MODULE_DESCRIPTION("Poly1305 authenticator algorithm, RFC7539");

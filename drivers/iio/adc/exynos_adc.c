@@ -7,6 +7,7 @@
  *  Copyright (C) 2013 Naveen Krishna Chatradhi <ch.naveen@samsung.com>
  */
 
+#include <linux/compiler.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/interrupt.h>
@@ -134,6 +135,8 @@ struct exynos_adc {
 
 	u32			value;
 	unsigned int            version;
+
+	bool			ts_enabled;
 
 	bool			read_ts;
 	u32			ts_x;
@@ -516,7 +519,7 @@ static const struct of_device_id exynos_adc_match[] = {
 		.compatible = "samsung,exynos7-adc",
 		.data = &exynos7_adc_data,
 	},
-	{},
+	{ }
 };
 MODULE_DEVICE_TABLE(of, exynos_adc_match);
 
@@ -535,7 +538,7 @@ static int exynos_read_raw(struct iio_dev *indio_dev,
 				long mask)
 {
 	struct exynos_adc *info = iio_priv(indio_dev);
-	unsigned long timeout;
+	unsigned long time_left;
 	int ret;
 
 	if (mask == IIO_CHAN_INFO_SCALE) {
@@ -559,9 +562,9 @@ static int exynos_read_raw(struct iio_dev *indio_dev,
 	if (info->data->start_conv)
 		info->data->start_conv(info, chan->address);
 
-	timeout = wait_for_completion_timeout(&info->completion,
-					      EXYNOS_ADC_TIMEOUT);
-	if (timeout == 0) {
+	time_left = wait_for_completion_timeout(&info->completion,
+						EXYNOS_ADC_TIMEOUT);
+	if (time_left == 0) {
 		dev_warn(&indio_dev->dev, "Conversion timed out! Resetting\n");
 		if (info->data->init_hw)
 			info->data->init_hw(info);
@@ -580,7 +583,7 @@ static int exynos_read_raw(struct iio_dev *indio_dev,
 static int exynos_read_s3c64xx_ts(struct iio_dev *indio_dev, int *x, int *y)
 {
 	struct exynos_adc *info = iio_priv(indio_dev);
-	unsigned long timeout;
+	unsigned long time_left;
 	int ret;
 
 	mutex_lock(&info->lock);
@@ -594,9 +597,9 @@ static int exynos_read_s3c64xx_ts(struct iio_dev *indio_dev, int *x, int *y)
 	/* Select the ts channel to be used and Trigger conversion */
 	info->data->start_conv(info, ADC_S3C2410_MUX_TS);
 
-	timeout = wait_for_completion_timeout(&info->completion,
-					      EXYNOS_ADC_TIMEOUT);
-	if (timeout == 0) {
+	time_left = wait_for_completion_timeout(&info->completion,
+						EXYNOS_ADC_TIMEOUT);
+	if (time_left == 0) {
 		dev_warn(&indio_dev->dev, "Conversion timed out! Resetting\n");
 		if (info->data->init_hw)
 			info->data->init_hw(info);
@@ -651,7 +654,7 @@ static irqreturn_t exynos_ts_isr(int irq, void *dev_id)
 	bool pressed;
 	int ret;
 
-	while (info->input->users) {
+	while (READ_ONCE(info->ts_enabled)) {
 		ret = exynos_read_s3c64xx_ts(dev, &x, &y);
 		if (ret == -ETIMEDOUT)
 			break;
@@ -731,6 +734,7 @@ static int exynos_adc_ts_open(struct input_dev *dev)
 {
 	struct exynos_adc *info = input_get_drvdata(dev);
 
+	WRITE_ONCE(info->ts_enabled, true);
 	enable_irq(info->tsirq);
 
 	return 0;
@@ -740,6 +744,7 @@ static void exynos_adc_ts_close(struct input_dev *dev)
 {
 	struct exynos_adc *info = input_get_drvdata(dev);
 
+	WRITE_ONCE(info->ts_enabled, false);
 	disable_irq(info->tsirq);
 }
 
@@ -773,9 +778,9 @@ static int exynos_adc_ts_init(struct exynos_adc *info)
 		return ret;
 	}
 
-	disable_irq(info->tsirq);
 	ret = request_threaded_irq(info->tsirq, NULL, exynos_ts_isr,
-				   IRQF_ONESHOT, "touchscreen", info);
+				   IRQF_ONESHOT | IRQF_NO_AUTOEN,
+				   "touchscreen", info);
 	if (ret)
 		input_unregister_device(info->input);
 
@@ -789,7 +794,7 @@ static int exynos_adc_probe(struct platform_device *pdev)
 	struct s3c2410_ts_mach_info *pdata = dev_get_platdata(&pdev->dev);
 	struct iio_dev *indio_dev = NULL;
 	bool has_ts = false;
-	int ret = -ENODEV;
+	int ret;
 	int irq;
 
 	indio_dev = devm_iio_device_alloc(&pdev->dev, sizeof(struct exynos_adc));
@@ -821,16 +826,26 @@ static int exynos_adc_probe(struct platform_device *pdev)
 		}
 	}
 
+	/* leave out any TS related code if unreachable */
+	if (IS_REACHABLE(CONFIG_INPUT)) {
+		has_ts = of_property_read_bool(pdev->dev.of_node,
+					       "has-touchscreen") || pdata;
+	}
+
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0)
 		return irq;
 	info->irq = irq;
 
-	irq = platform_get_irq(pdev, 1);
-	if (irq == -EPROBE_DEFER)
-		return irq;
+	if (has_ts) {
+		irq = platform_get_irq(pdev, 1);
+		if (irq == -EPROBE_DEFER)
+			return irq;
 
-	info->tsirq = irq;
+		info->tsirq = irq;
+	} else {
+		info->tsirq = -1;
+	}
 
 	info->dev = &pdev->dev;
 
@@ -895,12 +910,6 @@ static int exynos_adc_probe(struct platform_device *pdev)
 	if (info->data->init_hw)
 		info->data->init_hw(info);
 
-	/* leave out any TS related code if unreachable */
-	if (IS_REACHABLE(CONFIG_INPUT)) {
-		has_ts = of_property_read_bool(pdev->dev.of_node,
-					       "has-touchscreen") || pdata;
-	}
-
 	if (pdata)
 		info->delay = pdata->delay;
 	else
@@ -941,7 +950,7 @@ err_disable_reg:
 	return ret;
 }
 
-static int exynos_adc_remove(struct platform_device *pdev)
+static void exynos_adc_remove(struct platform_device *pdev)
 {
 	struct iio_dev *indio_dev = platform_get_drvdata(pdev);
 	struct exynos_adc *info = iio_priv(indio_dev);
@@ -959,11 +968,8 @@ static int exynos_adc_remove(struct platform_device *pdev)
 	exynos_adc_disable_clk(info);
 	exynos_adc_unprepare_clk(info);
 	regulator_disable(info->vdd);
-
-	return 0;
 }
 
-#ifdef CONFIG_PM_SLEEP
 static int exynos_adc_suspend(struct device *dev)
 {
 	struct iio_dev *indio_dev = dev_get_drvdata(dev);
@@ -996,11 +1002,9 @@ static int exynos_adc_resume(struct device *dev)
 
 	return 0;
 }
-#endif
 
-static SIMPLE_DEV_PM_OPS(exynos_adc_pm_ops,
-			exynos_adc_suspend,
-			exynos_adc_resume);
+static DEFINE_SIMPLE_DEV_PM_OPS(exynos_adc_pm_ops, exynos_adc_suspend,
+				exynos_adc_resume);
 
 static struct platform_driver exynos_adc_driver = {
 	.probe		= exynos_adc_probe,
@@ -1008,7 +1012,7 @@ static struct platform_driver exynos_adc_driver = {
 	.driver		= {
 		.name	= "exynos-adc",
 		.of_match_table = exynos_adc_match,
-		.pm	= &exynos_adc_pm_ops,
+		.pm	= pm_sleep_ptr(&exynos_adc_pm_ops),
 	},
 };
 

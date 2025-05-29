@@ -1,9 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * Realtek RTD129x RTC
  *
  * Copyright (c) 2017 Andreas Färber
- *
- * SPDX-License-Identifier: GPL-2.0+
  */
 
 #include <linux/clk.h>
@@ -217,7 +216,7 @@ static int rtd119x_rtc_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int rtd119x_rtc_remove(struct platform_device *pdev)
+static void rtd119x_rtc_remove(struct platform_device *pdev)
 {
 	struct rtd119x_rtc *data = platform_get_drvdata(pdev);
 
@@ -225,8 +224,6 @@ static int rtd119x_rtc_remove(struct platform_device *pdev)
 
 	clk_disable_unprepare(data->clk);
 	clk_put(data->clk);
-
-	return 0;
 }
 
 static struct platform_driver rtd119x_rtc_driver = {

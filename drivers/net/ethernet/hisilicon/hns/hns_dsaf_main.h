@@ -210,7 +210,7 @@ struct hnae_vf_cb {
 	u8 port_index;
 	struct hns_mac_cb *mac_cb;
 	struct dsaf_device *dsaf_dev;
-	struct hnae_handle  ae_handle; /* must be the last number */
+	struct hnae_handle  ae_handle; /* must be the last member */
 };
 
 struct dsaf_int_xge_src {
@@ -442,7 +442,7 @@ void hns_dsaf_update_stats(struct dsaf_device *dsaf_dev, u32 inode_num);
 
 int hns_dsaf_get_sset_count(struct dsaf_device *dsaf_dev, int stringset);
 void hns_dsaf_get_stats(struct dsaf_device *ddev, u64 *data, int port);
-void hns_dsaf_get_strings(int stringset, u8 *data, int port,
+void hns_dsaf_get_strings(int stringset, u8 **data, int port,
 			  struct dsaf_device *dsaf_dev);
 
 void hns_dsaf_get_regs(struct dsaf_device *ddev, u32 port, void *data);

@@ -3,6 +3,7 @@
  *  Copyright (C) 2004 Embedded Edge, LLC
  */
 
+#include <linux/delay.h>
 #include <linux/slab.h>
 #include <linux/module.h>
 #include <linux/interrupt.h>
@@ -236,8 +237,18 @@ static int au1550nd_exec_op(struct nand_chip *this,
 	return ret;
 }
 
+static int au1550nd_attach_chip(struct nand_chip *chip)
+{
+	if (chip->ecc.engine_type == NAND_ECC_ENGINE_TYPE_SOFT &&
+	    chip->ecc.algo == NAND_ECC_ALGO_UNKNOWN)
+		chip->ecc.algo = NAND_ECC_ALGO_HAMMING;
+
+	return 0;
+}
+
 static const struct nand_controller_ops au1550nd_ops = {
 	.exec_op = au1550nd_exec_op,
+	.attach_chip = au1550nd_attach_chip,
 };
 
 static int au1550nd_probe(struct platform_device *pdev)
@@ -294,11 +305,16 @@ static int au1550nd_probe(struct platform_device *pdev)
 	nand_controller_init(&ctx->controller);
 	ctx->controller.ops = &au1550nd_ops;
 	this->controller = &ctx->controller;
-	this->ecc.engine_type = NAND_ECC_ENGINE_TYPE_SOFT;
-	this->ecc.algo = NAND_ECC_ALGO_HAMMING;
 
 	if (pd->devwidth)
 		this->options |= NAND_BUSWIDTH_16;
+
+	/*
+	 * This driver assumes that the default ECC engine should be TYPE_SOFT.
+	 * Set ->engine_type before registering the NAND devices in order to
+	 * provide a driver specific default value.
+	 */
+	this->ecc.engine_type = NAND_ECC_ENGINE_TYPE_SOFT;
 
 	ret = nand_scan(this, 1);
 	if (ret) {
@@ -321,7 +337,7 @@ out1:
 	return ret;
 }
 
-static int au1550nd_remove(struct platform_device *pdev)
+static void au1550nd_remove(struct platform_device *pdev)
 {
 	struct au1550nd_ctx *ctx = platform_get_drvdata(pdev);
 	struct resource *r = platform_get_resource(pdev, IORESOURCE_MEM, 0);
@@ -334,7 +350,6 @@ static int au1550nd_remove(struct platform_device *pdev)
 	iounmap(ctx->base);
 	release_mem_region(r->start, 0x1000);
 	kfree(ctx);
-	return 0;
 }
 
 static struct platform_driver au1550nd_driver = {

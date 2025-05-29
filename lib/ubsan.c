@@ -14,10 +14,91 @@
 #include <linux/types.h>
 #include <linux/sched.h>
 #include <linux/uaccess.h>
+#include <linux/ubsan.h>
+#include <kunit/test-bug.h>
 
 #include "ubsan.h"
 
-const char *type_check_kinds[] = {
+#ifdef CONFIG_UBSAN_TRAP
+/*
+ * Only include matches for UBSAN checks that are actually compiled in.
+ * The mappings of struct SanitizerKind (the -fsanitize=xxx args) to
+ * enum SanitizerHandler (the traps) in Clang is in clang/lib/CodeGen/.
+ */
+const char *report_ubsan_failure(struct pt_regs *regs, u32 check_type)
+{
+	switch (check_type) {
+#ifdef CONFIG_UBSAN_BOUNDS
+	/*
+	 * SanitizerKind::ArrayBounds and SanitizerKind::LocalBounds
+	 * emit SanitizerHandler::OutOfBounds.
+	 */
+	case ubsan_out_of_bounds:
+		return "UBSAN: array index out of bounds";
+#endif
+#ifdef CONFIG_UBSAN_SHIFT
+	/*
+	 * SanitizerKind::ShiftBase and SanitizerKind::ShiftExponent
+	 * emit SanitizerHandler::ShiftOutOfBounds.
+	 */
+	case ubsan_shift_out_of_bounds:
+		return "UBSAN: shift out of bounds";
+#endif
+#if defined(CONFIG_UBSAN_DIV_ZERO) || defined(CONFIG_UBSAN_SIGNED_WRAP)
+	/*
+	 * SanitizerKind::IntegerDivideByZero and
+	 * SanitizerKind::SignedIntegerOverflow emit
+	 * SanitizerHandler::DivremOverflow.
+	 */
+	case ubsan_divrem_overflow:
+		return "UBSAN: divide/remainder overflow";
+#endif
+#ifdef CONFIG_UBSAN_UNREACHABLE
+	/*
+	 * SanitizerKind::Unreachable emits
+	 * SanitizerHandler::BuiltinUnreachable.
+	 */
+	case ubsan_builtin_unreachable:
+		return "UBSAN: unreachable code";
+#endif
+#if defined(CONFIG_UBSAN_BOOL) || defined(CONFIG_UBSAN_ENUM)
+	/*
+	 * SanitizerKind::Bool and SanitizerKind::Enum emit
+	 * SanitizerHandler::LoadInvalidValue.
+	 */
+	case ubsan_load_invalid_value:
+		return "UBSAN: loading invalid value";
+#endif
+#ifdef CONFIG_UBSAN_ALIGNMENT
+	/*
+	 * SanitizerKind::Alignment emits SanitizerHandler::TypeMismatch
+	 * or SanitizerHandler::AlignmentAssumption.
+	 */
+	case ubsan_alignment_assumption:
+		return "UBSAN: alignment assumption";
+	case ubsan_type_mismatch:
+		return "UBSAN: type mismatch";
+#endif
+#ifdef CONFIG_UBSAN_SIGNED_WRAP
+	/*
+	 * SanitizerKind::SignedIntegerOverflow emits
+	 * SanitizerHandler::AddOverflow, SanitizerHandler::SubOverflow,
+	 * or SanitizerHandler::MulOverflow.
+	 */
+	case ubsan_add_overflow:
+		return "UBSAN: integer addition overflow";
+	case ubsan_sub_overflow:
+		return "UBSAN: integer subtraction overflow";
+	case ubsan_mul_overflow:
+		return "UBSAN: integer multiplication overflow";
+#endif
+	default:
+		return "UBSAN: unrecognized failure code";
+	}
+}
+
+#else
+static const char * const type_check_kinds[] = {
 	"load of",
 	"store to",
 	"reference binding to",
@@ -137,30 +218,22 @@ static void ubsan_prologue(struct source_location *loc, const char *reason)
 {
 	current->in_ubsan++;
 
-	pr_err("========================================"
-		"========================================\n");
+	pr_warn(CUT_HERE);
+
 	pr_err("UBSAN: %s in %s:%d:%d\n", reason, loc->file_name,
 		loc->line & LINE_MASK, loc->column & COLUMN_MASK);
+
+	kunit_fail_current_test("%s in %s", reason, loc->file_name);
 }
 
 static void ubsan_epilogue(void)
 {
 	dump_stack();
-	pr_err("========================================"
-		"========================================\n");
+	pr_warn("---[ end trace ]---\n");
 
 	current->in_ubsan--;
 
-	if (panic_on_warn) {
-		/*
-		 * This thread may hit another WARN() in the panic path.
-		 * Resetting this prevents additional WARN() from panicking the
-		 * system on this thread.  Other threads are blocked by the
-		 * panic_mutex in panic().
-		 */
-		panic_on_warn = 0;
-		panic("panic_on_warn set ...\n");
-	}
+	check_panic_on_warn("UBSAN");
 }
 
 static void handle_overflow(struct overflow_data *data, void *lhs,
@@ -413,9 +486,10 @@ void __ubsan_handle_load_invalid_value(void *_data, void *val)
 {
 	struct invalid_value_data *data = _data;
 	char val_str[VALUE_LENGTH];
+	unsigned long ua_flags = user_access_save();
 
 	if (suppress_report(&data->location))
-		return;
+		goto out;
 
 	ubsan_prologue(&data->location, "invalid-load");
 
@@ -425,5 +499,37 @@ void __ubsan_handle_load_invalid_value(void *_data, void *val)
 		val_str, data->type->type_name);
 
 	ubsan_epilogue();
+out:
+	user_access_restore(ua_flags);
 }
 EXPORT_SYMBOL(__ubsan_handle_load_invalid_value);
+
+void __ubsan_handle_alignment_assumption(void *_data, unsigned long ptr,
+					 unsigned long align,
+					 unsigned long offset)
+{
+	struct alignment_assumption_data *data = _data;
+	unsigned long real_ptr;
+
+	if (suppress_report(&data->location))
+		return;
+
+	ubsan_prologue(&data->location, "alignment-assumption");
+
+	if (offset)
+		pr_err("assumption of %lu byte alignment (with offset of %lu byte) for pointer of type %s failed",
+		       align, offset, data->type->type_name);
+	else
+		pr_err("assumption of %lu byte alignment for pointer of type %s failed",
+		       align, data->type->type_name);
+
+	real_ptr = ptr - offset;
+	pr_err("%saddress is %lu aligned, misalignment offset is %lu bytes",
+	       offset ? "offset " : "", BIT(real_ptr ? __ffs(real_ptr) : 0),
+	       real_ptr & (align - 1));
+
+	ubsan_epilogue();
+}
+EXPORT_SYMBOL(__ubsan_handle_alignment_assumption);
+
+#endif /* !CONFIG_UBSAN_TRAP */

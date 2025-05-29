@@ -582,7 +582,7 @@ static void b43_nphy_adjust_lna_gain_table(struct b43_wldev *dev)
 	u16 data[4];
 	s16 gain[2];
 	u16 minmax[2];
-	static const u16 lna_gain[4] = { -2, 10, 19, 25 };
+	static const s16 lna_gain[4] = { -2, 10, 19, 25 };
 
 	if (nphy->hang_avoid)
 		b43_nphy_stay_in_carrier_search(dev, 1);
@@ -2479,11 +2479,7 @@ static void b43_nphy_gain_ctl_workarounds_rev19(struct b43_wldev *dev)
 
 static void b43_nphy_gain_ctl_workarounds_rev7(struct b43_wldev *dev)
 {
-	struct b43_phy *phy = &dev->phy;
-
-	switch (phy->rev) {
-	/* TODO */
-	}
+	/* TODO - should depend on phy->rev */
 }
 
 static void b43_nphy_gain_ctl_workarounds_rev3(struct b43_wldev *dev)
@@ -4592,57 +4588,10 @@ static void b43_nphy_spur_workaround(struct b43_wldev *dev)
 {
 	struct b43_phy_n *nphy = dev->phy.n;
 
-	u8 channel = dev->phy.channel;
-	int tone[2] = { 57, 58 };
-	u32 noise[2] = { 0x3FF, 0x3FF };
-
 	B43_WARN_ON(dev->phy.rev < 3);
 
 	if (nphy->hang_avoid)
 		b43_nphy_stay_in_carrier_search(dev, 1);
-
-	if (nphy->gband_spurwar_en) {
-		/* TODO: N PHY Adjust Analog Pfbw (7) */
-		if (channel == 11 && b43_is_40mhz(dev)) {
-			; /* TODO: N PHY Adjust Min Noise Var(2, tone, noise)*/
-		} else {
-			; /* TODO: N PHY Adjust Min Noise Var(0, NULL, NULL)*/
-		}
-		/* TODO: N PHY Adjust CRS Min Power (0x1E) */
-	}
-
-	if (nphy->aband_spurwar_en) {
-		if (channel == 54) {
-			tone[0] = 0x20;
-			noise[0] = 0x25F;
-		} else if (channel == 38 || channel == 102 || channel == 118) {
-			if (0 /* FIXME */) {
-				tone[0] = 0x20;
-				noise[0] = 0x21F;
-			} else {
-				tone[0] = 0;
-				noise[0] = 0;
-			}
-		} else if (channel == 134) {
-			tone[0] = 0x20;
-			noise[0] = 0x21F;
-		} else if (channel == 151) {
-			tone[0] = 0x10;
-			noise[0] = 0x23F;
-		} else if (channel == 153 || channel == 161) {
-			tone[0] = 0x30;
-			noise[0] = 0x23F;
-		} else {
-			tone[0] = 0;
-			noise[0] = 0;
-		}
-
-		if (!tone[0] && !noise[0]) {
-			; /* TODO: N PHY Adjust Min Noise Var(1, tone, noise)*/
-		} else {
-			; /* TODO: N PHY Adjust Min Noise Var(0, NULL, NULL)*/
-		}
-	}
 
 	if (nphy->hang_avoid)
 		b43_nphy_stay_in_carrier_search(dev, 0);
@@ -5311,7 +5260,7 @@ static void b43_nphy_restore_cal(struct b43_wldev *dev)
 
 	for (i = 0; i < 4; i++) {
 		if (dev->phy.rev >= 3)
-			table[i] = coef[i];
+			coef[i] = table[i];
 		else
 			coef[i] = 0;
 	}
@@ -6297,7 +6246,7 @@ static void b43_nphy_channel_setup(struct b43_wldev *dev,
 		b43_write16(dev, B43_MMIO_PSM_PHY_HDR, tmp16 | 4);
 		/* Take BPHY out of the reset */
 		b43_phy_mask(dev, B43_PHY_B_BBCFG,
-			     (u16)~(B43_PHY_B_BBCFG_RSTCCA | B43_PHY_B_BBCFG_RSTRX));
+			     ~(B43_PHY_B_BBCFG_RSTCCA | B43_PHY_B_BBCFG_RSTRX) & 0xffff);
 		b43_write16(dev, B43_MMIO_PSM_PHY_HDR, tmp16);
 	}
 
@@ -6428,7 +6377,7 @@ static int b43_nphy_set_channel(struct b43_wldev *dev,
 	} else if (channel_type == NL80211_CHAN_HT40MINUS) {
 		b43_phy_mask(dev, B43_NPHY_RXCTL, ~B43_NPHY_RXCTL_BSELU20);
 		if (phy->rev >= 7)
-			b43_phy_mask(dev, 0x310, (u16)~0x8000);
+			b43_phy_mask(dev, 0x310, 0x7fff);
 	}
 
 	if (phy->rev >= 19) {

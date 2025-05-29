@@ -26,13 +26,14 @@ snd_emux_hwdep_load_patch(struct snd_emux *emu, void __user *arg)
 		return -EFAULT;
 
 	if (patch.key == GUS_PATCH)
-		return snd_soundfont_load_guspatch(emu->sflist, arg,
-						   patch.len + sizeof(patch),
-						   TMP_CLIENT_ID);
+		return snd_soundfont_load_guspatch(emu->card, emu->sflist, arg,
+						   patch.len + sizeof(patch));
 
 	if (patch.type >= SNDRV_SFNT_LOAD_INFO &&
 	    patch.type <= SNDRV_SFNT_PROBE_DATA) {
-		err = snd_soundfont_load(emu->sflist, arg, patch.len + sizeof(patch), TMP_CLIENT_ID);
+		err = snd_soundfont_load(emu->card, emu->sflist, arg,
+					 patch.len + sizeof(patch),
+					 TMP_CLIENT_ID);
 		if (err < 0)
 			return err;
 	} else {
@@ -116,7 +117,8 @@ snd_emux_init_hwdep(struct snd_emux *emu)
 	struct snd_hwdep *hw;
 	int err;
 
-	if ((err = snd_hwdep_new(emu->card, SNDRV_EMUX_HWDEP_NAME, emu->hwdep_idx, &hw)) < 0)
+	err = snd_hwdep_new(emu->card, SNDRV_EMUX_HWDEP_NAME, emu->hwdep_idx, &hw);
+	if (err < 0)
 		return err;
 	emu->hwdep = hw;
 	strcpy(hw->name, SNDRV_EMUX_HWDEP_NAME);
@@ -127,7 +129,8 @@ snd_emux_init_hwdep(struct snd_emux *emu)
 	hw->ops.ioctl_compat = snd_emux_hwdep_ioctl;
 	hw->exclusive = 1;
 	hw->private_data = emu;
-	if ((err = snd_card_register(emu->card)) < 0)
+	err = snd_card_register(emu->card);
+	if (err < 0)
 		return err;
 
 	return 0;

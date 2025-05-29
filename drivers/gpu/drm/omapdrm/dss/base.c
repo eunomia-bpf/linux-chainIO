@@ -2,7 +2,7 @@
 /*
  * OMAP Display Subsystem Base
  *
- * Copyright (C) 2015-2017 Texas Instruments Incorporated - http://www.ti.com/
+ * Copyright (C) 2015-2017 Texas Instruments Incorporated - https://www.ti.com/
  */
 
 #include <linux/kernel.h>
@@ -16,32 +16,10 @@
 #include "dss.h"
 #include "omapdss.h"
 
-static struct dss_device *dss_device;
-
-struct dss_device *omapdss_get_dss(void)
-{
-	return dss_device;
-}
-EXPORT_SYMBOL(omapdss_get_dss);
-
-void omapdss_set_dss(struct dss_device *dss)
-{
-	dss_device = dss;
-}
-EXPORT_SYMBOL(omapdss_set_dss);
-
 struct dispc_device *dispc_get_dispc(struct dss_device *dss)
 {
 	return dss->dispc;
 }
-EXPORT_SYMBOL(dispc_get_dispc);
-
-const struct dispc_ops *dispc_get_ops(struct dss_device *dss)
-{
-	return dss->dispc_ops;
-}
-EXPORT_SYMBOL(dispc_get_ops);
-
 
 /* -----------------------------------------------------------------------------
  * OMAP DSS Devices Handling
@@ -56,7 +34,6 @@ void omapdss_device_register(struct omap_dss_device *dssdev)
 	list_add_tail(&dssdev->list, &omapdss_devices_list);
 	mutex_unlock(&omapdss_devices_lock);
 }
-EXPORT_SYMBOL_GPL(omapdss_device_register);
 
 void omapdss_device_unregister(struct omap_dss_device *dssdev)
 {
@@ -64,7 +41,6 @@ void omapdss_device_unregister(struct omap_dss_device *dssdev)
 	list_del(&dssdev->list);
 	mutex_unlock(&omapdss_devices_lock);
 }
-EXPORT_SYMBOL_GPL(omapdss_device_unregister);
 
 static bool omapdss_device_is_registered(struct device_node *node)
 {
@@ -86,24 +62,16 @@ static bool omapdss_device_is_registered(struct device_node *node)
 
 struct omap_dss_device *omapdss_device_get(struct omap_dss_device *dssdev)
 {
-	if (!try_module_get(dssdev->owner))
+	if (get_device(dssdev->dev) == NULL)
 		return NULL;
-
-	if (get_device(dssdev->dev) == NULL) {
-		module_put(dssdev->owner);
-		return NULL;
-	}
 
 	return dssdev;
 }
-EXPORT_SYMBOL(omapdss_device_get);
 
 void omapdss_device_put(struct omap_dss_device *dssdev)
 {
 	put_device(dssdev->dev);
-	module_put(dssdev->owner);
 }
-EXPORT_SYMBOL(omapdss_device_put);
 
 struct omap_dss_device *omapdss_find_device_by_node(struct device_node *node)
 {
@@ -149,7 +117,7 @@ struct omap_dss_device *omapdss_device_next_output(struct omap_dss_device *from)
 			goto done;
 		}
 
-		if (dssdev->id && (dssdev->next || dssdev->bridge))
+		if (dssdev->id && dssdev->bridge)
 			goto done;
 	}
 
@@ -164,7 +132,6 @@ done:
 	mutex_unlock(&omapdss_devices_lock);
 	return dssdev;
 }
-EXPORT_SYMBOL(omapdss_device_next_output);
 
 static bool omapdss_device_is_connected(struct omap_dss_device *dssdev)
 {
@@ -172,93 +139,38 @@ static bool omapdss_device_is_connected(struct omap_dss_device *dssdev)
 }
 
 int omapdss_device_connect(struct dss_device *dss,
-			   struct omap_dss_device *src,
 			   struct omap_dss_device *dst)
 {
-	int ret;
-
-	dev_dbg(&dss->pdev->dev, "connect(%s, %s)\n",
-		src ? dev_name(src->dev) : "NULL",
+	dev_dbg(&dss->pdev->dev, "connect(%s)\n",
 		dst ? dev_name(dst->dev) : "NULL");
 
-	if (!dst) {
-		/*
-		 * The destination is NULL when the source is connected to a
-		 * bridge instead of a DSS device. Stop here, we will attach
-		 * the bridge later when we will have a DRM encoder.
-		 */
-		return src && src->bridge ? 0 : -EINVAL;
-	}
+	if (!dst)
+		return -EINVAL;
 
 	if (omapdss_device_is_connected(dst))
 		return -EBUSY;
 
 	dst->dss = dss;
 
-	if (dst->ops && dst->ops->connect) {
-		ret = dst->ops->connect(src, dst);
-		if (ret < 0) {
-			dst->dss = NULL;
-			return ret;
-		}
-	}
-
 	return 0;
 }
-EXPORT_SYMBOL_GPL(omapdss_device_connect);
 
-void omapdss_device_disconnect(struct omap_dss_device *src,
+void omapdss_device_disconnect(struct dss_device *dss,
 			       struct omap_dss_device *dst)
 {
-	struct dss_device *dss = src ? src->dss : dst->dss;
-
-	dev_dbg(&dss->pdev->dev, "disconnect(%s, %s)\n",
-		src ? dev_name(src->dev) : "NULL",
+	dev_dbg(&dss->pdev->dev, "disconnect(%s)\n",
 		dst ? dev_name(dst->dev) : "NULL");
 
-	if (!dst) {
-		WARN_ON(!src->bridge);
+	if (WARN_ON(!dst))
 		return;
-	}
 
 	if (!dst->id && !omapdss_device_is_connected(dst)) {
-		WARN_ON(!dst->display);
+		WARN_ON(1);
 		return;
 	}
 
-	WARN_ON(dst->state != OMAP_DSS_DISPLAY_DISABLED);
-
-	if (dst->ops && dst->ops->disconnect)
-		dst->ops->disconnect(src, dst);
 	dst->dss = NULL;
 }
-EXPORT_SYMBOL_GPL(omapdss_device_disconnect);
-
-void omapdss_device_enable(struct omap_dss_device *dssdev)
-{
-	if (!dssdev)
-		return;
-
-	if (dssdev->ops && dssdev->ops->enable)
-		dssdev->ops->enable(dssdev);
-
-	omapdss_device_enable(dssdev->next);
-
-	dssdev->state = OMAP_DSS_DISPLAY_ACTIVE;
-}
-EXPORT_SYMBOL_GPL(omapdss_device_enable);
-
-void omapdss_device_disable(struct omap_dss_device *dssdev)
-{
-	if (!dssdev)
-		return;
-
-	omapdss_device_disable(dssdev->next);
-
-	if (dssdev->ops && dssdev->ops->disable)
-		dssdev->ops->disable(dssdev);
-}
-EXPORT_SYMBOL_GPL(omapdss_device_disable);
 
 /* -----------------------------------------------------------------------------
  * Components Handling
@@ -317,8 +229,7 @@ static void omapdss_walk_device(struct device *dev, struct device_node *node,
 
 	of_node_put(n);
 
-	n = NULL;
-	while ((n = of_graph_get_next_endpoint(node, n)) != NULL) {
+	for_each_endpoint_of_node(node, n) {
 		struct device_node *pn = of_graph_get_remote_port_parent(n);
 
 		if (!pn)
@@ -344,7 +255,6 @@ void omapdss_gather_components(struct device *dev)
 	for_each_available_child_of_node(dev->of_node, child)
 		omapdss_walk_device(dev, child, true);
 }
-EXPORT_SYMBOL(omapdss_gather_components);
 
 static bool omapdss_component_is_loaded(struct omapdss_comp_node *comp)
 {
@@ -369,8 +279,3 @@ bool omapdss_stack_is_ready(void)
 
 	return true;
 }
-EXPORT_SYMBOL(omapdss_stack_is_ready);
-
-MODULE_AUTHOR("Tomi Valkeinen <tomi.valkeinen@ti.com>");
-MODULE_DESCRIPTION("OMAP Display Subsystem Base");
-MODULE_LICENSE("GPL v2");

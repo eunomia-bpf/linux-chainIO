@@ -26,9 +26,8 @@
 #include <linux/ctype.h>
 #include <linux/hash.h>
 #include <linux/ratelimit.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include <scsi/libfc.h>
-#include <scsi/fc_encode.h>
 
 #include <target/target_core_base.h>
 #include <target/target_core_fabric.h>

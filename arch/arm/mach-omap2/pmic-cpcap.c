@@ -18,10 +18,10 @@
 #include "vc.h"
 
 /**
- * omap_cpcap_vsel_to_vdc - convert CPCAP VSEL value to microvolts DC
+ * omap_cpcap_vsel_to_uv - convert CPCAP VSEL value to microvolts DC
  * @vsel: CPCAP VSEL value to convert
  *
- * Returns the microvolts DC that the CPCAP PMIC should generate when
+ * Returns: the microvolts DC that the CPCAP PMIC should generate when
  * programmed with @vsel.
  */
 static unsigned long omap_cpcap_vsel_to_uv(unsigned char vsel)
@@ -35,7 +35,7 @@ static unsigned long omap_cpcap_vsel_to_uv(unsigned char vsel)
  * omap_cpcap_uv_to_vsel - convert microvolts DC to CPCAP VSEL value
  * @uv: microvolts DC to convert
  *
- * Returns the VSEL value necessary for the CPCAP PMIC to
+ * Returns: the VSEL value necessary for the CPCAP PMIC to
  * generate an output voltage equal to or greater than @uv microvolts DC.
  */
 static unsigned char omap_cpcap_uv_to_vsel(unsigned long uv)
@@ -71,7 +71,7 @@ static struct omap_voltdm_pmic omap_cpcap_iva = {
 	.vp_vstepmin = OMAP4_VP_VSTEPMIN_VSTEPMIN,
 	.vp_vstepmax = OMAP4_VP_VSTEPMAX_VSTEPMAX,
 	.vddmin = 900000,
-	.vddmax = 1350000,
+	.vddmax = 1375000,
 	.vp_timeout_us = OMAP4_VP_VLIMITTO_TIMEOUT_US,
 	.i2c_slave_addr = 0x44,
 	.volt_reg_addr = 0x0,
@@ -82,10 +82,10 @@ static struct omap_voltdm_pmic omap_cpcap_iva = {
 };
 
 /**
- * omap_max8952_vsel_to_vdc - convert MAX8952 VSEL value to microvolts DC
+ * omap_max8952_vsel_to_uv - convert MAX8952 VSEL value to microvolts DC
  * @vsel: MAX8952 VSEL value to convert
  *
- * Returns the microvolts DC that the MAX8952 Regulator should generate when
+ * Returns: the microvolts DC that the MAX8952 Regulator should generate when
  * programmed with @vsel.
  */
 static unsigned long omap_max8952_vsel_to_uv(unsigned char vsel)
@@ -99,7 +99,7 @@ static unsigned long omap_max8952_vsel_to_uv(unsigned char vsel)
  * omap_max8952_uv_to_vsel - convert microvolts DC to MAX8952 VSEL value
  * @uv: microvolts DC to convert
  *
- * Returns the VSEL value necessary for the MAX8952 Regulator to
+ * Returns: the VSEL value necessary for the MAX8952 Regulator to
  * generate an output voltage equal to or greater than @uv microvolts DC.
  */
 static unsigned char omap_max8952_uv_to_vsel(unsigned long uv)
@@ -129,10 +129,10 @@ static struct omap_voltdm_pmic omap443x_max8952_mpu = {
 };
 
 /**
- * omap_fan5355_vsel_to_vdc - convert FAN535503 VSEL value to microvolts DC
+ * omap_fan535503_vsel_to_uv - convert FAN535503 VSEL value to microvolts DC
  * @vsel: FAN535503 VSEL value to convert
  *
- * Returns the microvolts DC that the FAN535503 Regulator should generate when
+ * Returns: the microvolts DC that the FAN535503 Regulator should generate when
  * programmed with @vsel.
  */
 static unsigned long omap_fan535503_vsel_to_uv(unsigned char vsel)
@@ -144,10 +144,10 @@ static unsigned long omap_fan535503_vsel_to_uv(unsigned char vsel)
 }
 
 /**
- * omap_fan535508_vsel_to_vdc - convert FAN535508 VSEL value to microvolts DC
+ * omap_fan535508_vsel_to_uv - convert FAN535508 VSEL value to microvolts DC
  * @vsel: FAN535508 VSEL value to convert
  *
- * Returns the microvolts DC that the FAN535508 Regulator should generate when
+ * Returns: the microvolts DC that the FAN535508 Regulator should generate when
  * programmed with @vsel.
  */
 static unsigned long omap_fan535508_vsel_to_uv(unsigned char vsel)
@@ -165,7 +165,7 @@ static unsigned long omap_fan535508_vsel_to_uv(unsigned char vsel)
  * omap_fan535503_uv_to_vsel - convert microvolts DC to FAN535503 VSEL value
  * @uv: microvolts DC to convert
  *
- * Returns the VSEL value necessary for the MAX8952 Regulator to
+ * Returns: the VSEL value necessary for the MAX8952 Regulator to
  * generate an output voltage equal to or greater than @uv microvolts DC.
  */
 static unsigned char omap_fan535503_uv_to_vsel(unsigned long uv)
@@ -184,7 +184,7 @@ static unsigned char omap_fan535503_uv_to_vsel(unsigned long uv)
  * omap_fan535508_uv_to_vsel - convert microvolts DC to FAN535508 VSEL value
  * @uv: microvolts DC to convert
  *
- * Returns the VSEL value necessary for the MAX8952 Regulator to
+ * Returns: the VSEL value necessary for the MAX8952 Regulator to
  * generate an output voltage equal to or greater than @uv microvolts DC.
  */
 static unsigned char omap_fan535508_uv_to_vsel(unsigned long uv)
@@ -246,10 +246,10 @@ int __init omap4_cpcap_init(void)
 	omap_voltage_register_pmic(voltdm, &omap443x_max8952_mpu);
 
 	if (of_machine_is_compatible("motorola,droid-bionic")) {
-		voltdm = voltdm_lookup("mpu");
+		voltdm = voltdm_lookup("core");
 		omap_voltage_register_pmic(voltdm, &omap_cpcap_core);
 
-		voltdm = voltdm_lookup("mpu");
+		voltdm = voltdm_lookup("iva");
 		omap_voltage_register_pmic(voltdm, &omap_cpcap_iva);
 	} else {
 		voltdm = voltdm_lookup("core");

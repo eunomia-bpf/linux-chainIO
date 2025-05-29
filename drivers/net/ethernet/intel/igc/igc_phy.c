@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /* Copyright (c)  2018 Intel Corporation */
 
+#include <linux/bitfield.h>
 #include "igc_phy.h"
 
 /**
@@ -129,11 +130,7 @@ void igc_power_down_phy_copper(struct igc_hw *hw)
 	/* The PHY will retain its settings across a power down/up cycle */
 	hw->phy.ops.read_reg(hw, PHY_CONTROL, &mii_reg);
 	mii_reg |= MII_CR_POWER_DOWN;
-
-	/* Temporary workaround - should be removed when PHY will implement
-	 * IEEE registers as properly
-	 */
-	/* hw->phy.ops.write_reg(hw, PHY_CONTROL, mii_reg);*/
+	hw->phy.ops.write_reg(hw, PHY_CONTROL, mii_reg);
 	usleep_range(1000, 2000);
 }
 
@@ -141,24 +138,14 @@ void igc_power_down_phy_copper(struct igc_hw *hw)
  * igc_check_downshift - Checks whether a downshift in speed occurred
  * @hw: pointer to the HW structure
  *
- * Success returns 0, Failure returns 1
- *
  * A downshift is detected by querying the PHY link health.
  */
-s32 igc_check_downshift(struct igc_hw *hw)
+void igc_check_downshift(struct igc_hw *hw)
 {
 	struct igc_phy_info *phy = &hw->phy;
-	s32 ret_val;
 
-	switch (phy->type) {
-	case igc_phy_i225:
-	default:
-		/* speed downshift not supported */
-		phy->speed_downgraded = false;
-		ret_val = 0;
-	}
-
-	return ret_val;
+	/* speed downshift not supported */
+	phy->speed_downgraded = false;
 }
 
 /**
@@ -249,12 +236,11 @@ static s32 igc_phy_setup_autoneg(struct igc_hw *hw)
 			return ret_val;
 	}
 
-	if ((phy->autoneg_mask & ADVERTISE_2500_FULL) &&
-	    hw->phy.id == I225_I_PHY_ID) {
+	if (phy->autoneg_mask & ADVERTISE_2500_FULL) {
 		/* Read the MULTI GBT AN Control Register - reg 7.32 */
 		ret_val = phy->ops.read_reg(hw, (STANDARD_AN_REG_MASK <<
 					    MMD_DEVADDR_SHIFT) |
-					    ANEG_MULTIGBT_AN_CTRL,
+					    IGC_ANEG_MULTIGBT_AN_CTRL,
 					    &aneg_multigbt_an_ctrl);
 
 		if (ret_val)
@@ -390,12 +376,11 @@ static s32 igc_phy_setup_autoneg(struct igc_hw *hw)
 		ret_val = phy->ops.write_reg(hw, PHY_1000T_CTRL,
 					     mii_1000t_ctrl_reg);
 
-	if ((phy->autoneg_mask & ADVERTISE_2500_FULL) &&
-	    hw->phy.id == I225_I_PHY_ID)
+	if (phy->autoneg_mask & ADVERTISE_2500_FULL)
 		ret_val = phy->ops.write_reg(hw,
 					     (STANDARD_AN_REG_MASK <<
 					     MMD_DEVADDR_SHIFT) |
-					     ANEG_MULTIGBT_AN_CTRL,
+					     IGC_ANEG_MULTIGBT_AN_CTRL,
 					     aneg_multigbt_an_ctrl);
 
 	return ret_val;
@@ -509,24 +494,12 @@ s32 igc_setup_copper_link(struct igc_hw *hw)
 	s32 ret_val = 0;
 	bool link;
 
-	if (hw->mac.autoneg) {
-		/* Setup autoneg and flow control advertisement and perform
-		 * autonegotiation.
-		 */
-		ret_val = igc_copper_link_autoneg(hw);
-		if (ret_val)
-			goto out;
-	} else {
-		/* PHY will be set to 10H, 10F, 100H or 100F
-		 * depending on user settings.
-		 */
-		hw_dbg("Forcing Speed and Duplex\n");
-		ret_val = hw->phy.ops.force_speed_duplex(hw);
-		if (ret_val) {
-			hw_dbg("Error Forcing Speed and Duplex\n");
-			goto out;
-		}
-	}
+	/* Setup autoneg and flow control advertisement and perform
+	 * autonegotiation.
+	 */
+	ret_val = igc_copper_link_autoneg(hw);
+	if (ret_val)
+		goto out;
 
 	/* Check link status. Wait up to 100 microseconds for link to become
 	 * valid.
@@ -583,7 +556,7 @@ static s32 igc_read_phy_reg_mdic(struct igc_hw *hw, u32 offset, u16 *data)
 	 * the lower time out
 	 */
 	for (i = 0; i < IGC_GEN_POLL_TIMEOUT; i++) {
-		usleep_range(500, 1000);
+		udelay(50);
 		mdic = rd32(IGC_MDIC);
 		if (mdic & IGC_MDIC_READY)
 			break;
@@ -640,7 +613,7 @@ static s32 igc_write_phy_reg_mdic(struct igc_hw *hw, u32 offset, u16 data)
 	 * the lower time out
 	 */
 	for (i = 0; i < IGC_GEN_POLL_TIMEOUT; i++) {
-		usleep_range(500, 1000);
+		udelay(50);
 		mdic = rd32(IGC_MDIC);
 		if (mdic & IGC_MDIC_READY)
 			break;
@@ -738,7 +711,7 @@ static s32 igc_write_xmdio_reg(struct igc_hw *hw, u16 addr,
  */
 s32 igc_write_phy_reg_gpy(struct igc_hw *hw, u32 offset, u16 data)
 {
-	u8 dev_addr = (offset & GPY_MMD_MASK) >> GPY_MMD_SHIFT;
+	u8 dev_addr = FIELD_GET(GPY_MMD_MASK, offset);
 	s32 ret_val;
 
 	offset = offset & GPY_REG_MASK;
@@ -748,8 +721,6 @@ s32 igc_write_phy_reg_gpy(struct igc_hw *hw, u32 offset, u16 data)
 		if (ret_val)
 			return ret_val;
 		ret_val = igc_write_phy_reg_mdic(hw, offset, data);
-		if (ret_val)
-			return ret_val;
 		hw->phy.ops.release(hw);
 	} else {
 		ret_val = igc_write_xmdio_reg(hw, (u16)offset, dev_addr,
@@ -771,7 +742,7 @@ s32 igc_write_phy_reg_gpy(struct igc_hw *hw, u32 offset, u16 data)
  */
 s32 igc_read_phy_reg_gpy(struct igc_hw *hw, u32 offset, u16 *data)
 {
-	u8 dev_addr = (offset & GPY_MMD_MASK) >> GPY_MMD_SHIFT;
+	u8 dev_addr = FIELD_GET(GPY_MMD_MASK, offset);
 	s32 ret_val;
 
 	offset = offset & GPY_REG_MASK;
@@ -781,8 +752,6 @@ s32 igc_read_phy_reg_gpy(struct igc_hw *hw, u32 offset, u16 *data)
 		if (ret_val)
 			return ret_val;
 		ret_val = igc_read_phy_reg_mdic(hw, offset, data);
-		if (ret_val)
-			return ret_val;
 		hw->phy.ops.release(hw);
 	} else {
 		ret_val = igc_read_xmdio_reg(hw, (u16)offset, dev_addr,
@@ -790,4 +759,22 @@ s32 igc_read_phy_reg_gpy(struct igc_hw *hw, u32 offset, u16 *data)
 	}
 
 	return ret_val;
+}
+
+/**
+ * igc_read_phy_fw_version - Read gPHY firmware version
+ * @hw: pointer to the HW structure
+ */
+u16 igc_read_phy_fw_version(struct igc_hw *hw)
+{
+	struct igc_phy_info *phy = &hw->phy;
+	u16 gphy_version = 0;
+	u16 ret_val;
+
+	/* NVM image version is reported as firmware version for i225 device */
+	ret_val = phy->ops.read_reg(hw, IGC_GPHY_VERSION, &gphy_version);
+	if (ret_val)
+		hw_dbg("igc_phy: read wrong gphy version\n");
+
+	return gphy_version;
 }

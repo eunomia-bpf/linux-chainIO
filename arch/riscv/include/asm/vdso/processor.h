@@ -4,6 +4,9 @@
 
 #ifndef __ASSEMBLY__
 
+#include <asm/barrier.h>
+#include <asm/insn-def.h>
+
 static inline void cpu_relax(void)
 {
 #ifdef __riscv_muldiv
@@ -11,6 +14,12 @@ static inline void cpu_relax(void)
 	/* In lieu of a halt instruction, induce a long-latency stall. */
 	__asm__ __volatile__ ("div %0, %0, zero" : "=r" (dummy));
 #endif
+
+	/*
+	 * Reduce instruction retirement.
+	 * This assumes the PC changes.
+	 */
+	__asm__ __volatile__ (RISCV_PAUSE);
 	barrier();
 }
 

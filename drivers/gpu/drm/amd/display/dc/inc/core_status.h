@@ -50,9 +50,17 @@ enum dc_status {
 	DC_FAIL_CLK_BELOW_MIN = 22, /*THIS IS MIN PER IP*/
 	DC_FAIL_CLK_BELOW_CFG_REQUIRED = 23, /*THIS IS hard_min in PPLIB*/
 
+	DC_NOT_SUPPORTED = 24,
+	DC_UNSUPPORTED_VALUE = 25,
+
+	DC_NO_LINK_ENC_RESOURCE = 26,
+	DC_FAIL_DP_PAYLOAD_ALLOCATION = 27,
+	DC_FAIL_DP_LINK_BANDWIDTH = 28,
 	DC_ERROR_UNEXPECTED = -1
 };
 
 char *dc_status_to_str(enum dc_status status);
+char *dc_pixel_encoding_to_str(enum dc_pixel_encoding pixel_encoding);
+char *dc_color_depth_to_str(enum dc_color_depth color_depth);
 
 #endif /* _CORE_STATUS_H_ */

@@ -213,25 +213,13 @@ static void cpts_update_cur_time(struct cpts *cpts, int match,
 
 /* PTP clock operations */
 
-static int cpts_ptp_adjfreq(struct ptp_clock_info *ptp, s32 ppb)
+static int cpts_ptp_adjfine(struct ptp_clock_info *ptp, long scaled_ppm)
 {
 	struct cpts *cpts = container_of(ptp, struct cpts, info);
-	int neg_adj = 0;
-	u32 diff, mult;
-	u64 adj;
-
-	if (ppb < 0) {
-		neg_adj = 1;
-		ppb = -ppb;
-	}
-	mult = cpts->cc_mult;
-	adj = mult;
-	adj *= ppb;
-	diff = div_u64(adj, 1000000000ULL);
 
 	mutex_lock(&cpts->ptp_clk_mutex);
 
-	cpts->mult_new = neg_adj ? mult - diff : mult + diff;
+	cpts->mult_new = adjust_by_scaled_ppm(cpts->cc_mult, scaled_ppm);
 
 	cpts_update_cur_time(cpts, CPTS_EV_PUSH, NULL);
 
@@ -435,7 +423,7 @@ static const struct ptp_clock_info cpts_info = {
 	.n_ext_ts	= 0,
 	.n_pins		= 0,
 	.pps		= 0,
-	.adjfreq	= cpts_ptp_adjfreq,
+	.adjfine	= cpts_ptp_adjfine,
 	.adjtime	= cpts_ptp_adjtime,
 	.gettimex64	= cpts_ptp_gettimeex,
 	.settime64	= cpts_ptp_settime,
@@ -568,7 +556,9 @@ int cpts_register(struct cpts *cpts)
 	for (i = 0; i < CPTS_MAX_EVENTS; i++)
 		list_add(&cpts->pool_data[i].list, &cpts->pool);
 
-	clk_enable(cpts->refclk);
+	err = clk_enable(cpts->refclk);
+	if (err)
+		return err;
 
 	cpts_write32(cpts, CPTS_EN, control);
 	cpts_write32(cpts, TS_PEND_EN, int_enable);
@@ -599,6 +589,7 @@ void cpts_unregister(struct cpts *cpts)
 
 	ptp_clock_unregister(cpts->clock);
 	cpts->clock = NULL;
+	cpts->phc_index = -1;
 
 	cpts_write32(cpts, 0, int_enable);
 	cpts_write32(cpts, 0, control);
@@ -647,6 +638,16 @@ static void cpts_calc_mult_shift(struct cpts *cpts)
 		 freq, cpts->cc.mult, cpts->cc.shift, (ns - NSEC_PER_SEC));
 }
 
+static void cpts_clk_unregister(void *clk)
+{
+	clk_hw_unregister_mux(clk);
+}
+
+static void cpts_clk_del_provider(void *np)
+{
+	of_clk_del_provider(np);
+}
+
 static int cpts_of_mux_clk_setup(struct cpts *cpts, struct device_node *node)
 {
 	struct device_node *refclk_np;
@@ -668,10 +669,10 @@ static int cpts_of_mux_clk_setup(struct cpts *cpts, struct device_node *node)
 		goto mux_fail;
 	}
 
-	parent_names = devm_kzalloc(cpts->dev, (sizeof(char *) * num_parents),
-				    GFP_KERNEL);
+	parent_names = devm_kcalloc(cpts->dev, num_parents,
+				    sizeof(*parent_names), GFP_KERNEL);
 
-	mux_table = devm_kzalloc(cpts->dev, sizeof(*mux_table) * num_parents,
+	mux_table = devm_kcalloc(cpts->dev, num_parents, sizeof(*mux_table),
 				 GFP_KERNEL);
 	if (!mux_table || !parent_names) {
 		ret = -ENOMEM;
@@ -696,9 +697,7 @@ static int cpts_of_mux_clk_setup(struct cpts *cpts, struct device_node *node)
 		goto mux_fail;
 	}
 
-	ret = devm_add_action_or_reset(cpts->dev,
-				       (void(*)(void *))clk_hw_unregister_mux,
-				       clk_hw);
+	ret = devm_add_action_or_reset(cpts->dev, cpts_clk_unregister, clk_hw);
 	if (ret) {
 		dev_err(cpts->dev, "add clkmux unreg action %d", ret);
 		goto mux_fail;
@@ -708,8 +707,7 @@ static int cpts_of_mux_clk_setup(struct cpts *cpts, struct device_node *node)
 	if (ret)
 		goto mux_fail;
 
-	ret = devm_add_action_or_reset(cpts->dev,
-				       (void(*)(void *))of_clk_del_provider,
+	ret = devm_add_action_or_reset(cpts->dev, cpts_clk_del_provider,
 				       refclk_np);
 	if (ret) {
 		dev_err(cpts->dev, "add clkmux provider unreg action %d", ret);
@@ -784,13 +782,14 @@ struct cpts *cpts_create(struct device *dev, void __iomem *regs,
 	cpts->cc.read = cpts_systim_read;
 	cpts->cc.mask = CLOCKSOURCE_MASK(32);
 	cpts->info = cpts_info;
+	cpts->phc_index = -1;
 
 	if (n_ext_ts)
 		cpts->info.n_ext_ts = n_ext_ts;
 
 	cpts_calc_mult_shift(cpts);
 	/* save cc.mult original value as it can be modified
-	 * by cpts_ptp_adjfreq().
+	 * by cpts_ptp_adjfine().
 	 */
 	cpts->cc_mult = cpts->cc.mult;
 

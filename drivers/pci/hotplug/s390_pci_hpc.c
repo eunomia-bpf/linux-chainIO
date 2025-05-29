@@ -20,61 +20,27 @@
 
 #define SLOT_NAME_SIZE	10
 
-static int zpci_fn_configured(enum zpci_state state)
-{
-	return state == ZPCI_FN_STATE_CONFIGURED ||
-	       state == ZPCI_FN_STATE_ONLINE;
-}
-
-static inline int zdev_configure(struct zpci_dev *zdev)
-{
-	int ret = sclp_pci_configure(zdev->fid);
-
-	zpci_dbg(3, "conf fid:%x, rc:%d\n", zdev->fid, ret);
-	if (!ret)
-		zdev->state = ZPCI_FN_STATE_CONFIGURED;
-
-	return ret;
-}
-
-static inline int zdev_deconfigure(struct zpci_dev *zdev)
-{
-	int ret = sclp_pci_deconfigure(zdev->fid);
-
-	zpci_dbg(3, "deconf fid:%x, rc:%d\n", zdev->fid, ret);
-	if (!ret)
-		zdev->state = ZPCI_FN_STATE_STANDBY;
-
-	return ret;
-}
-
 static int enable_slot(struct hotplug_slot *hotplug_slot)
 {
 	struct zpci_dev *zdev = container_of(hotplug_slot, struct zpci_dev,
 					     hotplug_slot);
-	struct zpci_bus *zbus = zdev->zbus;
 	int rc;
 
-	if (zdev->state != ZPCI_FN_STATE_STANDBY)
-		return -EIO;
+	mutex_lock(&zdev->state_lock);
+	if (zdev->state != ZPCI_FN_STATE_STANDBY) {
+		rc = -EIO;
+		goto out;
+	}
 
-	rc = zdev_configure(zdev);
+	rc = sclp_pci_configure(zdev->fid);
+	zpci_dbg(3, "conf fid:%x, rc:%d\n", zdev->fid, rc);
 	if (rc)
-		return rc;
+		goto out;
+	zdev->state = ZPCI_FN_STATE_CONFIGURED;
 
-	rc = zpci_enable_device(zdev);
-	if (rc)
-		goto out_deconfigure;
-
-	pci_scan_slot(zbus->bus, zdev->devfn);
-	pci_lock_rescan_remove();
-	pci_bus_add_devices(zbus->bus);
-	pci_unlock_rescan_remove();
-
-	return rc;
-
-out_deconfigure:
-	zdev_deconfigure(zdev);
+	rc = zpci_scan_configured_device(zdev, zdev->fh);
+out:
+	mutex_unlock(&zdev->state_lock);
 	return rc;
 }
 
@@ -82,25 +48,57 @@ static int disable_slot(struct hotplug_slot *hotplug_slot)
 {
 	struct zpci_dev *zdev = container_of(hotplug_slot, struct zpci_dev,
 					     hotplug_slot);
-	struct pci_dev *pdev;
+	struct pci_dev *pdev = NULL;
 	int rc;
 
-	if (!zpci_fn_configured(zdev->state))
-		return -EIO;
+	mutex_lock(&zdev->state_lock);
+	if (zdev->state != ZPCI_FN_STATE_CONFIGURED) {
+		rc = -EIO;
+		goto out;
+	}
 
 	pdev = pci_get_slot(zdev->zbus->bus, zdev->devfn);
 	if (pdev && pci_num_vf(pdev)) {
 		pci_dev_put(pdev);
-		return -EBUSY;
+		rc = -EBUSY;
+		goto out;
 	}
 
-	zpci_remove_device(zdev);
+	rc = zpci_deconfigure_device(zdev);
+out:
+	mutex_unlock(&zdev->state_lock);
+	if (pdev)
+		pci_dev_put(pdev);
+	return rc;
+}
 
-	rc = zpci_disable_device(zdev);
-	if (rc)
+static int reset_slot(struct hotplug_slot *hotplug_slot, bool probe)
+{
+	struct zpci_dev *zdev = container_of(hotplug_slot, struct zpci_dev,
+					     hotplug_slot);
+	int rc = -EIO;
+
+	/*
+	 * If we can't get the zdev->state_lock the device state is
+	 * currently undergoing a transition and we bail out - just
+	 * the same as if the device's state is not configured at all.
+	 */
+	if (!mutex_trylock(&zdev->state_lock))
 		return rc;
 
-	return zdev_deconfigure(zdev);
+	/* We can reset only if the function is configured */
+	if (zdev->state != ZPCI_FN_STATE_CONFIGURED)
+		goto out;
+
+	if (probe) {
+		rc = 0;
+		goto out;
+	}
+
+	rc = zpci_hot_reset_device(zdev);
+out:
+	mutex_unlock(&zdev->state_lock);
+	return rc;
 }
 
 static int get_power_status(struct hotplug_slot *hotplug_slot, u8 *value)
@@ -108,20 +106,13 @@ static int get_power_status(struct hotplug_slot *hotplug_slot, u8 *value)
 	struct zpci_dev *zdev = container_of(hotplug_slot, struct zpci_dev,
 					     hotplug_slot);
 
-	switch (zdev->state) {
-	case ZPCI_FN_STATE_STANDBY:
-		*value = 0;
-		break;
-	default:
-		*value = 1;
-		break;
-	}
+	*value = zpci_is_device_configured(zdev) ? 1 : 0;
 	return 0;
 }
 
 static int get_adapter_status(struct hotplug_slot *hotplug_slot, u8 *value)
 {
-	/* if the slot exits it always contains a function */
+	/* if the slot exists it always contains a function */
 	*value = 1;
 	return 0;
 }
@@ -129,6 +120,7 @@ static int get_adapter_status(struct hotplug_slot *hotplug_slot, u8 *value)
 static const struct hotplug_slot_ops s390_hotplug_slot_ops = {
 	.enable_slot =		enable_slot,
 	.disable_slot =		disable_slot,
+	.reset_slot =		reset_slot,
 	.get_power_status =	get_power_status,
 	.get_adapter_status =	get_adapter_status,
 };

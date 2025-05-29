@@ -160,18 +160,15 @@ static int symbol_port_probe(struct usb_serial_port *port)
 	return 0;
 }
 
-static int symbol_port_remove(struct usb_serial_port *port)
+static void symbol_port_remove(struct usb_serial_port *port)
 {
 	struct symbol_private *priv = usb_get_serial_port_data(port);
 
 	kfree(priv);
-
-	return 0;
 }
 
 static struct usb_serial_driver symbol_device = {
 	.driver = {
-		.owner =	THIS_MODULE,
 		.name =		"symbol",
 	},
 	.id_table =		id_table,
@@ -192,4 +189,5 @@ static struct usb_serial_driver * const serial_drivers[] = {
 
 module_usb_serial_driver(serial_drivers, id_table);
 
+MODULE_DESCRIPTION("Symbol USB barcode to serial driver");
 MODULE_LICENSE("GPL v2");

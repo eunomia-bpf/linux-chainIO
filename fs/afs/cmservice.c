@@ -13,6 +13,8 @@
 #include "internal.h"
 #include "afs_cm.h"
 #include "protocol_yfs.h"
+#define RXRPC_TRACE_ONLY_DEFINE_ENUMS
+#include <trace/events/rxrpc.h>
 
 static int afs_deliver_cb_init_call_back_state(struct afs_call *);
 static int afs_deliver_cb_init_call_back_state3(struct afs_call *);
@@ -29,16 +31,11 @@ static void SRXAFSCB_TellMeAboutYourself(struct work_struct *);
 
 static int afs_deliver_yfs_cb_callback(struct afs_call *);
 
-#define CM_NAME(name) \
-	char afs_SRXCB##name##_name[] __tracepoint_string =	\
-		"CB." #name
-
 /*
  * CB.CallBack operation type
  */
-static CM_NAME(CallBack);
 static const struct afs_call_type afs_SRXCBCallBack = {
-	.name		= afs_SRXCBCallBack_name,
+	.name		= "CB.CallBack",
 	.deliver	= afs_deliver_cb_callback,
 	.destructor	= afs_cm_destructor,
 	.work		= SRXAFSCB_CallBack,
@@ -47,9 +44,8 @@ static const struct afs_call_type afs_SRXCBCallBack = {
 /*
  * CB.InitCallBackState operation type
  */
-static CM_NAME(InitCallBackState);
 static const struct afs_call_type afs_SRXCBInitCallBackState = {
-	.name		= afs_SRXCBInitCallBackState_name,
+	.name		= "CB.InitCallBackState",
 	.deliver	= afs_deliver_cb_init_call_back_state,
 	.destructor	= afs_cm_destructor,
 	.work		= SRXAFSCB_InitCallBackState,
@@ -58,9 +54,8 @@ static const struct afs_call_type afs_SRXCBInitCallBackState = {
 /*
  * CB.InitCallBackState3 operation type
  */
-static CM_NAME(InitCallBackState3);
 static const struct afs_call_type afs_SRXCBInitCallBackState3 = {
-	.name		= afs_SRXCBInitCallBackState3_name,
+	.name		= "CB.InitCallBackState3",
 	.deliver	= afs_deliver_cb_init_call_back_state3,
 	.destructor	= afs_cm_destructor,
 	.work		= SRXAFSCB_InitCallBackState,
@@ -69,9 +64,8 @@ static const struct afs_call_type afs_SRXCBInitCallBackState3 = {
 /*
  * CB.Probe operation type
  */
-static CM_NAME(Probe);
 static const struct afs_call_type afs_SRXCBProbe = {
-	.name		= afs_SRXCBProbe_name,
+	.name		= "CB.Probe",
 	.deliver	= afs_deliver_cb_probe,
 	.destructor	= afs_cm_destructor,
 	.work		= SRXAFSCB_Probe,
@@ -80,9 +74,8 @@ static const struct afs_call_type afs_SRXCBProbe = {
 /*
  * CB.ProbeUuid operation type
  */
-static CM_NAME(ProbeUuid);
 static const struct afs_call_type afs_SRXCBProbeUuid = {
-	.name		= afs_SRXCBProbeUuid_name,
+	.name		= "CB.ProbeUuid",
 	.deliver	= afs_deliver_cb_probe_uuid,
 	.destructor	= afs_cm_destructor,
 	.work		= SRXAFSCB_ProbeUuid,
@@ -91,9 +84,8 @@ static const struct afs_call_type afs_SRXCBProbeUuid = {
 /*
  * CB.TellMeAboutYourself operation type
  */
-static CM_NAME(TellMeAboutYourself);
 static const struct afs_call_type afs_SRXCBTellMeAboutYourself = {
-	.name		= afs_SRXCBTellMeAboutYourself_name,
+	.name		= "CB.TellMeAboutYourself",
 	.deliver	= afs_deliver_cb_tell_me_about_yourself,
 	.destructor	= afs_cm_destructor,
 	.work		= SRXAFSCB_TellMeAboutYourself,
@@ -102,9 +94,8 @@ static const struct afs_call_type afs_SRXCBTellMeAboutYourself = {
 /*
  * YFS CB.CallBack operation type
  */
-static CM_NAME(YFS_CallBack);
 static const struct afs_call_type afs_SRXYFSCB_CallBack = {
-	.name		= afs_SRXCBYFS_CallBack_name,
+	.name		= "YFSCB.CallBack",
 	.deliver	= afs_deliver_yfs_cb_callback,
 	.destructor	= afs_cm_destructor,
 	.work		= SRXAFSCB_CallBack,
@@ -155,10 +146,11 @@ static int afs_find_cm_server_by_peer(struct afs_call *call)
 {
 	struct sockaddr_rxrpc srx;
 	struct afs_server *server;
+	struct rxrpc_peer *peer;
 
-	rxrpc_kernel_get_peer(call->net->socket, call->rxcall, &srx);
+	peer = rxrpc_kernel_get_call_peer(call->net->socket, call->rxcall);
 
-	server = afs_find_server(call->net, &srx);
+	server = afs_find_server(call->net, peer);
 	if (!server) {
 		trace_afs_cm_no_server(call, &srx);
 		return 0;
@@ -202,7 +194,7 @@ static void afs_cm_destructor(struct afs_call *call)
  * Abort a service call from within an action function.
  */
 static void afs_abort_service_call(struct afs_call *call, u32 abort_code, int error,
-				   const char *why)
+				   enum rxrpc_abort_reason why)
 {
 	rxrpc_kernel_abort_call(call->net->socket, call->rxcall,
 				abort_code, error, why);
@@ -223,8 +215,8 @@ static void SRXAFSCB_CallBack(struct work_struct *work)
 	 * to maintain cache coherency.
 	 */
 	if (call->server) {
-		trace_afs_server(call->server,
-				 atomic_read(&call->server->ref),
+		trace_afs_server(call->server->debug_id,
+				 refcount_read(&call->server->ref),
 				 atomic_read(&call->server->active),
 				 afs_server_trace_callback);
 		afs_break_callbacks(call->server, call->count, call->request);
@@ -309,7 +301,7 @@ static int afs_deliver_cb_callback(struct afs_call *call)
 		if (call->count2 != call->count && call->count2 != 0)
 			return afs_protocol_error(call, afs_eproto_cb_count);
 		call->iter = &call->def_iter;
-		iov_iter_discard(&call->def_iter, READ, call->count2 * 3 * 4);
+		iov_iter_discard(&call->def_iter, ITER_DEST, call->count2 * 3 * 4);
 		call->unmarshall++;
 
 		fallthrough;
@@ -322,6 +314,8 @@ static int afs_deliver_cb_callback(struct afs_call *call)
 			return ret;
 
 		call->unmarshall++;
+		fallthrough;
+
 	case 5:
 		break;
 	}
@@ -418,6 +412,7 @@ static int afs_deliver_cb_init_call_back_state3(struct afs_call *call)
 			r->node[loop] = ntohl(b[loop + 5]);
 
 		call->unmarshall++;
+		fallthrough;
 
 	case 2:
 		break;
@@ -477,7 +472,7 @@ static void SRXAFSCB_ProbeUuid(struct work_struct *work)
 	if (memcmp(r, &call->net->uuid, sizeof(call->net->uuid)) == 0)
 		afs_send_empty_reply(call);
 	else
-		afs_abort_service_call(call, 1, 1, "K-1");
+		afs_abort_service_call(call, 1, 1, afs_abort_probeuuid_negative);
 
 	afs_put_call(call);
 	_leave("");
@@ -530,6 +525,7 @@ static int afs_deliver_cb_probe_uuid(struct afs_call *call)
 			r->node[loop] = ntohl(b[loop + 5]);
 
 		call->unmarshall++;
+		fallthrough;
 
 	case 2:
 		break;
@@ -663,6 +659,7 @@ static int afs_deliver_yfs_cb_callback(struct afs_call *call)
 
 		afs_extract_to_tmp(call);
 		call->unmarshall++;
+		fallthrough;
 
 	case 3:
 		break;

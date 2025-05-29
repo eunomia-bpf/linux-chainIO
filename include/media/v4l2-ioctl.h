@@ -163,6 +163,8 @@ struct v4l2_fh;
  *	:ref:`VIDIOC_CREATE_BUFS <vidioc_create_bufs>` ioctl
  * @vidioc_prepare_buf: pointer to the function that implements
  *	:ref:`VIDIOC_PREPARE_BUF <vidioc_prepare_buf>` ioctl
+ * @vidioc_remove_bufs: pointer to the function that implements
+ *	:ref:`VIDIOC_REMOVE_BUFS <vidioc_remove_bufs>` ioctl
  * @vidioc_overlay: pointer to the function that implements
  *	:ref:`VIDIOC_OVERLAY <vidioc_overlay>` ioctl
  * @vidioc_g_fbuf: pointer to the function that implements
@@ -422,6 +424,8 @@ struct v4l2_ioctl_ops {
 				  struct v4l2_create_buffers *b);
 	int (*vidioc_prepare_buf)(struct file *file, void *fh,
 				  struct v4l2_buffer *b);
+	int (*vidioc_remove_bufs)(struct file *file, void *fh,
+				  struct v4l2_remove_buffers *d);
 
 	int (*vidioc_overlay)(struct file *file, void *fh, unsigned int i);
 	int (*vidioc_g_fbuf)(struct file *file, void *fh,
@@ -685,6 +689,16 @@ extern const char *v4l2_type_names[];
 long int v4l2_compat_ioctl32(struct file *file, unsigned int cmd,
 			     unsigned long arg);
 #endif
+
+unsigned int v4l2_compat_translate_cmd(unsigned int cmd);
+int v4l2_compat_get_user(void __user *arg, void *parg, unsigned int cmd);
+int v4l2_compat_put_user(void __user *arg, void *parg, unsigned int cmd);
+int v4l2_compat_get_array_args(struct file *file, void *mbuf,
+			       void __user *user_ptr, size_t array_size,
+			       unsigned int cmd, void *arg);
+int v4l2_compat_put_array_args(struct file *file, void __user *user_ptr,
+			       void *mbuf, size_t array_size,
+			       unsigned int cmd, void *arg);
 
 /**
  * typedef v4l2_kioctl - Typedef used to pass an ioctl handler.

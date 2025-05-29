@@ -5,6 +5,7 @@
 
 /* ETHTOOL Support for VNIC_VF Device*/
 
+#include <linux/ethtool.h>
 #include <linux/pci.h>
 #include <linux/net_tstamp.h>
 
@@ -190,8 +191,8 @@ static void nicvf_get_drvinfo(struct net_device *netdev,
 {
 	struct nicvf *nic = netdev_priv(netdev);
 
-	strlcpy(info->driver, DRV_NAME, sizeof(info->driver));
-	strlcpy(info->bus_info, pci_name(nic->pdev), sizeof(info->bus_info));
+	strscpy(info->driver, DRV_NAME, sizeof(info->driver));
+	strscpy(info->bus_info, pci_name(nic->pdev), sizeof(info->bus_info));
 }
 
 static u32 nicvf_get_msglevel(struct net_device *netdev)
@@ -455,7 +456,9 @@ static void nicvf_get_regs(struct net_device *dev,
 }
 
 static int nicvf_get_coalesce(struct net_device *netdev,
-			      struct ethtool_coalesce *cmd)
+			      struct ethtool_coalesce *cmd,
+			      struct kernel_ethtool_coalesce *kernel_coal,
+			      struct netlink_ext_ack *extack)
 {
 	struct nicvf *nic = netdev_priv(netdev);
 
@@ -464,7 +467,9 @@ static int nicvf_get_coalesce(struct net_device *netdev,
 }
 
 static void nicvf_get_ringparam(struct net_device *netdev,
-				struct ethtool_ringparam *ring)
+				struct ethtool_ringparam *ring,
+				struct kernel_ethtool_ringparam *kernel_ring,
+				struct netlink_ext_ack *extack)
 {
 	struct nicvf *nic = netdev_priv(netdev);
 	struct queue_set *qs = nic->qs;
@@ -476,7 +481,9 @@ static void nicvf_get_ringparam(struct net_device *netdev,
 }
 
 static int nicvf_set_ringparam(struct net_device *netdev,
-			       struct ethtool_ringparam *ring)
+			       struct ethtool_ringparam *ring,
+			       struct kernel_ethtool_ringparam *kernel_ring,
+			       struct netlink_ext_ack *extack)
 {
 	struct nicvf *nic = netdev_priv(netdev);
 	struct queue_set *qs = nic->qs;
@@ -646,35 +653,36 @@ static u32 nicvf_get_rxfh_indir_size(struct net_device *dev)
 	return nic->rss_info.rss_size;
 }
 
-static int nicvf_get_rxfh(struct net_device *dev, u32 *indir, u8 *hkey,
-			  u8 *hfunc)
+static int nicvf_get_rxfh(struct net_device *dev,
+			  struct ethtool_rxfh_param *rxfh)
 {
 	struct nicvf *nic = netdev_priv(dev);
 	struct nicvf_rss_info *rss = &nic->rss_info;
 	int idx;
 
-	if (indir) {
+	if (rxfh->indir) {
 		for (idx = 0; idx < rss->rss_size; idx++)
-			indir[idx] = rss->ind_tbl[idx];
+			rxfh->indir[idx] = rss->ind_tbl[idx];
 	}
 
-	if (hkey)
-		memcpy(hkey, rss->key, RSS_HASH_KEY_SIZE * sizeof(u64));
+	if (rxfh->key)
+		memcpy(rxfh->key, rss->key, RSS_HASH_KEY_SIZE * sizeof(u64));
 
-	if (hfunc)
-		*hfunc = ETH_RSS_HASH_TOP;
+	rxfh->hfunc = ETH_RSS_HASH_TOP;
 
 	return 0;
 }
 
-static int nicvf_set_rxfh(struct net_device *dev, const u32 *indir,
-			  const u8 *hkey, const u8 hfunc)
+static int nicvf_set_rxfh(struct net_device *dev,
+			  struct ethtool_rxfh_param *rxfh,
+			  struct netlink_ext_ack *extack)
 {
 	struct nicvf *nic = netdev_priv(dev);
 	struct nicvf_rss_info *rss = &nic->rss_info;
 	int idx;
 
-	if (hfunc != ETH_RSS_HASH_NO_CHANGE && hfunc != ETH_RSS_HASH_TOP)
+	if (rxfh->hfunc != ETH_RSS_HASH_NO_CHANGE &&
+	    rxfh->hfunc != ETH_RSS_HASH_TOP)
 		return -EOPNOTSUPP;
 
 	if (!rss->enable) {
@@ -683,13 +691,13 @@ static int nicvf_set_rxfh(struct net_device *dev, const u32 *indir,
 		return -EIO;
 	}
 
-	if (indir) {
+	if (rxfh->indir) {
 		for (idx = 0; idx < rss->rss_size; idx++)
-			rss->ind_tbl[idx] = indir[idx];
+			rss->ind_tbl[idx] = rxfh->indir[idx];
 	}
 
-	if (hkey) {
-		memcpy(rss->key, hkey, RSS_HASH_KEY_SIZE * sizeof(u64));
+	if (rxfh->key) {
+		memcpy(rss->key, rxfh->key, RSS_HASH_KEY_SIZE * sizeof(u64));
 		nicvf_set_rss_key(nic);
 	}
 
@@ -728,12 +736,17 @@ static int nicvf_set_channels(struct net_device *dev,
 	if (channel->tx_count > nic->max_queues)
 		return -EINVAL;
 
-	if (nic->xdp_prog &&
-	    ((channel->tx_count + channel->rx_count) > nic->max_queues)) {
-		netdev_err(nic->netdev,
-			   "XDP mode, RXQs + TXQs > Max %d\n",
-			   nic->max_queues);
-		return -EINVAL;
+	if (channel->tx_count + channel->rx_count > nic->max_queues) {
+		if (nic->xdp_prog) {
+			netdev_err(nic->netdev,
+				   "XDP mode, RXQs + TXQs > Max %d\n",
+				   nic->max_queues);
+			return -EINVAL;
+		}
+
+		xdp_clear_features_flag(nic->netdev);
+	} else if (!pass1_silicon(nic->pdev)) {
+		xdp_set_features_flag(dev, NETDEV_XDP_ACT_BASIC);
 	}
 
 	if (if_up)
@@ -823,7 +836,7 @@ static int nicvf_set_pauseparam(struct net_device *dev,
 }
 
 static int nicvf_get_ts_info(struct net_device *netdev,
-			     struct ethtool_ts_info *info)
+			     struct kernel_ethtool_ts_info *info)
 {
 	struct nicvf *nic = netdev_priv(netdev);
 
@@ -831,8 +844,6 @@ static int nicvf_get_ts_info(struct net_device *netdev,
 		return ethtool_op_get_ts_info(netdev, info);
 
 	info->so_timestamping = SOF_TIMESTAMPING_TX_SOFTWARE |
-				SOF_TIMESTAMPING_RX_SOFTWARE |
-				SOF_TIMESTAMPING_SOFTWARE |
 				SOF_TIMESTAMPING_TX_HARDWARE |
 				SOF_TIMESTAMPING_RX_HARDWARE |
 				SOF_TIMESTAMPING_RAW_HARDWARE;

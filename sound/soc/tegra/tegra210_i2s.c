@@ -1,18 +1,20 @@
 // SPDX-License-Identifier: GPL-2.0-only
+// SPDX-FileCopyrightText: Copyright (c) 2020-2024 NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
 //
 // tegra210_i2s.c - Tegra210 I2S driver
-//
-// Copyright (c) 2020 NVIDIA CORPORATION.  All rights reserved.
 
 #include <linux/clk.h>
 #include <linux/device.h>
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
+#include <linux/of_graph.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/regmap.h>
 #include <sound/core.h>
 #include <sound/pcm_params.h>
+#include <sound/simple_card_utils.h>
 #include <sound/soc.h>
 #include "tegra210_i2s.h"
 #include "tegra_cif.h"
@@ -83,7 +85,7 @@ static int tegra210_i2s_set_clock_rate(struct device *dev,
 }
 
 static int tegra210_i2s_sw_reset(struct snd_soc_component *compnt,
-				 bool is_playback)
+				 int stream)
 {
 	struct device *dev = compnt->dev;
 	struct tegra210_i2s *i2s = dev_get_drvdata(dev);
@@ -93,7 +95,7 @@ static int tegra210_i2s_sw_reset(struct snd_soc_component *compnt,
 	unsigned int cif_ctrl, stream_ctrl, i2s_ctrl, val;
 	int err;
 
-	if (is_playback) {
+	if (stream == SNDRV_PCM_STREAM_PLAYBACK) {
 		reset_reg = TEGRA210_I2S_RX_SOFT_RESET;
 		cif_reg = TEGRA210_I2S_RX_CIF_CTRL;
 		stream_reg = TEGRA210_I2S_RX_CTRL;
@@ -116,7 +118,7 @@ static int tegra210_i2s_sw_reset(struct snd_soc_component *compnt,
 				       10, 10000);
 	if (err) {
 		dev_err(dev, "timeout: failed to reset I2S for %s\n",
-			is_playback ? "playback" : "capture");
+			snd_pcm_direction_name(stream));
 		return err;
 	}
 
@@ -135,16 +137,16 @@ static int tegra210_i2s_init(struct snd_soc_dapm_widget *w,
 	struct device *dev = compnt->dev;
 	struct tegra210_i2s *i2s = dev_get_drvdata(dev);
 	unsigned int val, status_reg;
-	bool is_playback;
+	int stream;
 	int err;
 
 	switch (w->reg) {
 	case TEGRA210_I2S_RX_ENABLE:
-		is_playback = true;
+		stream = SNDRV_PCM_STREAM_PLAYBACK;
 		status_reg = TEGRA210_I2S_RX_STATUS;
 		break;
 	case TEGRA210_I2S_TX_ENABLE:
-		is_playback = false;
+		stream = SNDRV_PCM_STREAM_CAPTURE;
 		status_reg = TEGRA210_I2S_TX_STATUS;
 		break;
 	default:
@@ -157,11 +159,11 @@ static int tegra210_i2s_init(struct snd_soc_dapm_widget *w,
 				       10, 10000);
 	if (err) {
 		dev_err(dev, "timeout: previous I2S %s is still active\n",
-			is_playback ? "playback" : "capture");
+			snd_pcm_direction_name(stream));
 		return err;
 	}
 
-	return tegra210_i2s_sw_reset(compnt, is_playback);
+	return tegra210_i2s_sw_reset(compnt, stream);
 }
 
 static int __maybe_unused tegra210_i2s_runtime_suspend(struct device *dev)
@@ -214,11 +216,11 @@ static int tegra210_i2s_set_fmt(struct snd_soc_dai *dai,
 	unsigned int mask, val;
 
 	mask = I2S_CTRL_MASTER_EN_MASK;
-	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBS_CFS:
+	switch (fmt & SND_SOC_DAIFMT_CLOCK_PROVIDER_MASK) {
+	case SND_SOC_DAIFMT_BC_FC:
 		val = 0;
 		break;
-	case SND_SOC_DAIFMT_CBM_CFM:
+	case SND_SOC_DAIFMT_BP_FP:
 		val = I2S_CTRL_MASTER_EN;
 		break;
 	default:
@@ -302,85 +304,235 @@ static int tegra210_i2s_set_tdm_slot(struct snd_soc_dai *dai,
 	return 0;
 }
 
+static int tegra210_i2s_get_loopback(struct snd_kcontrol *kcontrol,
+				     struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *compnt = snd_soc_kcontrol_component(kcontrol);
+	struct tegra210_i2s *i2s = snd_soc_component_get_drvdata(compnt);
+
+	ucontrol->value.integer.value[0] = i2s->loopback;
+
+	return 0;
+}
+
+static int tegra210_i2s_put_loopback(struct snd_kcontrol *kcontrol,
+				     struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *compnt = snd_soc_kcontrol_component(kcontrol);
+	struct tegra210_i2s *i2s = snd_soc_component_get_drvdata(compnt);
+	int value = ucontrol->value.integer.value[0];
+
+	if (value == i2s->loopback)
+		return 0;
+
+	i2s->loopback = value;
+
+	regmap_update_bits(i2s->regmap, TEGRA210_I2S_CTRL, I2S_CTRL_LPBK_MASK,
+			   i2s->loopback << I2S_CTRL_LPBK_SHIFT);
+
+	return 1;
+}
+
+static int tegra210_i2s_get_fsync_width(struct snd_kcontrol *kcontrol,
+					struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *compnt = snd_soc_kcontrol_component(kcontrol);
+	struct tegra210_i2s *i2s = snd_soc_component_get_drvdata(compnt);
+
+	ucontrol->value.integer.value[0] = i2s->fsync_width;
+
+	return 0;
+}
+
+static int tegra210_i2s_put_fsync_width(struct snd_kcontrol *kcontrol,
+					struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *compnt = snd_soc_kcontrol_component(kcontrol);
+	struct tegra210_i2s *i2s = snd_soc_component_get_drvdata(compnt);
+	int value = ucontrol->value.integer.value[0];
+
+	if (value == i2s->fsync_width)
+		return 0;
+
+	i2s->fsync_width = value;
+
+	/*
+	 * Frame sync width is used only for FSYNC modes and not
+	 * applicable for LRCK modes. Reset value for this field is "0",
+	 * which means the width is one bit clock wide.
+	 * The width requirement may depend on the codec and in such
+	 * cases mixer control is used to update custom values. A value
+	 * of "N" here means, width is "N + 1" bit clock wide.
+	 */
+	regmap_update_bits(i2s->regmap, TEGRA210_I2S_CTRL,
+			   I2S_CTRL_FSYNC_WIDTH_MASK,
+			   i2s->fsync_width << I2S_FSYNC_WIDTH_SHIFT);
+
+	return 1;
+}
+
+static int tegra210_i2s_cget_stereo_to_mono(struct snd_kcontrol *kcontrol,
+					    struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *compnt = snd_soc_kcontrol_component(kcontrol);
+	struct tegra210_i2s *i2s = snd_soc_component_get_drvdata(compnt);
+
+	ucontrol->value.enumerated.item[0] = i2s->stereo_to_mono[I2S_TX_PATH];
+
+	return 0;
+}
+
+static int tegra210_i2s_cput_stereo_to_mono(struct snd_kcontrol *kcontrol,
+					    struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *compnt = snd_soc_kcontrol_component(kcontrol);
+	struct tegra210_i2s *i2s = snd_soc_component_get_drvdata(compnt);
+	unsigned int value = ucontrol->value.enumerated.item[0];
+
+	if (value == i2s->stereo_to_mono[I2S_TX_PATH])
+		return 0;
+
+	i2s->stereo_to_mono[I2S_TX_PATH] = value;
+
+	return 1;
+}
+
+static int tegra210_i2s_cget_mono_to_stereo(struct snd_kcontrol *kcontrol,
+					    struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *compnt = snd_soc_kcontrol_component(kcontrol);
+	struct tegra210_i2s *i2s = snd_soc_component_get_drvdata(compnt);
+
+	ucontrol->value.enumerated.item[0] = i2s->mono_to_stereo[I2S_TX_PATH];
+
+	return 0;
+}
+
+static int tegra210_i2s_cput_mono_to_stereo(struct snd_kcontrol *kcontrol,
+					    struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *compnt = snd_soc_kcontrol_component(kcontrol);
+	struct tegra210_i2s *i2s = snd_soc_component_get_drvdata(compnt);
+	unsigned int value = ucontrol->value.enumerated.item[0];
+
+	if (value == i2s->mono_to_stereo[I2S_TX_PATH])
+		return 0;
+
+	i2s->mono_to_stereo[I2S_TX_PATH] = value;
+
+	return 1;
+}
+
+static int tegra210_i2s_pget_stereo_to_mono(struct snd_kcontrol *kcontrol,
+					    struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *compnt = snd_soc_kcontrol_component(kcontrol);
+	struct tegra210_i2s *i2s = snd_soc_component_get_drvdata(compnt);
+
+	ucontrol->value.enumerated.item[0] = i2s->stereo_to_mono[I2S_RX_PATH];
+
+	return 0;
+}
+
+static int tegra210_i2s_pput_stereo_to_mono(struct snd_kcontrol *kcontrol,
+					    struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *compnt = snd_soc_kcontrol_component(kcontrol);
+	struct tegra210_i2s *i2s = snd_soc_component_get_drvdata(compnt);
+	unsigned int value = ucontrol->value.enumerated.item[0];
+
+	if (value == i2s->stereo_to_mono[I2S_RX_PATH])
+		return 0;
+
+	i2s->stereo_to_mono[I2S_RX_PATH] = value;
+
+	return 1;
+}
+
+static int tegra210_i2s_pget_mono_to_stereo(struct snd_kcontrol *kcontrol,
+					    struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *compnt = snd_soc_kcontrol_component(kcontrol);
+	struct tegra210_i2s *i2s = snd_soc_component_get_drvdata(compnt);
+
+	ucontrol->value.enumerated.item[0] = i2s->mono_to_stereo[I2S_RX_PATH];
+
+	return 0;
+}
+
+static int tegra210_i2s_pput_mono_to_stereo(struct snd_kcontrol *kcontrol,
+					    struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *compnt = snd_soc_kcontrol_component(kcontrol);
+	struct tegra210_i2s *i2s = snd_soc_component_get_drvdata(compnt);
+	unsigned int value = ucontrol->value.enumerated.item[0];
+
+	if (value == i2s->mono_to_stereo[I2S_RX_PATH])
+		return 0;
+
+	i2s->mono_to_stereo[I2S_RX_PATH] = value;
+
+	return 1;
+}
+
+static int tegra210_i2s_pget_fifo_th(struct snd_kcontrol *kcontrol,
+				     struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *compnt = snd_soc_kcontrol_component(kcontrol);
+	struct tegra210_i2s *i2s = snd_soc_component_get_drvdata(compnt);
+
+	ucontrol->value.integer.value[0] = i2s->rx_fifo_th;
+
+	return 0;
+}
+
+static int tegra210_i2s_pput_fifo_th(struct snd_kcontrol *kcontrol,
+				     struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *compnt = snd_soc_kcontrol_component(kcontrol);
+	struct tegra210_i2s *i2s = snd_soc_component_get_drvdata(compnt);
+	int value = ucontrol->value.integer.value[0];
+
+	if (value == i2s->rx_fifo_th)
+		return 0;
+
+	i2s->rx_fifo_th = value;
+
+	return 1;
+}
+
+static int tegra210_i2s_get_bclk_ratio(struct snd_kcontrol *kcontrol,
+				       struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *compnt = snd_soc_kcontrol_component(kcontrol);
+	struct tegra210_i2s *i2s = snd_soc_component_get_drvdata(compnt);
+
+	ucontrol->value.integer.value[0] = i2s->bclk_ratio;
+
+	return 0;
+}
+
+static int tegra210_i2s_put_bclk_ratio(struct snd_kcontrol *kcontrol,
+				       struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *compnt = snd_soc_kcontrol_component(kcontrol);
+	struct tegra210_i2s *i2s = snd_soc_component_get_drvdata(compnt);
+	int value = ucontrol->value.integer.value[0];
+
+	if (value == i2s->bclk_ratio)
+		return 0;
+
+	i2s->bclk_ratio = value;
+
+	return 1;
+}
+
 static int tegra210_i2s_set_dai_bclk_ratio(struct snd_soc_dai *dai,
 					   unsigned int ratio)
 {
 	struct tegra210_i2s *i2s = snd_soc_dai_get_drvdata(dai);
 
 	i2s->bclk_ratio = ratio;
-
-	return 0;
-}
-
-static int tegra210_i2s_get_control(struct snd_kcontrol *kcontrol,
-				    struct snd_ctl_elem_value *ucontrol)
-{
-	struct snd_soc_component *compnt = snd_soc_kcontrol_component(kcontrol);
-	struct tegra210_i2s *i2s = snd_soc_component_get_drvdata(compnt);
-	long *uctl_val = &ucontrol->value.integer.value[0];
-
-	if (strstr(kcontrol->id.name, "Loopback"))
-		*uctl_val = i2s->loopback;
-	else if (strstr(kcontrol->id.name, "FSYNC Width"))
-		*uctl_val = i2s->fsync_width;
-	else if (strstr(kcontrol->id.name, "Capture Stereo To Mono"))
-		*uctl_val = i2s->stereo_to_mono[I2S_TX_PATH];
-	else if (strstr(kcontrol->id.name, "Capture Mono To Stereo"))
-		*uctl_val = i2s->mono_to_stereo[I2S_TX_PATH];
-	else if (strstr(kcontrol->id.name, "Playback Stereo To Mono"))
-		*uctl_val = i2s->stereo_to_mono[I2S_RX_PATH];
-	else if (strstr(kcontrol->id.name, "Playback Mono To Stereo"))
-		*uctl_val = i2s->mono_to_stereo[I2S_RX_PATH];
-	else if (strstr(kcontrol->id.name, "Playback FIFO Threshold"))
-		*uctl_val = i2s->rx_fifo_th;
-	else if (strstr(kcontrol->id.name, "BCLK Ratio"))
-		*uctl_val = i2s->bclk_ratio;
-
-	return 0;
-}
-
-static int tegra210_i2s_put_control(struct snd_kcontrol *kcontrol,
-				    struct snd_ctl_elem_value *ucontrol)
-{
-	struct snd_soc_component *compnt = snd_soc_kcontrol_component(kcontrol);
-	struct tegra210_i2s *i2s = snd_soc_component_get_drvdata(compnt);
-	int value = ucontrol->value.integer.value[0];
-
-	if (strstr(kcontrol->id.name, "Loopback")) {
-		i2s->loopback = value;
-
-		regmap_update_bits(i2s->regmap, TEGRA210_I2S_CTRL,
-				   I2S_CTRL_LPBK_MASK,
-				   i2s->loopback << I2S_CTRL_LPBK_SHIFT);
-
-	} else if (strstr(kcontrol->id.name, "FSYNC Width")) {
-		/*
-		 * Frame sync width is used only for FSYNC modes and not
-		 * applicable for LRCK modes. Reset value for this field is "0",
-		 * which means the width is one bit clock wide.
-		 * The width requirement may depend on the codec and in such
-		 * cases mixer control is used to update custom values. A value
-		 * of "N" here means, width is "N + 1" bit clock wide.
-		 */
-		i2s->fsync_width = value;
-
-		regmap_update_bits(i2s->regmap, TEGRA210_I2S_CTRL,
-				   I2S_CTRL_FSYNC_WIDTH_MASK,
-				   i2s->fsync_width << I2S_FSYNC_WIDTH_SHIFT);
-
-	} else if (strstr(kcontrol->id.name, "Capture Stereo To Mono")) {
-		i2s->stereo_to_mono[I2S_TX_PATH] = value;
-	} else if (strstr(kcontrol->id.name, "Capture Mono To Stereo")) {
-		i2s->mono_to_stereo[I2S_TX_PATH] = value;
-	} else if (strstr(kcontrol->id.name, "Playback Stereo To Mono")) {
-		i2s->stereo_to_mono[I2S_RX_PATH] = value;
-	} else if (strstr(kcontrol->id.name, "Playback Mono To Stereo")) {
-		i2s->mono_to_stereo[I2S_RX_PATH] = value;
-	} else if (strstr(kcontrol->id.name, "Playback FIFO Threshold")) {
-		i2s->rx_fifo_th = value;
-	} else if (strstr(kcontrol->id.name, "BCLK Ratio")) {
-		i2s->bclk_ratio = value;
-	}
 
 	return 0;
 }
@@ -453,6 +605,7 @@ static int tegra210_i2s_hw_params(struct snd_pcm_substream *substream,
 	struct tegra210_i2s *i2s = snd_soc_dai_get_drvdata(dai);
 	unsigned int sample_size, channels, srate, val, reg, path;
 	struct tegra_cif_conf cif_conf;
+	snd_pcm_format_t sample_format;
 
 	memset(&cif_conf, 0, sizeof(struct tegra_cif_conf));
 
@@ -465,28 +618,57 @@ static int tegra210_i2s_hw_params(struct snd_pcm_substream *substream,
 
 	cif_conf.audio_ch = channels;
 	cif_conf.client_ch = channels;
+	if (i2s->client_channels)
+		cif_conf.client_ch = i2s->client_channels;
 
+	/* AHUB CIF Audio bits configs */
 	switch (params_format(params)) {
+	case SNDRV_PCM_FORMAT_S8:
+		cif_conf.audio_bits = TEGRA_ACIF_BITS_8;
+		break;
+	case SNDRV_PCM_FORMAT_S16_LE:
+		cif_conf.audio_bits = TEGRA_ACIF_BITS_16;
+		break;
+	case SNDRV_PCM_FORMAT_S24_LE:
+	case SNDRV_PCM_FORMAT_S32_LE:
+		cif_conf.audio_bits = TEGRA_ACIF_BITS_32;
+		break;
+	default:
+		dev_err(dev, "unsupported params audio bit format!\n");
+		return -EOPNOTSUPP;
+	}
+
+	sample_format = params_format(params);
+	if (i2s->client_sample_format >= 0)
+		sample_format = (snd_pcm_format_t)i2s->client_sample_format;
+
+	/*
+	 * Format of the I2S for sending/receiving the audio
+	 * to/from external device.
+	 */
+	switch (sample_format) {
 	case SNDRV_PCM_FORMAT_S8:
 		val = I2S_BITS_8;
 		sample_size = 8;
-		cif_conf.audio_bits = TEGRA_ACIF_BITS_8;
 		cif_conf.client_bits = TEGRA_ACIF_BITS_8;
 		break;
 	case SNDRV_PCM_FORMAT_S16_LE:
 		val = I2S_BITS_16;
 		sample_size = 16;
-		cif_conf.audio_bits = TEGRA_ACIF_BITS_16;
 		cif_conf.client_bits = TEGRA_ACIF_BITS_16;
+		break;
+	case SNDRV_PCM_FORMAT_S24_LE:
+		val = I2S_BITS_24;
+		sample_size = 32;
+		cif_conf.client_bits = TEGRA_ACIF_BITS_24;
 		break;
 	case SNDRV_PCM_FORMAT_S32_LE:
 		val = I2S_BITS_32;
 		sample_size = 32;
-		cif_conf.audio_bits = TEGRA_ACIF_BITS_32;
 		cif_conf.client_bits = TEGRA_ACIF_BITS_32;
 		break;
 	default:
-		dev_err(dev, "unsupported format!\n");
+		dev_err(dev, "unsupported client bit format!\n");
 		return -EOPNOTSUPP;
 	}
 
@@ -544,6 +726,7 @@ static struct snd_soc_dai_driver tegra210_i2s_dais[] = {
 			.rates = SNDRV_PCM_RATE_8000_192000,
 			.formats = SNDRV_PCM_FMTBIT_S8 |
 				SNDRV_PCM_FMTBIT_S16_LE |
+				SNDRV_PCM_FMTBIT_S24_LE |
 				SNDRV_PCM_FMTBIT_S32_LE,
 		},
 		.capture = {
@@ -553,6 +736,7 @@ static struct snd_soc_dai_driver tegra210_i2s_dais[] = {
 			.rates = SNDRV_PCM_RATE_8000_192000,
 			.formats = SNDRV_PCM_FMTBIT_S8 |
 				SNDRV_PCM_FMTBIT_S16_LE |
+				SNDRV_PCM_FMTBIT_S24_LE |
 				SNDRV_PCM_FMTBIT_S32_LE,
 		},
 	},
@@ -565,6 +749,7 @@ static struct snd_soc_dai_driver tegra210_i2s_dais[] = {
 			.rates = SNDRV_PCM_RATE_8000_192000,
 			.formats = SNDRV_PCM_FMTBIT_S8 |
 				SNDRV_PCM_FMTBIT_S16_LE |
+				SNDRV_PCM_FMTBIT_S24_LE |
 				SNDRV_PCM_FMTBIT_S32_LE,
 		},
 		.capture = {
@@ -574,10 +759,11 @@ static struct snd_soc_dai_driver tegra210_i2s_dais[] = {
 			.rates = SNDRV_PCM_RATE_8000_192000,
 			.formats = SNDRV_PCM_FMTBIT_S8 |
 				SNDRV_PCM_FMTBIT_S16_LE |
+				SNDRV_PCM_FMTBIT_S24_LE |
 				SNDRV_PCM_FMTBIT_S32_LE,
 		},
 		.ops = &tegra210_i2s_dai_ops,
-		.symmetric_rates = 1,
+		.symmetric_rate = 1,
 	},
 };
 
@@ -598,22 +784,28 @@ static const struct soc_enum tegra210_i2s_stereo_conv_enum =
 			tegra210_i2s_stereo_conv_text);
 
 static const struct snd_kcontrol_new tegra210_i2s_controls[] = {
-	SOC_SINGLE_EXT("Loopback", 0, 0, 1, 0, tegra210_i2s_get_control,
-		       tegra210_i2s_put_control),
-	SOC_SINGLE_EXT("FSYNC Width", 0, 0, 255, 0, tegra210_i2s_get_control,
-		       tegra210_i2s_put_control),
+	SOC_SINGLE_EXT("Loopback", 0, 0, 1, 0, tegra210_i2s_get_loopback,
+		       tegra210_i2s_put_loopback),
+	SOC_SINGLE_EXT("FSYNC Width", 0, 0, 255, 0,
+		       tegra210_i2s_get_fsync_width,
+		       tegra210_i2s_put_fsync_width),
 	SOC_ENUM_EXT("Capture Stereo To Mono", tegra210_i2s_stereo_conv_enum,
-		     tegra210_i2s_get_control, tegra210_i2s_put_control),
+		     tegra210_i2s_cget_stereo_to_mono,
+		     tegra210_i2s_cput_stereo_to_mono),
 	SOC_ENUM_EXT("Capture Mono To Stereo", tegra210_i2s_mono_conv_enum,
-		     tegra210_i2s_get_control, tegra210_i2s_put_control),
+		     tegra210_i2s_cget_mono_to_stereo,
+		     tegra210_i2s_cput_mono_to_stereo),
 	SOC_ENUM_EXT("Playback Stereo To Mono", tegra210_i2s_stereo_conv_enum,
-		     tegra210_i2s_get_control, tegra210_i2s_put_control),
+		     tegra210_i2s_pget_mono_to_stereo,
+		     tegra210_i2s_pput_mono_to_stereo),
 	SOC_ENUM_EXT("Playback Mono To Stereo", tegra210_i2s_mono_conv_enum,
-		     tegra210_i2s_get_control, tegra210_i2s_put_control),
+		     tegra210_i2s_pget_stereo_to_mono,
+		     tegra210_i2s_pput_stereo_to_mono),
 	SOC_SINGLE_EXT("Playback FIFO Threshold", 0, 0, I2S_RX_FIFO_DEPTH - 1,
-		       0, tegra210_i2s_get_control, tegra210_i2s_put_control),
-	SOC_SINGLE_EXT("BCLK Ratio", 0, 0, INT_MAX, 0, tegra210_i2s_get_control,
-		       tegra210_i2s_put_control),
+		       0, tegra210_i2s_pget_fifo_th, tegra210_i2s_pput_fifo_th),
+	SOC_SINGLE_EXT("BCLK Ratio", 0, 0, INT_MAX, 0,
+		       tegra210_i2s_get_bclk_ratio,
+		       tegra210_i2s_put_bclk_ratio),
 };
 
 static const struct snd_soc_dapm_widget tegra210_i2s_widgets[] = {
@@ -647,7 +839,6 @@ static const struct snd_soc_component_driver tegra210_i2s_cmpnt = {
 	.num_dapm_routes	= ARRAY_SIZE(tegra210_i2s_routes),
 	.controls		= tegra210_i2s_controls,
 	.num_controls		= ARRAY_SIZE(tegra210_i2s_controls),
-	.non_legacy_dai_naming	= 1,
 };
 
 static bool tegra210_i2s_wr_reg(struct device *dev, unsigned int reg)
@@ -662,7 +853,7 @@ static bool tegra210_i2s_wr_reg(struct device *dev, unsigned int reg)
 		return true;
 	default:
 		return false;
-	};
+	}
 }
 
 static bool tegra210_i2s_rd_reg(struct device *dev, unsigned int reg)
@@ -682,7 +873,7 @@ static bool tegra210_i2s_rd_reg(struct device *dev, unsigned int reg)
 		return true;
 	default:
 		return false;
-	};
+	}
 }
 
 static bool tegra210_i2s_volatile_reg(struct device *dev, unsigned int reg)
@@ -701,7 +892,7 @@ static bool tegra210_i2s_volatile_reg(struct device *dev, unsigned int reg)
 		return true;
 	default:
 		return false;
-	};
+	}
 }
 
 static const struct regmap_config tegra210_i2s_regmap_config = {
@@ -716,6 +907,40 @@ static const struct regmap_config tegra210_i2s_regmap_config = {
 	.num_reg_defaults	= ARRAY_SIZE(tegra210_i2s_reg_defaults),
 	.cache_type		= REGCACHE_FLAT,
 };
+
+/*
+ * The AHUB HW modules are interconnected with CIF which are capable of
+ * supporting Channel and Sample bit format conversion. This needs different
+ * CIF Audio and client configuration. As one of the config comes from
+ * params_channels() or params_format(), the extra configuration is passed from
+ * CIF Port of DT I2S node which can help to perform this conversion.
+ *
+ *    4ch          audio = 4ch      client = 2ch       2ch
+ *   -----> ADMAIF -----------> CIF -------------> I2S ---->
+ */
+static void tegra210_parse_client_convert(struct device *dev)
+{
+	struct tegra210_i2s *i2s = dev_get_drvdata(dev);
+	struct device_node *ports, *ep;
+	struct simple_util_data data = {};
+	int cif_port = 0;
+
+	ports = of_get_child_by_name(dev->of_node, "ports");
+	if (ports) {
+		ep = of_graph_get_endpoint_by_regs(ports, cif_port, -1);
+		if (ep) {
+			simple_util_parse_convert(ep, NULL, &data);
+			of_node_put(ep);
+		}
+		of_node_put(ports);
+	}
+
+	if (data.convert_channels)
+		i2s->client_channels = data.convert_channels;
+
+	if (data.convert_sample_format)
+		i2s->client_sample_format = simple_util_get_sample_fmt(&data);
+}
 
 static int tegra210_i2s_probe(struct platform_device *pdev)
 {
@@ -732,6 +957,7 @@ static int tegra210_i2s_probe(struct platform_device *pdev)
 	i2s->tx_mask = DEFAULT_I2S_SLOT_MASK;
 	i2s->rx_mask = DEFAULT_I2S_SLOT_MASK;
 	i2s->loopback = false;
+	i2s->client_sample_format = -EINVAL;
 
 	dev_set_drvdata(dev, i2s);
 
@@ -761,6 +987,8 @@ static int tegra210_i2s_probe(struct platform_device *pdev)
 		return PTR_ERR(i2s->regmap);
 	}
 
+	tegra210_parse_client_convert(dev);
+
 	regcache_cache_only(i2s->regmap, true);
 
 	err = devm_snd_soc_register_component(dev, &tegra210_i2s_cmpnt,
@@ -776,11 +1004,9 @@ static int tegra210_i2s_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int tegra210_i2s_remove(struct platform_device *pdev)
+static void tegra210_i2s_remove(struct platform_device *pdev)
 {
 	pm_runtime_disable(&pdev->dev);
-
-	return 0;
 }
 
 static const struct dev_pm_ops tegra210_i2s_pm_ops = {

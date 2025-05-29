@@ -2,17 +2,61 @@
 #ifndef _LINUX_STRING_H_
 #define _LINUX_STRING_H_
 
-
+#include <linux/args.h>
+#include <linux/array_size.h>
 #include <linux/compiler.h>	/* for inline */
 #include <linux/types.h>	/* for size_t */
 #include <linux/stddef.h>	/* for NULL */
-#include <stdarg.h>
+#include <linux/err.h>		/* for ERR_PTR() */
+#include <linux/errno.h>	/* for E2BIG */
+#include <linux/overflow.h>	/* for check_mul_overflow() */
+#include <linux/stdarg.h>
 #include <uapi/linux/string.h>
 
 extern char *strndup_user(const char __user *, long);
-extern void *memdup_user(const void __user *, size_t);
-extern void *vmemdup_user(const void __user *, size_t);
+extern void *memdup_user(const void __user *, size_t) __realloc_size(2);
+extern void *vmemdup_user(const void __user *, size_t) __realloc_size(2);
 extern void *memdup_user_nul(const void __user *, size_t);
+
+/**
+ * memdup_array_user - duplicate array from user space
+ * @src: source address in user space
+ * @n: number of array members to copy
+ * @size: size of one array member
+ *
+ * Return: an ERR_PTR() on failure. Result is physically
+ * contiguous, to be freed by kfree().
+ */
+static inline __realloc_size(2, 3)
+void *memdup_array_user(const void __user *src, size_t n, size_t size)
+{
+	size_t nbytes;
+
+	if (check_mul_overflow(n, size, &nbytes))
+		return ERR_PTR(-EOVERFLOW);
+
+	return memdup_user(src, nbytes);
+}
+
+/**
+ * vmemdup_array_user - duplicate array from user space
+ * @src: source address in user space
+ * @n: number of array members to copy
+ * @size: size of one array member
+ *
+ * Return: an ERR_PTR() on failure. Result may be not
+ * physically contiguous. Use kvfree() to free.
+ */
+static inline __realloc_size(2, 3)
+void *vmemdup_array_user(const void __user *src, size_t n, size_t size)
+{
+	size_t nbytes;
+
+	if (check_mul_overflow(n, size, &nbytes))
+		return ERR_PTR(-EOVERFLOW);
+
+	return vmemdup_user(src, nbytes);
+}
 
 /*
  * Include machine specific inline routines
@@ -25,15 +69,83 @@ extern char * strcpy(char *,const char *);
 #ifndef __HAVE_ARCH_STRNCPY
 extern char * strncpy(char *,const char *, __kernel_size_t);
 #endif
-#ifndef __HAVE_ARCH_STRLCPY
-size_t strlcpy(char *, const char *, size_t);
-#endif
-#ifndef __HAVE_ARCH_STRSCPY
-ssize_t strscpy(char *, const char *, size_t);
-#endif
+ssize_t sized_strscpy(char *, const char *, size_t);
 
-/* Wraps calls to strscpy()/memset(), no arch specific code required */
-ssize_t strscpy_pad(char *dest, const char *src, size_t count);
+/*
+ * The 2 argument style can only be used when dst is an array with a
+ * known size.
+ */
+#define __strscpy0(dst, src, ...)	\
+	sized_strscpy(dst, src, sizeof(dst) + __must_be_array(dst) +	\
+				__must_be_cstr(dst) + __must_be_cstr(src))
+#define __strscpy1(dst, src, size)	\
+	sized_strscpy(dst, src, size + __must_be_cstr(dst) + __must_be_cstr(src))
+
+#define __strscpy_pad0(dst, src, ...)	\
+	sized_strscpy_pad(dst, src, sizeof(dst) + __must_be_array(dst) +	\
+				    __must_be_cstr(dst) + __must_be_cstr(src))
+#define __strscpy_pad1(dst, src, size)	\
+	sized_strscpy_pad(dst, src, size + __must_be_cstr(dst) + __must_be_cstr(src))
+
+/**
+ * strscpy - Copy a C-string into a sized buffer
+ * @dst: Where to copy the string to
+ * @src: Where to copy the string from
+ * @...: Size of destination buffer (optional)
+ *
+ * Copy the source string @src, or as much of it as fits, into the
+ * destination @dst buffer. The behavior is undefined if the string
+ * buffers overlap. The destination @dst buffer is always NUL terminated,
+ * unless it's zero-sized.
+ *
+ * The size argument @... is only required when @dst is not an array, or
+ * when the copy needs to be smaller than sizeof(@dst).
+ *
+ * Preferred to strncpy() since it always returns a valid string, and
+ * doesn't unnecessarily force the tail of the destination buffer to be
+ * zero padded. If padding is desired please use strscpy_pad().
+ *
+ * Returns the number of characters copied in @dst (not including the
+ * trailing %NUL) or -E2BIG if @size is 0 or the copy from @src was
+ * truncated.
+ */
+#define strscpy(dst, src, ...)	\
+	CONCATENATE(__strscpy, COUNT_ARGS(__VA_ARGS__))(dst, src, __VA_ARGS__)
+
+#define sized_strscpy_pad(dest, src, count)	({			\
+	char *__dst = (dest);						\
+	const char *__src = (src);					\
+	const size_t __count = (count);					\
+	ssize_t __wrote;						\
+									\
+	__wrote = sized_strscpy(__dst, __src, __count);			\
+	if (__wrote >= 0 && __wrote < __count)				\
+		memset(__dst + __wrote + 1, 0, __count - __wrote - 1);	\
+	__wrote;							\
+})
+
+/**
+ * strscpy_pad() - Copy a C-string into a sized buffer
+ * @dst: Where to copy the string to
+ * @src: Where to copy the string from
+ * @...: Size of destination buffer
+ *
+ * Copy the string, or as much of it as fits, into the dest buffer. The
+ * behavior is undefined if the string buffers overlap. The destination
+ * buffer is always %NUL terminated, unless it's zero-sized.
+ *
+ * If the source string is shorter than the destination buffer, the
+ * remaining bytes in the buffer will be filled with %NUL bytes.
+ *
+ * For full explanation of why you may want to consider using the
+ * 'strscpy' functions please see the function docstring for strscpy().
+ *
+ * Returns:
+ * * The number of characters copied (not including the trailing %NULs)
+ * * -E2BIG if count is 0 or @src was truncated.
+ */
+#define strscpy_pad(dst, src, ...)	\
+	CONCATENATE(__strscpy_pad, COUNT_ARGS(__VA_ARGS__))(dst, src, __VA_ARGS__)
 
 #ifndef __HAVE_ARCH_STRCAT
 extern char * strcat(char *, const char *);
@@ -169,26 +281,45 @@ static inline void memcpy_flushcache(void *dst, const void *src, size_t cnt)
 #endif
 
 void *memchr_inv(const void *s, int c, size_t n);
-char *strreplace(char *s, char old, char new);
+char *strreplace(char *str, char old, char new);
+
+/**
+ * mem_is_zero - Check if an area of memory is all 0's.
+ * @s: The memory area
+ * @n: The size of the area
+ *
+ * Return: True if the area of memory is all 0's.
+ */
+static inline bool mem_is_zero(const void *s, size_t n)
+{
+	return !memchr_inv(s, 0, n);
+}
 
 extern void kfree_const(const void *x);
 
 extern char *kstrdup(const char *s, gfp_t gfp) __malloc;
 extern const char *kstrdup_const(const char *s, gfp_t gfp);
 extern char *kstrndup(const char *s, size_t len, gfp_t gfp);
-extern void *kmemdup(const void *src, size_t len, gfp_t gfp);
-extern char *kmemdup_nul(const char *s, size_t len, gfp_t gfp);
+extern void *kmemdup_noprof(const void *src, size_t len, gfp_t gfp) __realloc_size(2);
+#define kmemdup(...)	alloc_hooks(kmemdup_noprof(__VA_ARGS__))
 
+extern void *kvmemdup(const void *src, size_t len, gfp_t gfp) __realloc_size(2);
+extern char *kmemdup_nul(const char *s, size_t len, gfp_t gfp);
+extern void *kmemdup_array(const void *src, size_t count, size_t element_size, gfp_t gfp)
+		__realloc_size(2, 3);
+
+/* lib/argv_split.c */
 extern char **argv_split(gfp_t gfp, const char *str, int *argcp);
 extern void argv_free(char **argv);
 
-extern bool sysfs_streq(const char *s1, const char *s2);
-extern int kstrtobool(const char *s, bool *res);
-static inline int strtobool(const char *s, bool *res)
-{
-	return kstrtobool(s, res);
-}
+/* lib/cmdline.c */
+extern int get_option(char **str, int *pint);
+extern char *get_options(const char *str, int nints, int *ints);
+extern unsigned long long memparse(const char *ptr, char **retptr);
+extern bool parse_option_str(const char *str, const char *option);
+extern char *next_arg(char *args, char **param, char **val);
 
+extern bool sysfs_streq(const char *s1, const char *s2);
 int match_string(const char * const *array, size_t n, const char *string);
 int __sysfs_match_string(const char * const *array, size_t n, const char *s);
 
@@ -204,7 +335,6 @@ int __sysfs_match_string(const char * const *array, size_t n, const char *s);
 #ifdef CONFIG_BINARY_PRINTF
 int vbin_printf(u32 *bin_buf, size_t size, const char *fmt, va_list args);
 int bstr_printf(char *buf, size_t size, const char *fmt, const u32 *bin_buf);
-int bprintf(u32 *bin_buf, size_t size, const char *fmt, ...) __printf(3, 4);
 #endif
 
 extern ssize_t memory_read_from_buffer(void *to, size_t count, loff_t *ppos,
@@ -255,264 +385,146 @@ static inline const char *kbasename(const char *path)
 	return tail ? tail + 1 : path;
 }
 
-#define __FORTIFY_INLINE extern __always_inline __attribute__((gnu_inline))
-#define __RENAME(x) __asm__(#x)
-
-void fortify_panic(const char *name) __noreturn __cold;
-void __read_overflow(void) __compiletime_error("detected read beyond size of object passed as 1st parameter");
-void __read_overflow2(void) __compiletime_error("detected read beyond size of object passed as 2nd parameter");
-void __read_overflow3(void) __compiletime_error("detected read beyond size of object passed as 3rd parameter");
-void __write_overflow(void) __compiletime_error("detected write beyond size of object passed as 1st parameter");
-
 #if !defined(__NO_FORTIFY) && defined(__OPTIMIZE__) && defined(CONFIG_FORTIFY_SOURCE)
-
-#ifdef CONFIG_KASAN
-extern void *__underlying_memchr(const void *p, int c, __kernel_size_t size) __RENAME(memchr);
-extern int __underlying_memcmp(const void *p, const void *q, __kernel_size_t size) __RENAME(memcmp);
-extern void *__underlying_memcpy(void *p, const void *q, __kernel_size_t size) __RENAME(memcpy);
-extern void *__underlying_memmove(void *p, const void *q, __kernel_size_t size) __RENAME(memmove);
-extern void *__underlying_memset(void *p, int c, __kernel_size_t size) __RENAME(memset);
-extern char *__underlying_strcat(char *p, const char *q) __RENAME(strcat);
-extern char *__underlying_strcpy(char *p, const char *q) __RENAME(strcpy);
-extern __kernel_size_t __underlying_strlen(const char *p) __RENAME(strlen);
-extern char *__underlying_strncat(char *p, const char *q, __kernel_size_t count) __RENAME(strncat);
-extern char *__underlying_strncpy(char *p, const char *q, __kernel_size_t size) __RENAME(strncpy);
-#else
-#define __underlying_memchr	__builtin_memchr
-#define __underlying_memcmp	__builtin_memcmp
-#define __underlying_memcpy	__builtin_memcpy
-#define __underlying_memmove	__builtin_memmove
-#define __underlying_memset	__builtin_memset
-#define __underlying_strcat	__builtin_strcat
-#define __underlying_strcpy	__builtin_strcpy
-#define __underlying_strlen	__builtin_strlen
-#define __underlying_strncat	__builtin_strncat
-#define __underlying_strncpy	__builtin_strncpy
+#include <linux/fortify-string.h>
+#endif
+#ifndef unsafe_memcpy
+#define unsafe_memcpy(dst, src, bytes, justification)		\
+	memcpy(dst, src, bytes)
 #endif
 
-__FORTIFY_INLINE char *strncpy(char *p, const char *q, __kernel_size_t size)
-{
-	size_t p_size = __builtin_object_size(p, 0);
-	if (__builtin_constant_p(size) && p_size < size)
-		__write_overflow();
-	if (p_size < size)
-		fortify_panic(__func__);
-	return __underlying_strncpy(p, q, size);
-}
-
-__FORTIFY_INLINE char *strcat(char *p, const char *q)
-{
-	size_t p_size = __builtin_object_size(p, 0);
-	if (p_size == (size_t)-1)
-		return __underlying_strcat(p, q);
-	if (strlcat(p, q, p_size) >= p_size)
-		fortify_panic(__func__);
-	return p;
-}
-
-__FORTIFY_INLINE __kernel_size_t strlen(const char *p)
-{
-	__kernel_size_t ret;
-	size_t p_size = __builtin_object_size(p, 0);
-
-	/* Work around gcc excess stack consumption issue */
-	if (p_size == (size_t)-1 ||
-	    (__builtin_constant_p(p[p_size - 1]) && p[p_size - 1] == '\0'))
-		return __underlying_strlen(p);
-	ret = strnlen(p, p_size);
-	if (p_size <= ret)
-		fortify_panic(__func__);
-	return ret;
-}
-
-extern __kernel_size_t __real_strnlen(const char *, __kernel_size_t) __RENAME(strnlen);
-__FORTIFY_INLINE __kernel_size_t strnlen(const char *p, __kernel_size_t maxlen)
-{
-	size_t p_size = __builtin_object_size(p, 0);
-	__kernel_size_t ret = __real_strnlen(p, maxlen < p_size ? maxlen : p_size);
-	if (p_size <= ret && maxlen != ret)
-		fortify_panic(__func__);
-	return ret;
-}
-
-/* defined after fortified strlen to reuse it */
-extern size_t __real_strlcpy(char *, const char *, size_t) __RENAME(strlcpy);
-__FORTIFY_INLINE size_t strlcpy(char *p, const char *q, size_t size)
-{
-	size_t ret;
-	size_t p_size = __builtin_object_size(p, 0);
-	size_t q_size = __builtin_object_size(q, 0);
-	if (p_size == (size_t)-1 && q_size == (size_t)-1)
-		return __real_strlcpy(p, q, size);
-	ret = strlen(q);
-	if (size) {
-		size_t len = (ret >= size) ? size - 1 : ret;
-		if (__builtin_constant_p(len) && len >= p_size)
-			__write_overflow();
-		if (len >= p_size)
-			fortify_panic(__func__);
-		__underlying_memcpy(p, q, len);
-		p[len] = '\0';
-	}
-	return ret;
-}
-
-/* defined after fortified strlen and strnlen to reuse them */
-__FORTIFY_INLINE char *strncat(char *p, const char *q, __kernel_size_t count)
-{
-	size_t p_len, copy_len;
-	size_t p_size = __builtin_object_size(p, 0);
-	size_t q_size = __builtin_object_size(q, 0);
-	if (p_size == (size_t)-1 && q_size == (size_t)-1)
-		return __underlying_strncat(p, q, count);
-	p_len = strlen(p);
-	copy_len = strnlen(q, count);
-	if (p_size < p_len + copy_len + 1)
-		fortify_panic(__func__);
-	__underlying_memcpy(p + p_len, q, copy_len);
-	p[p_len + copy_len] = '\0';
-	return p;
-}
-
-__FORTIFY_INLINE void *memset(void *p, int c, __kernel_size_t size)
-{
-	size_t p_size = __builtin_object_size(p, 0);
-	if (__builtin_constant_p(size) && p_size < size)
-		__write_overflow();
-	if (p_size < size)
-		fortify_panic(__func__);
-	return __underlying_memset(p, c, size);
-}
-
-__FORTIFY_INLINE void *memcpy(void *p, const void *q, __kernel_size_t size)
-{
-	size_t p_size = __builtin_object_size(p, 0);
-	size_t q_size = __builtin_object_size(q, 0);
-	if (__builtin_constant_p(size)) {
-		if (p_size < size)
-			__write_overflow();
-		if (q_size < size)
-			__read_overflow2();
-	}
-	if (p_size < size || q_size < size)
-		fortify_panic(__func__);
-	return __underlying_memcpy(p, q, size);
-}
-
-__FORTIFY_INLINE void *memmove(void *p, const void *q, __kernel_size_t size)
-{
-	size_t p_size = __builtin_object_size(p, 0);
-	size_t q_size = __builtin_object_size(q, 0);
-	if (__builtin_constant_p(size)) {
-		if (p_size < size)
-			__write_overflow();
-		if (q_size < size)
-			__read_overflow2();
-	}
-	if (p_size < size || q_size < size)
-		fortify_panic(__func__);
-	return __underlying_memmove(p, q, size);
-}
-
-extern void *__real_memscan(void *, int, __kernel_size_t) __RENAME(memscan);
-__FORTIFY_INLINE void *memscan(void *p, int c, __kernel_size_t size)
-{
-	size_t p_size = __builtin_object_size(p, 0);
-	if (__builtin_constant_p(size) && p_size < size)
-		__read_overflow();
-	if (p_size < size)
-		fortify_panic(__func__);
-	return __real_memscan(p, c, size);
-}
-
-__FORTIFY_INLINE int memcmp(const void *p, const void *q, __kernel_size_t size)
-{
-	size_t p_size = __builtin_object_size(p, 0);
-	size_t q_size = __builtin_object_size(q, 0);
-	if (__builtin_constant_p(size)) {
-		if (p_size < size)
-			__read_overflow();
-		if (q_size < size)
-			__read_overflow2();
-	}
-	if (p_size < size || q_size < size)
-		fortify_panic(__func__);
-	return __underlying_memcmp(p, q, size);
-}
-
-__FORTIFY_INLINE void *memchr(const void *p, int c, __kernel_size_t size)
-{
-	size_t p_size = __builtin_object_size(p, 0);
-	if (__builtin_constant_p(size) && p_size < size)
-		__read_overflow();
-	if (p_size < size)
-		fortify_panic(__func__);
-	return __underlying_memchr(p, c, size);
-}
-
-void *__real_memchr_inv(const void *s, int c, size_t n) __RENAME(memchr_inv);
-__FORTIFY_INLINE void *memchr_inv(const void *p, int c, size_t size)
-{
-	size_t p_size = __builtin_object_size(p, 0);
-	if (__builtin_constant_p(size) && p_size < size)
-		__read_overflow();
-	if (p_size < size)
-		fortify_panic(__func__);
-	return __real_memchr_inv(p, c, size);
-}
-
-extern void *__real_kmemdup(const void *src, size_t len, gfp_t gfp) __RENAME(kmemdup);
-__FORTIFY_INLINE void *kmemdup(const void *p, size_t size, gfp_t gfp)
-{
-	size_t p_size = __builtin_object_size(p, 0);
-	if (__builtin_constant_p(size) && p_size < size)
-		__read_overflow();
-	if (p_size < size)
-		fortify_panic(__func__);
-	return __real_kmemdup(p, size, gfp);
-}
-
-/* defined after fortified strlen and memcpy to reuse them */
-__FORTIFY_INLINE char *strcpy(char *p, const char *q)
-{
-	size_t p_size = __builtin_object_size(p, 0);
-	size_t q_size = __builtin_object_size(q, 0);
-	if (p_size == (size_t)-1 && q_size == (size_t)-1)
-		return __underlying_strcpy(p, q);
-	memcpy(p, q, strlen(q) + 1);
-	return p;
-}
-
-/* Don't use these outside the FORITFY_SOURCE implementation */
-#undef __underlying_memchr
-#undef __underlying_memcmp
-#undef __underlying_memcpy
-#undef __underlying_memmove
-#undef __underlying_memset
-#undef __underlying_strcat
-#undef __underlying_strcpy
-#undef __underlying_strlen
-#undef __underlying_strncat
-#undef __underlying_strncpy
-#endif
+void memcpy_and_pad(void *dest, size_t dest_len, const void *src, size_t count,
+		    int pad);
 
 /**
- * memcpy_and_pad - Copy one buffer to another with padding
- * @dest: Where to copy to
- * @dest_len: The destination buffer size
- * @src: Where to copy from
- * @count: The number of bytes to copy
- * @pad: Character to use for padding if space is left in destination.
+ * strtomem_pad - Copy NUL-terminated string to non-NUL-terminated buffer
+ *
+ * @dest: Pointer of destination character array (marked as __nonstring)
+ * @src: Pointer to NUL-terminated string
+ * @pad: Padding character to fill any remaining bytes of @dest after copy
+ *
+ * This is a replacement for strncpy() uses where the destination is not
+ * a NUL-terminated string, but with bounds checking on the source size, and
+ * an explicit padding character. If padding is not required, use strtomem().
+ *
+ * Note that the size of @dest is not an argument, as the length of @dest
+ * must be discoverable by the compiler.
  */
-static inline void memcpy_and_pad(void *dest, size_t dest_len,
-				  const void *src, size_t count, int pad)
-{
-	if (dest_len > count) {
-		memcpy(dest, src, count);
-		memset(dest + count, pad,  dest_len - count);
-	} else
-		memcpy(dest, src, dest_len);
-}
+#define strtomem_pad(dest, src, pad)	do {				\
+	const size_t _dest_len = __builtin_object_size(dest, 1);	\
+	const size_t _src_len = __builtin_object_size(src, 1);		\
+									\
+	BUILD_BUG_ON(!__builtin_constant_p(_dest_len) ||		\
+		     _dest_len == (size_t)-1);				\
+	memcpy_and_pad(dest, _dest_len, src,				\
+		       strnlen(src, min(_src_len, _dest_len)), pad);	\
+} while (0)
+
+/**
+ * strtomem - Copy NUL-terminated string to non-NUL-terminated buffer
+ *
+ * @dest: Pointer of destination character array (marked as __nonstring)
+ * @src: Pointer to NUL-terminated string
+ *
+ * This is a replacement for strncpy() uses where the destination is not
+ * a NUL-terminated string, but with bounds checking on the source size, and
+ * without trailing padding. If padding is required, use strtomem_pad().
+ *
+ * Note that the size of @dest is not an argument, as the length of @dest
+ * must be discoverable by the compiler.
+ */
+#define strtomem(dest, src)	do {					\
+	const size_t _dest_len = __builtin_object_size(dest, 1);	\
+	const size_t _src_len = __builtin_object_size(src, 1);		\
+									\
+	BUILD_BUG_ON(!__builtin_constant_p(_dest_len) ||		\
+		     _dest_len == (size_t)-1);				\
+	memcpy(dest, src, strnlen(src, min(_src_len, _dest_len)));	\
+} while (0)
+
+/**
+ * memtostr - Copy a possibly non-NUL-term string to a NUL-term string
+ * @dest: Pointer to destination NUL-terminates string
+ * @src: Pointer to character array (likely marked as __nonstring)
+ *
+ * This is a replacement for strncpy() uses where the source is not
+ * a NUL-terminated string.
+ *
+ * Note that sizes of @dest and @src must be known at compile-time.
+ */
+#define memtostr(dest, src)	do {					\
+	const size_t _dest_len = __builtin_object_size(dest, 1);	\
+	const size_t _src_len = __builtin_object_size(src, 1);		\
+	const size_t _src_chars = strnlen(src, _src_len);		\
+	const size_t _copy_len = min(_dest_len - 1, _src_chars);	\
+									\
+	BUILD_BUG_ON(!__builtin_constant_p(_dest_len) ||		\
+		     !__builtin_constant_p(_src_len) ||			\
+		     _dest_len == 0 || _dest_len == (size_t)-1 ||	\
+		     _src_len == 0 || _src_len == (size_t)-1);		\
+	memcpy(dest, src, _copy_len);					\
+	dest[_copy_len] = '\0';						\
+} while (0)
+
+/**
+ * memtostr_pad - Copy a possibly non-NUL-term string to a NUL-term string
+ *                with NUL padding in the destination
+ * @dest: Pointer to destination NUL-terminates string
+ * @src: Pointer to character array (likely marked as __nonstring)
+ *
+ * This is a replacement for strncpy() uses where the source is not
+ * a NUL-terminated string.
+ *
+ * Note that sizes of @dest and @src must be known at compile-time.
+ */
+#define memtostr_pad(dest, src)		do {				\
+	const size_t _dest_len = __builtin_object_size(dest, 1);	\
+	const size_t _src_len = __builtin_object_size(src, 1);		\
+	const size_t _src_chars = strnlen(src, _src_len);		\
+	const size_t _copy_len = min(_dest_len - 1, _src_chars);	\
+									\
+	BUILD_BUG_ON(!__builtin_constant_p(_dest_len) ||		\
+		     !__builtin_constant_p(_src_len) ||			\
+		     _dest_len == 0 || _dest_len == (size_t)-1 ||	\
+		     _src_len == 0 || _src_len == (size_t)-1);		\
+	memcpy(dest, src, _copy_len);					\
+	memset(&dest[_copy_len], 0, _dest_len - _copy_len);		\
+} while (0)
+
+/**
+ * memset_after - Set a value after a struct member to the end of a struct
+ *
+ * @obj: Address of target struct instance
+ * @v: Byte value to repeatedly write
+ * @member: after which struct member to start writing bytes
+ *
+ * This is good for clearing padding following the given member.
+ */
+#define memset_after(obj, v, member)					\
+({									\
+	u8 *__ptr = (u8 *)(obj);					\
+	typeof(v) __val = (v);						\
+	memset(__ptr + offsetofend(typeof(*(obj)), member), __val,	\
+	       sizeof(*(obj)) - offsetofend(typeof(*(obj)), member));	\
+})
+
+/**
+ * memset_startat - Set a value starting at a member to the end of a struct
+ *
+ * @obj: Address of target struct instance
+ * @v: Byte value to repeatedly write
+ * @member: struct member to start writing at
+ *
+ * Note that if there is padding between the prior member and the target
+ * member, memset_after() should be used to clear the prior padding.
+ */
+#define memset_startat(obj, v, member)					\
+({									\
+	u8 *__ptr = (u8 *)(obj);					\
+	typeof(v) __val = (v);						\
+	memset(__ptr + offsetof(typeof(*(obj)), member), __val,		\
+	       sizeof(*(obj)) - offsetof(typeof(*(obj)), member));	\
+})
 
 /**
  * str_has_prefix - Test if a string has a given prefix

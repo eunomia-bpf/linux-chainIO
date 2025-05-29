@@ -85,9 +85,9 @@ static ssize_t idletimer_tg_show(struct device *dev,
 	mutex_unlock(&list_mutex);
 
 	if (time_after(expires, jiffies) || ktimespec.tv_sec > 0)
-		return snprintf(buf, PAGE_SIZE, "%ld\n", time_diff);
+		return sysfs_emit(buf, "%ld\n", time_diff);
 
-	return snprintf(buf, PAGE_SIZE, "0\n");
+	return sysfs_emit(buf, "0\n");
 }
 
 static void idletimer_tg_work(struct work_struct *work)
@@ -107,14 +107,12 @@ static void idletimer_tg_expired(struct timer_list *t)
 	schedule_work(&timer->work);
 }
 
-static enum alarmtimer_restart idletimer_tg_alarmproc(struct alarm *alarm,
-							  ktime_t now)
+static void idletimer_tg_alarmproc(struct alarm *alarm, ktime_t now)
 {
 	struct idletimer_tg *timer = alarm->data;
 
 	pr_debug("alarm %s expired\n", timer->attr.attr.name);
 	schedule_work(&timer->work);
-	return ALARMTIMER_NORESTART;
 }
 
 static int idletimer_check_sysfs_name(const char *name, unsigned int size)
@@ -137,7 +135,7 @@ static int idletimer_tg_create(struct idletimer_tg_info *info)
 {
 	int ret;
 
-	info->timer = kmalloc(sizeof(*info->timer), GFP_KERNEL);
+	info->timer = kzalloc(sizeof(*info->timer), GFP_KERNEL);
 	if (!info->timer) {
 		ret = -ENOMEM;
 		goto out;
@@ -413,7 +411,7 @@ static void idletimer_tg_destroy(const struct xt_tgdtor_param *par)
 		pr_debug("deleting timer %s\n", info->label);
 
 		list_del(&info->timer->entry);
-		del_timer_sync(&info->timer->timer);
+		timer_shutdown_sync(&info->timer->timer);
 		cancel_work_sync(&info->timer->work);
 		sysfs_remove_file(idletimer_tg_kobj, &info->timer->attr.attr);
 		kfree(info->timer->attr.attr.name);
@@ -441,7 +439,7 @@ static void idletimer_tg_destroy_v1(const struct xt_tgdtor_param *par)
 		if (info->timer->timer_type & XT_IDLETIMER_ALARM) {
 			alarm_cancel(&info->timer->alarm);
 		} else {
-			del_timer_sync(&info->timer->timer);
+			timer_shutdown_sync(&info->timer->timer);
 		}
 		cancel_work_sync(&info->timer->work);
 		sysfs_remove_file(idletimer_tg_kobj, &info->timer->attr.attr);
@@ -458,28 +456,49 @@ static void idletimer_tg_destroy_v1(const struct xt_tgdtor_param *par)
 
 static struct xt_target idletimer_tg[] __read_mostly = {
 	{
-	.name		= "IDLETIMER",
-	.family		= NFPROTO_UNSPEC,
-	.target		= idletimer_tg_target,
-	.targetsize     = sizeof(struct idletimer_tg_info),
-	.usersize	= offsetof(struct idletimer_tg_info, timer),
-	.checkentry	= idletimer_tg_checkentry,
-	.destroy        = idletimer_tg_destroy,
-	.me		= THIS_MODULE,
+		.name		= "IDLETIMER",
+		.family		= NFPROTO_IPV4,
+		.target		= idletimer_tg_target,
+		.targetsize     = sizeof(struct idletimer_tg_info),
+		.usersize	= offsetof(struct idletimer_tg_info, timer),
+		.checkentry	= idletimer_tg_checkentry,
+		.destroy        = idletimer_tg_destroy,
+		.me		= THIS_MODULE,
 	},
 	{
-	.name		= "IDLETIMER",
-	.family		= NFPROTO_UNSPEC,
-	.revision	= 1,
-	.target		= idletimer_tg_target_v1,
-	.targetsize     = sizeof(struct idletimer_tg_info_v1),
-	.usersize	= offsetof(struct idletimer_tg_info_v1, timer),
-	.checkentry	= idletimer_tg_checkentry_v1,
-	.destroy        = idletimer_tg_destroy_v1,
-	.me		= THIS_MODULE,
+		.name		= "IDLETIMER",
+		.family		= NFPROTO_IPV4,
+		.revision	= 1,
+		.target		= idletimer_tg_target_v1,
+		.targetsize     = sizeof(struct idletimer_tg_info_v1),
+		.usersize	= offsetof(struct idletimer_tg_info_v1, timer),
+		.checkentry	= idletimer_tg_checkentry_v1,
+		.destroy        = idletimer_tg_destroy_v1,
+		.me		= THIS_MODULE,
 	},
-
-
+#if IS_ENABLED(CONFIG_IP6_NF_IPTABLES)
+	{
+		.name		= "IDLETIMER",
+		.family		= NFPROTO_IPV6,
+		.target		= idletimer_tg_target,
+		.targetsize     = sizeof(struct idletimer_tg_info),
+		.usersize	= offsetof(struct idletimer_tg_info, timer),
+		.checkentry	= idletimer_tg_checkentry,
+		.destroy        = idletimer_tg_destroy,
+		.me		= THIS_MODULE,
+	},
+	{
+		.name		= "IDLETIMER",
+		.family		= NFPROTO_IPV6,
+		.revision	= 1,
+		.target		= idletimer_tg_target_v1,
+		.targetsize     = sizeof(struct idletimer_tg_info_v1),
+		.usersize	= offsetof(struct idletimer_tg_info_v1, timer),
+		.checkentry	= idletimer_tg_checkentry_v1,
+		.destroy        = idletimer_tg_destroy_v1,
+		.me		= THIS_MODULE,
+	},
+#endif
 };
 
 static struct class *idletimer_tg_class;
@@ -490,7 +509,7 @@ static int __init idletimer_tg_init(void)
 {
 	int err;
 
-	idletimer_tg_class = class_create(THIS_MODULE, "xt_idletimer");
+	idletimer_tg_class = class_create("xt_idletimer");
 	err = PTR_ERR(idletimer_tg_class);
 	if (IS_ERR(idletimer_tg_class)) {
 		pr_debug("couldn't register device class\n");

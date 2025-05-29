@@ -181,6 +181,7 @@ static void tonga_ih_irq_disable(struct amdgpu_device *adev)
  * tonga_ih_get_wptr - get the IH ring buffer wptr
  *
  * @adev: amdgpu_device pointer
+ * @ih: IH ring buffer to fetch wptr
  *
  * Get the IH ring buffer wptr from either the register
  * or the writeback memory buffer (VI).  Also check for
@@ -195,19 +196,36 @@ static u32 tonga_ih_get_wptr(struct amdgpu_device *adev,
 
 	wptr = le32_to_cpu(*ih->wptr_cpu);
 
-	if (REG_GET_FIELD(wptr, IH_RB_WPTR, RB_OVERFLOW)) {
-		wptr = REG_SET_FIELD(wptr, IH_RB_WPTR, RB_OVERFLOW, 0);
-		/* When a ring buffer overflow happen start parsing interrupt
-		 * from the last not overwritten vector (wptr + 16). Hopefully
-		 * this should allow us to catchup.
-		 */
-		dev_warn(adev->dev, "IH ring buffer overflow (0x%08X, 0x%08X, 0x%08X)\n",
-			 wptr, ih->rptr, (wptr + 16) & ih->ptr_mask);
-		ih->rptr = (wptr + 16) & ih->ptr_mask;
-		tmp = RREG32(mmIH_RB_CNTL);
-		tmp = REG_SET_FIELD(tmp, IH_RB_CNTL, WPTR_OVERFLOW_CLEAR, 1);
-		WREG32(mmIH_RB_CNTL, tmp);
-	}
+	if (!REG_GET_FIELD(wptr, IH_RB_WPTR, RB_OVERFLOW))
+		goto out;
+
+	/* Double check that the overflow wasn't already cleared. */
+	wptr = RREG32(mmIH_RB_WPTR);
+
+	if (!REG_GET_FIELD(wptr, IH_RB_WPTR, RB_OVERFLOW))
+		goto out;
+
+	wptr = REG_SET_FIELD(wptr, IH_RB_WPTR, RB_OVERFLOW, 0);
+
+	/* When a ring buffer overflow happen start parsing interrupt
+	 * from the last not overwritten vector (wptr + 16). Hopefully
+	 * this should allow us to catchup.
+	 */
+
+	dev_warn(adev->dev, "IH ring buffer overflow (0x%08X, 0x%08X, 0x%08X)\n",
+		wptr, ih->rptr, (wptr + 16) & ih->ptr_mask);
+	ih->rptr = (wptr + 16) & ih->ptr_mask;
+	tmp = RREG32(mmIH_RB_CNTL);
+	tmp = REG_SET_FIELD(tmp, IH_RB_CNTL, WPTR_OVERFLOW_CLEAR, 1);
+	WREG32(mmIH_RB_CNTL, tmp);
+
+	/* Unset the CLEAR_OVERFLOW bit immediately so new overflows
+	 * can be detected.
+	 */
+	tmp = REG_SET_FIELD(tmp, IH_RB_CNTL, WPTR_OVERFLOW_CLEAR, 0);
+	WREG32(mmIH_RB_CNTL, tmp);
+
+out:
 	return (wptr & ih->ptr_mask);
 }
 
@@ -215,6 +233,8 @@ static u32 tonga_ih_get_wptr(struct amdgpu_device *adev,
  * tonga_ih_decode_iv - decode an interrupt vector
  *
  * @adev: amdgpu_device pointer
+ * @ih: IH ring buffer to decode
+ * @entry: IV entry to place decoded information into
  *
  * Decodes the interrupt vector at the current rptr
  * position and also advance the position.
@@ -247,6 +267,7 @@ static void tonga_ih_decode_iv(struct amdgpu_device *adev,
  * tonga_ih_set_rptr - set the IH ring buffer rptr
  *
  * @adev: amdgpu_device pointer
+ * @ih: IH ring buffer to set rptr
  *
  * Set the IH ring buffer rptr.
  */
@@ -262,9 +283,9 @@ static void tonga_ih_set_rptr(struct amdgpu_device *adev,
 	}
 }
 
-static int tonga_ih_early_init(void *handle)
+static int tonga_ih_early_init(struct amdgpu_ip_block *ip_block)
 {
-	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
+	struct amdgpu_device *adev = ip_block->adev;
 	int ret;
 
 	ret = amdgpu_irq_add_domain(adev);
@@ -276,10 +297,10 @@ static int tonga_ih_early_init(void *handle)
 	return 0;
 }
 
-static int tonga_ih_sw_init(void *handle)
+static int tonga_ih_sw_init(struct amdgpu_ip_block *ip_block)
 {
 	int r;
-	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
+	struct amdgpu_device *adev = ip_block->adev;
 
 	r = amdgpu_ih_ring_init(adev, &adev->irq.ih, 64 * 1024, true);
 	if (r)
@@ -293,21 +314,20 @@ static int tonga_ih_sw_init(void *handle)
 	return r;
 }
 
-static int tonga_ih_sw_fini(void *handle)
+static int tonga_ih_sw_fini(struct amdgpu_ip_block *ip_block)
 {
-	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
+	struct amdgpu_device *adev = ip_block->adev;
 
-	amdgpu_irq_fini(adev);
-	amdgpu_ih_ring_fini(adev, &adev->irq.ih);
+	amdgpu_irq_fini_sw(adev);
 	amdgpu_irq_remove_domain(adev);
 
 	return 0;
 }
 
-static int tonga_ih_hw_init(void *handle)
+static int tonga_ih_hw_init(struct amdgpu_ip_block *ip_block)
 {
 	int r;
-	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
+	struct amdgpu_device *adev = ip_block->adev;
 
 	r = tonga_ih_irq_init(adev);
 	if (r)
@@ -316,27 +336,21 @@ static int tonga_ih_hw_init(void *handle)
 	return 0;
 }
 
-static int tonga_ih_hw_fini(void *handle)
+static int tonga_ih_hw_fini(struct amdgpu_ip_block *ip_block)
 {
-	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
-
-	tonga_ih_irq_disable(adev);
+	tonga_ih_irq_disable(ip_block->adev);
 
 	return 0;
 }
 
-static int tonga_ih_suspend(void *handle)
+static int tonga_ih_suspend(struct amdgpu_ip_block *ip_block)
 {
-	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
-
-	return tonga_ih_hw_fini(adev);
+	return tonga_ih_hw_fini(ip_block);
 }
 
-static int tonga_ih_resume(void *handle)
+static int tonga_ih_resume(struct amdgpu_ip_block *ip_block)
 {
-	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
-
-	return tonga_ih_hw_init(adev);
+	return tonga_ih_hw_init(ip_block);
 }
 
 static bool tonga_ih_is_idle(void *handle)
@@ -350,11 +364,11 @@ static bool tonga_ih_is_idle(void *handle)
 	return true;
 }
 
-static int tonga_ih_wait_for_idle(void *handle)
+static int tonga_ih_wait_for_idle(struct amdgpu_ip_block *ip_block)
 {
 	unsigned i;
 	u32 tmp;
-	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
+	struct amdgpu_device *adev = ip_block->adev;
 
 	for (i = 0; i < adev->usec_timeout; i++) {
 		/* read MC_STATUS */
@@ -366,9 +380,9 @@ static int tonga_ih_wait_for_idle(void *handle)
 	return -ETIMEDOUT;
 }
 
-static bool tonga_ih_check_soft_reset(void *handle)
+static bool tonga_ih_check_soft_reset(struct amdgpu_ip_block *ip_block)
 {
-	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
+	struct amdgpu_device *adev = ip_block->adev;
 	u32 srbm_soft_reset = 0;
 	u32 tmp = RREG32(mmSRBM_STATUS);
 
@@ -385,29 +399,27 @@ static bool tonga_ih_check_soft_reset(void *handle)
 	}
 }
 
-static int tonga_ih_pre_soft_reset(void *handle)
+static int tonga_ih_pre_soft_reset(struct amdgpu_ip_block *ip_block)
 {
-	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
+	if (!ip_block->adev->irq.srbm_soft_reset)
+		return 0;
+
+	return tonga_ih_hw_fini(ip_block);
+}
+
+static int tonga_ih_post_soft_reset(struct amdgpu_ip_block *ip_block)
+{
+	struct amdgpu_device *adev = ip_block->adev;
 
 	if (!adev->irq.srbm_soft_reset)
 		return 0;
 
-	return tonga_ih_hw_fini(adev);
+	return tonga_ih_hw_init(ip_block);
 }
 
-static int tonga_ih_post_soft_reset(void *handle)
+static int tonga_ih_soft_reset(struct amdgpu_ip_block *ip_block)
 {
-	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
-
-	if (!adev->irq.srbm_soft_reset)
-		return 0;
-
-	return tonga_ih_hw_init(adev);
-}
-
-static int tonga_ih_soft_reset(void *handle)
-{
-	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
+	struct amdgpu_device *adev = ip_block->adev;
 	u32 srbm_soft_reset;
 
 	if (!adev->irq.srbm_soft_reset)
@@ -451,7 +463,6 @@ static int tonga_ih_set_powergating_state(void *handle,
 static const struct amd_ip_funcs tonga_ih_ip_funcs = {
 	.name = "tonga_ih",
 	.early_init = tonga_ih_early_init,
-	.late_init = NULL,
 	.sw_init = tonga_ih_sw_init,
 	.sw_fini = tonga_ih_sw_fini,
 	.hw_init = tonga_ih_hw_init,
@@ -479,8 +490,7 @@ static void tonga_ih_set_interrupt_funcs(struct amdgpu_device *adev)
 	adev->irq.ih_funcs = &tonga_ih_funcs;
 }
 
-const struct amdgpu_ip_block_version tonga_ih_ip_block =
-{
+const struct amdgpu_ip_block_version tonga_ih_ip_block = {
 	.type = AMD_IP_BLOCK_TYPE_IH,
 	.major = 3,
 	.minor = 0,

@@ -189,7 +189,6 @@ Additional information may be found in these files:
 
 Documentation/atomic_t.txt
 Documentation/atomic_bitops.txt
-Documentation/core-api/atomic_ops.rst
 Documentation/core-api/refcount-vs-atomic.rst
 
 Reading code using these primitives is often also quite helpful.
@@ -267,5 +266,5 @@ More complex use cases
 ======================
 
 If the alternatives above do not do what you need, please look at the
-recipes-pairs.txt file to peel off the next layer of the memory-ordering
+recipes.txt file to peel off the next layer of the memory-ordering
 onion.

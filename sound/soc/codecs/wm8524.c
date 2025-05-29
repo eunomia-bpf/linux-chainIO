@@ -8,13 +8,13 @@
  * Based on WM8523 ALSA SoC Audio driver written by Mark Brown
  */
 
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/init.h>
 #include <linux/delay.h>
 #include <linux/slab.h>
 #include <linux/gpio/consumer.h>
-#include <linux/of_device.h>
 #include <sound/core.h>
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
@@ -203,7 +203,6 @@ static const struct snd_soc_component_driver soc_component_dev_wm8524 = {
 	.idle_bias_on		= 1,
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static const struct of_device_id wm8524_of_match[] = {
@@ -227,7 +226,7 @@ static int wm8524_codec_probe(struct platform_device *pdev)
 	wm8524->mute = devm_gpiod_get(&pdev->dev, "wlf,mute", GPIOD_OUT_LOW);
 	if (IS_ERR(wm8524->mute)) {
 		ret = PTR_ERR(wm8524->mute);
-		dev_err(&pdev->dev, "Failed to get mute line: %d\n", ret);
+		dev_err_probe(&pdev->dev, ret, "Failed to get mute line\n");
 		return ret;
 	}
 

@@ -8,6 +8,7 @@
  */
 
 #include <linux/module.h>
+#include <linux/platform_device.h>
 #include <linux/types.h>
 #include <linux/kernel.h>
 #include <linux/of_address.h>
@@ -15,13 +16,12 @@
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/rawnand.h>
 #include <linux/mtd/partitions.h>
-#include <linux/mtd/nand_ecc.h>
 #include <linux/fsl_ifc.h>
 #include <linux/iopoll.h>
 
 #define ERR_BYTE		0xFF /* Value returned for read
 					bytes when read failed	*/
-#define IFC_TIMEOUT_MSECS	500  /* Maximum number of mSecs to wait
+#define IFC_TIMEOUT_MSECS	1000 /* Maximum timeout to wait
 					for IFC NAND Machine	*/
 
 struct fsl_ifc_ctrl;
@@ -707,6 +707,30 @@ static int fsl_ifc_attach_chip(struct nand_chip *chip)
 {
 	struct mtd_info *mtd = nand_to_mtd(chip);
 	struct fsl_ifc_mtd *priv = nand_get_controller_data(chip);
+	struct fsl_ifc_ctrl *ctrl = priv->ctrl;
+	struct fsl_ifc_global __iomem *ifc_global = ctrl->gregs;
+	u32 csor;
+
+	csor = ifc_in32(&ifc_global->csor_cs[priv->bank].csor);
+
+	/* Must also set CSOR_NAND_ECC_ENC_EN if DEC_EN set */
+	if (csor & CSOR_NAND_ECC_DEC_EN) {
+		chip->ecc.engine_type = NAND_ECC_ENGINE_TYPE_ON_HOST;
+		mtd_set_ooblayout(mtd, &fsl_ifc_ooblayout_ops);
+
+		/* Hardware generates ECC per 512 Bytes */
+		chip->ecc.size = 512;
+		if ((csor & CSOR_NAND_ECC_MODE_MASK) == CSOR_NAND_ECC_MODE_4) {
+			chip->ecc.bytes = 8;
+			chip->ecc.strength = 4;
+		} else {
+			chip->ecc.bytes = 16;
+			chip->ecc.strength = 8;
+		}
+	} else {
+		chip->ecc.engine_type = NAND_ECC_ENGINE_TYPE_SOFT;
+		chip->ecc.algo = NAND_ECC_ALGO_HAMMING;
+	}
 
 	dev_dbg(priv->dev, "%s: nand->numchips = %d\n", __func__,
 		nanddev_ntargets(&chip->base));
@@ -910,25 +934,6 @@ static int fsl_ifc_chip_init(struct fsl_ifc_mtd *priv)
 		return -ENODEV;
 	}
 
-	/* Must also set CSOR_NAND_ECC_ENC_EN if DEC_EN set */
-	if (csor & CSOR_NAND_ECC_DEC_EN) {
-		chip->ecc.engine_type = NAND_ECC_ENGINE_TYPE_ON_HOST;
-		mtd_set_ooblayout(mtd, &fsl_ifc_ooblayout_ops);
-
-		/* Hardware generates ECC per 512 Bytes */
-		chip->ecc.size = 512;
-		if ((csor & CSOR_NAND_ECC_MODE_MASK) == CSOR_NAND_ECC_MODE_4) {
-			chip->ecc.bytes = 8;
-			chip->ecc.strength = 4;
-		} else {
-			chip->ecc.bytes = 16;
-			chip->ecc.strength = 8;
-		}
-	} else {
-		chip->ecc.engine_type = NAND_ECC_ENGINE_TYPE_SOFT;
-		chip->ecc.algo = NAND_ECC_ALGO_HAMMING;
-	}
-
 	ret = fsl_ifc_sram_init(priv);
 	if (ret)
 		return ret;
@@ -1090,7 +1095,7 @@ err:
 	return ret;
 }
 
-static int fsl_ifc_nand_remove(struct platform_device *dev)
+static void fsl_ifc_nand_remove(struct platform_device *dev)
 {
 	struct fsl_ifc_mtd *priv = dev_get_drvdata(&dev->dev);
 	struct nand_chip *chip = &priv->chip;
@@ -1109,8 +1114,6 @@ static int fsl_ifc_nand_remove(struct platform_device *dev)
 		kfree(ifc_nand_ctrl);
 	}
 	mutex_unlock(&fsl_ifc_nand_mutex);
-
-	return 0;
 }
 
 static const struct of_device_id fsl_ifc_nand_match[] = {

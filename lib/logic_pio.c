@@ -20,14 +20,13 @@
 static LIST_HEAD(io_range_list);
 static DEFINE_MUTEX(io_range_mutex);
 
-/* Consider a kernel general helper for this */
-#define in_range(b, first, len)        ((b) >= (first) && (b) < (first) + (len))
-
 /**
  * logic_pio_register_range - register logical PIO range for a host
  * @new_range: pointer to the IO range to be registered.
  *
  * Returns 0 on success, the error code in case of failure.
+ * If the range already exists, -EEXIST will be returned, which should be
+ * considered a success.
  *
  * Register a new IO range node in the IO range list.
  */
@@ -51,6 +50,7 @@ int logic_pio_register_range(struct logic_pio_hwaddr *new_range)
 	list_for_each_entry(range, &io_range_list, list) {
 		if (range->fwnode == new_range->fwnode) {
 			/* range already there */
+			ret = -EEXIST;
 			goto end_register;
 		}
 		if (range->flags == LOGIC_PIO_CPU_MMIO &&
@@ -122,7 +122,7 @@ void logic_pio_unregister_range(struct logic_pio_hwaddr *range)
  *
  * Traverse the io_range_list to find the registered node for @fwnode.
  */
-struct logic_pio_hwaddr *find_io_range_by_fwnode(struct fwnode_handle *fwnode)
+struct logic_pio_hwaddr *find_io_range_by_fwnode(const struct fwnode_handle *fwnode)
 {
 	struct logic_pio_hwaddr *range, *found_range = NULL;
 
@@ -186,7 +186,7 @@ resource_size_t logic_pio_to_hwaddr(unsigned long pio)
  *
  * Returns Logical PIO value if successful, ~0UL otherwise
  */
-unsigned long logic_pio_trans_hwaddr(struct fwnode_handle *fwnode,
+unsigned long logic_pio_trans_hwaddr(const struct fwnode_handle *fwnode,
 				     resource_size_t addr, resource_size_t size)
 {
 	struct logic_pio_hwaddr *range;

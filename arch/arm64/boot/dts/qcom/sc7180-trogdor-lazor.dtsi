@@ -5,32 +5,28 @@
  * Copyright 2020 Google LLC.
  */
 
-#include "sc7180.dtsi"
-
-ap_ec_spi: &spi6 {};
-ap_h1_spi: &spi0 {};
-
-#include "sc7180-trogdor.dtsi"
-
-/ {
-	panel: panel {
-		compatible = "boe,nv133fhm-n62";
-		power-supply = <&pp3300_dx_edp>;
-		backlight = <&backlight>;
-		hpd-gpios = <&sn65dsi86_bridge 2 GPIO_ACTIVE_HIGH>;
-
-		ports {
-			port {
-				panel_in_edp: endpoint {
-					remote-endpoint = <&sn65dsi86_out>;
-				};
-			};
-		};
-	};
-};
+#include "sc7180-trogdor-clamshell.dtsi"
 
 &ap_sar_sensor {
+	semtech,cs0-ground;
+	semtech,combined-sensors = <3>;
+	semtech,resolution = "fine";
+	semtech,startup-sensor = <0>;
+	semtech,proxraw-strength = <8>;
+	semtech,avg-pos-strength = <64>;
+};
+
+&ap_tp_i2c {
 	status = "okay";
+};
+
+/*
+ * Lazor is stuffed with a 47k NTC as charger thermistor which currently is
+ * not supported by the PM6150 ADC driver. Disable the charger thermal zone
+ * to avoid using bogus temperature values.
+ */
+&charger_thermal {
+	status = "disabled";
 };
 
 ap_ts_pen_1v8: &i2c4 {
@@ -46,6 +42,7 @@ ap_ts_pen_1v8: &i2c4 {
 		interrupt-parent = <&tlmm>;
 		interrupts = <9 IRQ_TYPE_LEVEL_LOW>;
 
+		panel = <&panel>;
 		post-power-on-delay-ms = <20>;
 		hid-descr-addr = <0x0001>;
 
@@ -53,14 +50,38 @@ ap_ts_pen_1v8: &i2c4 {
 	};
 };
 
+&panel {
+	compatible = "boe,nv133fhm-n62";
+};
+
+&pm6150_adc {
+	/delete-node/ channel@4f;
+};
+
+&pm6150_adc_tm {
+	status = "disabled";
+
+	/delete-node/ charger-thermistor@0;
+};
+
+&trackpad {
+	interrupts = <58 IRQ_TYPE_EDGE_FALLING>;
+};
+
+&wifi {
+	qcom,ath10k-calibration-variant = "GO_LAZOR";
+};
+
 /* PINCTRL - modifications to sc7180-trogdor.dtsi */
 
+&trackpad_int_1v8_odl {
+	pins = "gpio58";
+};
+
 &ts_reset_l {
-	pinconf {
-		/* This pin is not connected on -rev0, pull up to park. */
-		/delete-property/bias-disable;
-		bias-pull-up;
-	};
+	/* This pin is not connected on -rev0, pull up to park. */
+	/delete-property/bias-disable;
+	bias-pull-up;
 };
 
 /* PINCTRL - board-specific pinctrl */

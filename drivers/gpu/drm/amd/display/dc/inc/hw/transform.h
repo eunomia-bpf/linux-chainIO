@@ -29,6 +29,7 @@
 #include "hw_shared.h"
 #include "dc_hw_types.h"
 #include "fixed31_32.h"
+#include "spl/dc_spl_types.h"
 
 #define CSC_TEMPERATURE_MATRIX_SIZE 12
 
@@ -110,22 +111,6 @@ enum graphics_gamut_adjust_type {
 	GRAPHICS_GAMUT_ADJUST_TYPE_SW /* use adjustments */
 };
 
-enum lb_memory_config {
-	/* Enable all 3 pieces of memory */
-	LB_MEMORY_CONFIG_0 = 0,
-
-	/* Enable only the first piece of memory */
-	LB_MEMORY_CONFIG_1 = 1,
-
-	/* Enable only the second piece of memory */
-	LB_MEMORY_CONFIG_2 = 2,
-
-	/* Only applicable in 4:2:0 mode, enable all 3 pieces of memory and the
-	 * last piece of chroma memory used for the luma storage
-	 */
-	LB_MEMORY_CONFIG_3 = 3
-};
-
 struct xfm_grph_csc_adjustment {
 	struct fixed31_32 temperature_matrix[CSC_TEMPERATURE_MATRIX_SIZE];
 	enum graphics_gamut_adjust_type gamut_adjust_type;
@@ -162,9 +147,7 @@ struct scl_inits {
 	struct fixed31_32 h;
 	struct fixed31_32 h_c;
 	struct fixed31_32 v;
-	struct fixed31_32 v_bot;
 	struct fixed31_32 v_c;
-	struct fixed31_32 v_c_bot;
 };
 
 struct scaler_data {
@@ -173,14 +156,14 @@ struct scaler_data {
 	struct scaling_taps taps;
 	struct rect viewport;
 	struct rect viewport_c;
-	struct rect viewport_unadjusted;
-	struct rect viewport_c_unadjusted;
 	struct rect recout;
 	struct scaling_ratios ratios;
 	struct scl_inits inits;
 	struct sharpness_adj sharpness;
 	enum pixel_format format;
 	struct line_buffer_params lb_params;
+	// Below struct holds the scaler values to program hw registers
+	struct dscl_prog_data dscl_prog_data;
 };
 
 struct transform_funcs {
@@ -262,7 +245,6 @@ struct transform_funcs {
 	void (*set_cursor_attributes)(
 			struct transform *xfm_base,
 			const struct dc_cursor_attributes *attr);
-
 };
 
 const uint16_t *get_filter_2tap_16p(void);
@@ -292,6 +274,9 @@ enum dscl_data_processing_format {
 struct dpp_caps {
 	/* DSCL processing pixel data in fixed or float format */
 	enum dscl_data_processing_format dscl_data_proc_format;
+
+	/* max LB partitions */
+	unsigned int max_lb_partitions;
 
 	/* Calculates the number of partitions in the line buffer.
 	 * The implementation of this function is overloaded for

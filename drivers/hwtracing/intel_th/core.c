@@ -26,9 +26,9 @@ module_param(host_mode, bool, 0444);
 
 static DEFINE_IDA(intel_th_ida);
 
-static int intel_th_match(struct device *dev, struct device_driver *driver)
+static int intel_th_match(struct device *dev, const struct device_driver *driver)
 {
-	struct intel_th_driver *thdrv = to_intel_th_driver(driver);
+	const struct intel_th_driver *thdrv = to_intel_th_driver(driver);
 	struct intel_th_device *thdev = to_intel_th_device(dev);
 
 	if (thdev->type == INTEL_TH_SWITCH &&
@@ -95,21 +95,23 @@ out_pm:
 
 static void intel_th_device_remove(struct intel_th_device *thdev);
 
-static int intel_th_remove(struct device *dev)
+static void intel_th_remove(struct device *dev)
 {
 	struct intel_th_driver *thdrv = to_intel_th_driver(dev->driver);
 	struct intel_th_device *thdev = to_intel_th_device(dev);
 	struct intel_th_device *hub = to_intel_th_hub(thdev);
-	int err;
 
 	if (thdev->type == INTEL_TH_SWITCH) {
 		struct intel_th *th = to_intel_th(hub);
 		int i, lowest;
 
-		/* disconnect outputs */
-		err = device_for_each_child(dev, thdev, intel_th_child_remove);
-		if (err)
-			return err;
+		/*
+		 * disconnect outputs
+		 *
+		 * intel_th_child_remove returns 0 unconditionally, so there is
+		 * no need to check the return value of device_for_each_child.
+		 */
+		device_for_each_child(dev, thdev, intel_th_child_remove);
 
 		/*
 		 * Remove outputs, that is, hub's children: they are created
@@ -162,8 +164,6 @@ static int intel_th_remove(struct device *dev)
 	pm_runtime_disable(dev);
 	pm_runtime_set_active(dev);
 	pm_runtime_enable(dev);
-
-	return 0;
 }
 
 static struct bus_type intel_th_bus = {
@@ -180,16 +180,16 @@ static void intel_th_device_release(struct device *dev)
 	intel_th_device_free(to_intel_th_device(dev));
 }
 
-static struct device_type intel_th_source_device_type = {
+static const struct device_type intel_th_source_device_type = {
 	.name		= "intel_th_source_device",
 	.release	= intel_th_device_release,
 };
 
-static char *intel_th_output_devnode(struct device *dev, umode_t *mode,
+static char *intel_th_output_devnode(const struct device *dev, umode_t *mode,
 				     kuid_t *uid, kgid_t *gid)
 {
-	struct intel_th_device *thdev = to_intel_th_device(dev);
-	struct intel_th *th = to_intel_th(thdev);
+	const struct intel_th_device *thdev = to_intel_th_device(dev);
+	const struct intel_th *th = to_intel_th(thdev);
 	char *node;
 
 	if (thdev->id >= 0)
@@ -215,6 +215,22 @@ static ssize_t port_show(struct device *dev, struct device_attribute *attr,
 
 static DEVICE_ATTR_RO(port);
 
+static void intel_th_trace_prepare(struct intel_th_device *thdev)
+{
+	struct intel_th_device *hub = to_intel_th_hub(thdev);
+	struct intel_th_driver *hubdrv = to_intel_th_driver(hub->dev.driver);
+
+	if (hub->type != INTEL_TH_SWITCH)
+		return;
+
+	if (thdev->type != INTEL_TH_OUTPUT)
+		return;
+
+	pm_runtime_get_sync(&thdev->dev);
+	hubdrv->prepare(hub, &thdev->output);
+	pm_runtime_put(&thdev->dev);
+}
+
 static int intel_th_output_activate(struct intel_th_device *thdev)
 {
 	struct intel_th_driver *thdrv =
@@ -235,6 +251,7 @@ static int intel_th_output_activate(struct intel_th_device *thdev)
 	if (ret)
 		goto fail_put;
 
+	intel_th_trace_prepare(thdev);
 	if (thdrv->activate)
 		ret = thdrv->activate(thdev);
 	else
@@ -316,19 +333,19 @@ static struct attribute *intel_th_output_attrs[] = {
 
 ATTRIBUTE_GROUPS(intel_th_output);
 
-static struct device_type intel_th_output_device_type = {
+static const struct device_type intel_th_output_device_type = {
 	.name		= "intel_th_output_device",
 	.groups		= intel_th_output_groups,
 	.release	= intel_th_device_release,
 	.devnode	= intel_th_output_devnode,
 };
 
-static struct device_type intel_th_switch_device_type = {
+static const struct device_type intel_th_switch_device_type = {
 	.name		= "intel_th_switch_device",
 	.release	= intel_th_device_release,
 };
 
-static struct device_type *intel_th_device_type[] = {
+static const struct device_type *intel_th_device_type[] = {
 	[INTEL_TH_SOURCE]	= &intel_th_source_device_type,
 	[INTEL_TH_OUTPUT]	= &intel_th_output_device_type,
 	[INTEL_TH_SWITCH]	= &intel_th_switch_device_type,
@@ -844,7 +861,7 @@ static irqreturn_t intel_th_irq(int irq, void *data)
  * @irq:	irq number
  */
 struct intel_th *
-intel_th_alloc(struct device *dev, struct intel_th_drvdata *drvdata,
+intel_th_alloc(struct device *dev, const struct intel_th_drvdata *drvdata,
 	       struct resource *devres, unsigned int ndevres)
 {
 	int err, r, nr_mmios = 0;
@@ -854,7 +871,7 @@ intel_th_alloc(struct device *dev, struct intel_th_drvdata *drvdata,
 	if (!th)
 		return ERR_PTR(-ENOMEM);
 
-	th->id = ida_simple_get(&intel_th_ida, 0, 0, GFP_KERNEL);
+	th->id = ida_alloc(&intel_th_ida, GFP_KERNEL);
 	if (th->id < 0) {
 		err = th->id;
 		goto err_alloc;
@@ -914,7 +931,7 @@ err_chrdev:
 			    "intel_th/output");
 
 err_ida:
-	ida_simple_remove(&intel_th_ida, th->id);
+	ida_free(&intel_th_ida, th->id);
 
 err_alloc:
 	kfree(th);
@@ -947,7 +964,7 @@ void intel_th_free(struct intel_th *th)
 	__unregister_chrdev(th->major, 0, TH_POSSIBLE_OUTPUTS,
 			    "intel_th/output");
 
-	ida_simple_remove(&intel_th_ida, th->id);
+	ida_free(&intel_th_ida, th->id);
 
 	kfree(th);
 }

@@ -35,7 +35,7 @@ void user_disable_single_step(struct task_struct *child)
 
 static int genregs_get(struct task_struct *target,
 		   const struct user_regset *regset,
-		   srtuct membuf to)
+		   struct membuf to)
 {
 	struct pt_regs *regs = task_pt_regs(target);
 
@@ -54,7 +54,7 @@ static int genregs_get(struct task_struct *target,
 	membuf_store(&to, regs->m0);
 	membuf_store(&to, regs->m1);
 	membuf_store(&to, regs->usr);
-	membuf_store(&to, regs->p3_0);
+	membuf_store(&to, regs->preds);
 	membuf_store(&to, regs->gp);
 	membuf_store(&to, regs->ugp);
 	membuf_store(&to, pt_elr(regs)); // pc
@@ -74,7 +74,7 @@ static int genregs_set(struct task_struct *target,
 		   unsigned int pos, unsigned int count,
 		   const void *kbuf, const void __user *ubuf)
 {
-	int ret;
+	int ret, ignore_offset;
 	unsigned long bucket;
 	struct pt_regs *regs = task_pt_regs(target);
 
@@ -111,14 +111,16 @@ static int genregs_set(struct task_struct *target,
 #if CONFIG_HEXAGON_ARCH_VERSION >=4
 	INEXT(&regs->cs0, cs0);
 	INEXT(&regs->cs1, cs1);
+	ignore_offset = offsetof(struct user_regs_struct, pad1);
+#else
+	ignore_offset = offsetof(struct user_regs_struct, cs0);
 #endif
 
 	/* Ignore the rest, if needed */
 	if (!ret)
-		ret = user_regset_copyin_ignore(&pos, &count, &kbuf, &ubuf,
-					offsetof(struct user_regs_struct, pad1), -1);
-
-	if (ret)
+		user_regset_copyin_ignore(&pos, &count, &kbuf, &ubuf,
+					  ignore_offset, -1);
+	else
 		return ret;
 
 	/*

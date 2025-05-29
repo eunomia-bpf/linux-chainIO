@@ -55,11 +55,11 @@
 #include <linux/export.h>
 #include <linux/rculist.h>
 
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #include <scsi/libfc.h>
-#include <scsi/fc_encode.h>
 
+#include "fc_encode.h"
 #include "fc_libfc.h"
 
 static struct workqueue_struct *rport_event_queue;
@@ -1162,6 +1162,7 @@ static void fc_rport_prli_resp(struct fc_seq *sp, struct fc_frame *fp,
 		resp_code = (pp->spp.spp_flags & FC_SPP_RESP_MASK);
 		FC_RPORT_DBG(rdata, "PRLI spp_flags = 0x%x spp_type 0x%x\n",
 			     pp->spp.spp_flags, pp->spp.spp_type);
+
 		rdata->spp_type = pp->spp.spp_type;
 		if (resp_code != FC_SPP_RESP_ACK) {
 			if (resp_code == FC_SPP_RESP_CONF)
@@ -1184,11 +1185,13 @@ static void fc_rport_prli_resp(struct fc_seq *sp, struct fc_frame *fp,
 		/*
 		 * Call prli provider if we should act as a target
 		 */
-		prov = fc_passive_prov[rdata->spp_type];
-		if (prov) {
-			memset(&temp_spp, 0, sizeof(temp_spp));
-			prov->prli(rdata, pp->prli.prli_spp_len,
-				   &pp->spp, &temp_spp);
+		if (rdata->spp_type < FC_FC4_PROV_SIZE) {
+			prov = fc_passive_prov[rdata->spp_type];
+			if (prov) {
+				memset(&temp_spp, 0, sizeof(temp_spp));
+				prov->prli(rdata, pp->prli.prli_spp_len,
+					   &pp->spp, &temp_spp);
+			}
 		}
 		/*
 		 * Check if the image pair could be established
@@ -1486,7 +1489,7 @@ static void fc_rport_enter_logo(struct fc_rport_priv *rdata)
 }
 
 /**
- * fc_rport_els_adisc_resp() - Handler for Address Discovery (ADISC) responses
+ * fc_rport_adisc_resp() - Handler for Address Discovery (ADISC) responses
  * @sp:	       The sequence the ADISC response was on
  * @fp:	       The ADISC response frame
  * @rdata_arg: The remote port that sent the ADISC response
@@ -2260,7 +2263,8 @@ struct fc4_prov fc_rport_t0_prov = {
  */
 int fc_setup_rport(void)
 {
-	rport_event_queue = create_singlethread_workqueue("fc_rport_eq");
+	rport_event_queue =
+		alloc_ordered_workqueue("%s", WQ_MEM_RECLAIM, "fc_rport_eq");
 	if (!rport_event_queue)
 		return -ENOMEM;
 	return 0;

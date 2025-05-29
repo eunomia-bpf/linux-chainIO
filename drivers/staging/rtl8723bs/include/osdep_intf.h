@@ -32,14 +32,8 @@ Under Async. IRP (SDIO/USB)
 The protection mechanism is through the pending queue.
 */
 
-	_mutex ioctl_mutex;
+	struct mutex ioctl_mutex;
 };
-
-
-#ifdef CONFIG_R871X_TEST
-int rtw_start_pseudo_adhoc(struct adapter *padapter);
-int rtw_stop_pseudo_adhoc(struct adapter *padapter);
-#endif
 
 struct dvobj_priv *devobj_init(void);
 void devobj_deinit(struct dvobj_priv *pdvobj);
@@ -61,18 +55,17 @@ void rtw_unregister_netdevs(struct dvobj_priv *dvobj);
 
 u16 rtw_recv_select_queue(struct sk_buff *skb);
 
-int rtw_ndev_notifier_register(void);
-void rtw_ndev_notifier_unregister(void);
-
 void rtw_ips_dev_unload(struct adapter *padapter);
 
 int rtw_ips_pwr_up(struct adapter *padapter);
 void rtw_ips_pwr_down(struct adapter *padapter);
 
 int rtw_drv_register_netdev(struct adapter *padapter);
-void rtw_ndev_destructor(_nic_hdl ndev);
+void rtw_ndev_destructor(struct net_device *ndev);
 
-int rtw_suspend_common(struct adapter *padapter);
+void rtw_suspend_common(struct adapter *padapter);
 int rtw_resume_common(struct adapter *padapter);
+
+int netdev_open(struct net_device *pnetdev);
 
 #endif	/* _OSDEP_INTF_H_ */

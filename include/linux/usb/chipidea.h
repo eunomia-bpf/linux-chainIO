@@ -62,6 +62,10 @@ struct ci_hdrc_platform_data {
 #define CI_HDRC_REQUIRES_ALIGNED_DMA	BIT(13)
 #define CI_HDRC_IMX_IS_HSIC		BIT(14)
 #define CI_HDRC_PMQOS			BIT(15)
+#define CI_HDRC_PHY_VBUS_CONTROL	BIT(16)
+#define CI_HDRC_HAS_PORTSC_PEC_MISSED	BIT(17)
+#define CI_HDRC_FORCE_VBUS_ACTIVE_ALWAYS	BIT(18)
+#define	CI_HDRC_HAS_SHORT_PKT_LIMIT	BIT(19)
 	enum usb_dr_mode	dr_mode;
 #define CI_HDRC_CONTROLLER_RESET_EVENT		0
 #define CI_HDRC_CONTROLLER_STOPPED_EVENT	1
@@ -88,6 +92,12 @@ struct ci_hdrc_platform_data {
 	struct pinctrl_state *pins_default;
 	struct pinctrl_state *pins_host;
 	struct pinctrl_state *pins_device;
+
+	/* platform-specific hooks */
+	int (*hub_control)(struct ci_hdrc *ci, u16 typeReq, u16 wValue,
+			   u16 wIndex, char *buf, u16 wLength,
+			   bool *done, unsigned long *flags);
+	void (*enter_lpm)(struct ci_hdrc *ci, bool enable);
 };
 
 /* Default offset of capability registers */

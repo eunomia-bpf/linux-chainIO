@@ -406,7 +406,7 @@ free_sge_txq_uld(struct adapter *adap, struct sge_uld_txq_info *txq_info)
 	for (i = 0; i < nq; i++) {
 		struct sge_uld_txq *txq = &txq_info->uldtxq[i];
 
-		if (txq && txq->q.desc) {
+		if (txq->q.desc) {
 			tasklet_kill(&txq->qresume_tsk);
 			t4_ofld_eq_free(adap, adap->mbox, adap->pf, 0,
 					txq->q.cntxt_id);
@@ -580,6 +580,9 @@ static void cxgb4_shutdown_uld_adapter(struct adapter *adap, enum cxgb4_uld type
 void t4_uld_clean_up(struct adapter *adap)
 {
 	unsigned int i;
+
+	if (!is_uld(adap))
+		return;
 
 	mutex_lock(&uld_mutex);
 	for (i = 0; i < CXGB4_ULD_MAX; i++) {

@@ -62,7 +62,7 @@ static int iosf_mbi_pci_read_mdr(u32 mcrx, u32 mcr, u32 *mdr)
 
 fail_read:
 	dev_err(&mbi_pdev->dev, "PCI config access failed with %d\n", result);
-	return result;
+	return pcibios_err_to_errno(result);
 }
 
 static int iosf_mbi_pci_write_mdr(u32 mcrx, u32 mcr, u32 mdr)
@@ -91,7 +91,7 @@ static int iosf_mbi_pci_write_mdr(u32 mcrx, u32 mcr, u32 mdr)
 
 fail_write:
 	dev_err(&mbi_pdev->dev, "PCI config access failed with %d\n", result);
-	return result;
+	return pcibios_err_to_errno(result);
 }
 
 int iosf_mbi_read(u8 port, u8 opcode, u32 offset, u32 *mdr)
@@ -187,7 +187,7 @@ bool iosf_mbi_available(void)
 EXPORT_SYMBOL(iosf_mbi_available);
 
 /*
- **************** P-Unit/kernel shared I2C bus arbritration ****************
+ **************** P-Unit/kernel shared I2C bus arbitration ****************
  *
  * Some Bay Trail and Cherry Trail devices have the P-Unit and us (the kernel)
  * share a single I2C bus to the PMIC. Below are helpers to arbitrate the
@@ -493,7 +493,7 @@ static void iosf_sideband_debug_init(void)
 	/* mcrx */
 	debugfs_create_x32("mcrx", 0660, iosf_dbg, &dbg_mcrx);
 
-	/* mcr - initiates mailbox tranaction */
+	/* mcr - initiates mailbox transaction */
 	debugfs_create_file("mcr", 0660, iosf_dbg, &dbg_mcr, &iosf_mcr_fops);
 }
 

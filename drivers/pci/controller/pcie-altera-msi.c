@@ -9,11 +9,11 @@
 
 #include <linux/interrupt.h>
 #include <linux/irqchip/chained_irq.h>
+#include <linux/irqdomain.h>
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/msi.h>
 #include <linux/of_address.h>
-#include <linux/of_irq.h>
 #include <linux/of_pci.h>
 #include <linux/pci.h>
 #include <linux/platform_device.h>
@@ -55,7 +55,7 @@ static void altera_msi_isr(struct irq_desc *desc)
 	struct altera_msi *msi;
 	unsigned long status;
 	u32 bit;
-	u32 virq;
+	int ret;
 
 	chained_irq_enter(chip, desc);
 	msi = irq_desc_get_handler_data(desc);
@@ -65,11 +65,9 @@ static void altera_msi_isr(struct irq_desc *desc)
 			/* Dummy read from vector to clear the interrupt */
 			readl_relaxed(msi->vector_base + (bit * sizeof(u32)));
 
-			virq = irq_find_mapping(msi->inner_domain, bit);
-			if (virq)
-				generic_handle_irq(virq);
-			else
-				dev_err(&msi->pdev->dev, "unexpected MSI\n");
+			ret = generic_handle_domain_irq(msi->inner_domain, bit);
+			if (ret)
+				dev_err_ratelimited(&msi->pdev->dev, "unexpected MSI\n");
 		}
 	}
 
@@ -83,8 +81,8 @@ static struct irq_chip altera_msi_irq_chip = {
 };
 
 static struct msi_domain_info altera_msi_domain_info = {
-	.flags	= (MSI_FLAG_USE_DEF_DOM_OPS | MSI_FLAG_USE_DEF_CHIP_OPS |
-		     MSI_FLAG_PCI_MSIX),
+	.flags	= MSI_FLAG_USE_DEF_DOM_OPS | MSI_FLAG_USE_DEF_CHIP_OPS |
+		  MSI_FLAG_NO_AFFINITY | MSI_FLAG_PCI_MSIX,
 	.chip	= &altera_msi_irq_chip,
 };
 
@@ -101,16 +99,9 @@ static void altera_compose_msi_msg(struct irq_data *data, struct msi_msg *msg)
 		(int)data->hwirq, msg->address_hi, msg->address_lo);
 }
 
-static int altera_msi_set_affinity(struct irq_data *irq_data,
-				   const struct cpumask *mask, bool force)
-{
-	 return -EINVAL;
-}
-
 static struct irq_chip altera_msi_bottom_irq_chip = {
 	.name			= "Altera MSI",
 	.irq_compose_msi_msg	= altera_compose_msi_msg,
-	.irq_set_affinity	= altera_msi_set_affinity,
 };
 
 static int altera_irq_domain_alloc(struct irq_domain *domain, unsigned int virq,
@@ -199,18 +190,16 @@ static void altera_free_domains(struct altera_msi *msi)
 	irq_domain_remove(msi->inner_domain);
 }
 
-static int altera_msi_remove(struct platform_device *pdev)
+static void altera_msi_remove(struct platform_device *pdev)
 {
 	struct altera_msi *msi = platform_get_drvdata(pdev);
 
 	msi_writel(msi, 0, MSI_INTMASK);
-	irq_set_chained_handler(msi->irq, NULL);
-	irq_set_handler_data(msi->irq, NULL);
+	irq_set_chained_handler_and_data(msi->irq, NULL, NULL);
 
 	altera_free_domains(msi);
 
 	platform_set_drvdata(pdev, NULL);
-	return 0;
 }
 
 static int altera_msi_probe(struct platform_device *pdev)
@@ -237,10 +226,8 @@ static int altera_msi_probe(struct platform_device *pdev)
 	res = platform_get_resource_byname(pdev, IORESOURCE_MEM,
 					   "vector_slave");
 	msi->vector_base = devm_ioremap_resource(&pdev->dev, res);
-	if (IS_ERR(msi->vector_base)) {
-		dev_err(&pdev->dev, "failed to map vector_slave memory\n");
+	if (IS_ERR(msi->vector_base))
 		return PTR_ERR(msi->vector_base);
-	}
 
 	msi->vector_phy = res->start;
 
@@ -296,4 +283,5 @@ static void __exit altera_msi_exit(void)
 subsys_initcall(altera_msi_init);
 MODULE_DEVICE_TABLE(of, altera_msi_of_match);
 module_exit(altera_msi_exit);
+MODULE_DESCRIPTION("Altera PCIe MSI support driver");
 MODULE_LICENSE("GPL v2");

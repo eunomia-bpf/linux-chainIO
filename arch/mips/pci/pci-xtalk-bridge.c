@@ -13,6 +13,7 @@
 #include <linux/platform_data/xtalk-bridge.h>
 #include <linux/nvmem-consumer.h>
 #include <linux/crc16.h>
+#include <linux/irqdomain.h>
 
 #include <asm/pci/bridge.h>
 #include <asm/paccess.h>
@@ -113,7 +114,7 @@ DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_SGI, PCI_DEVICE_ID_SGI_IOC3,
  *
  * The function is complicated by the ultimate brokenness of the IOC3 chip
  * which is used in SGI systems.  The IOC3 can only handle 32-bit PCI
- * accesses and does only decode parts of it's address space.
+ * accesses and does only decode parts of its address space.
  */
 static int pci_conf0_read_config(struct pci_bus *bus, unsigned int devfn,
 				 int where, int size, u32 *value)
@@ -385,7 +386,7 @@ static int bridge_domain_activate(struct irq_domain *domain,
 	bridge_set(bc, b_int_enable, 0x7ffffe00); /* more stuff in int_enable */
 
 	/*
-	 * Enable sending of an interrupt clear packt to the hub on a high to
+	 * Enable sending of an interrupt clear packet to the hub on a high to
 	 * low transition of the interrupt pin.
 	 *
 	 * IRIX sets additional bits in the address which are documented as
@@ -732,7 +733,7 @@ err_remove_domain:
 	return err;
 }
 
-static int bridge_remove(struct platform_device *pdev)
+static void bridge_remove(struct platform_device *pdev)
 {
 	struct pci_bus *bus = platform_get_drvdata(pdev);
 	struct bridge_controller *bc = BRIDGE_CONTROLLER(bus);
@@ -744,13 +745,11 @@ static int bridge_remove(struct platform_device *pdev)
 	pci_stop_root_bus(bus);
 	pci_remove_root_bus(bus);
 	pci_unlock_rescan_remove();
-
-	return 0;
 }
 
 static struct platform_driver bridge_driver = {
-	.probe  = bridge_probe,
-	.remove = bridge_remove,
+	.probe = bridge_probe,
+	.remove_new = bridge_remove,
 	.driver = {
 		.name = "xtalk-bridge",
 	}

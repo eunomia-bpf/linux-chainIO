@@ -35,7 +35,8 @@ setup_prepare()
 	vrf_prepare
 	mirror_gre_topo_create
 
-	ip link add name br2 type bridge vlan_filtering 0
+	ip link add name br2 address $(mac_get $swp3) \
+		type bridge vlan_filtering 0
 	ip link set dev br2 up
 
 	vlan_create $swp3 555
@@ -80,29 +81,27 @@ test_gretap()
 
 test_ip6gretap()
 {
-	test_vlan_match gt6 'skip_hw vlan_id 555 vlan_ethtype ip' \
+	test_vlan_match gt6 'skip_hw vlan_id 555 vlan_ethtype ipv6' \
 			"mirror to ip6gretap"
 }
 
 test_gretap_stp()
 {
+	# Sometimes after mirror installation, the neighbor's state is not valid.
+	# The reason is that there is no SW datapath activity related to the
+	# neighbor for the remote GRE address. Therefore whether the corresponding
+	# neighbor will be valid is a matter of luck, and the test is thus racy.
+	# Set the neighbor's state to permanent, so it would be always valid.
+	ip neigh replace 192.0.2.130 lladdr $(mac_get $h3) \
+		nud permanent dev br2
 	full_test_span_gre_stp gt4 $swp3.555 "mirror to gretap"
 }
 
 test_ip6gretap_stp()
 {
+	ip neigh replace 2001:db8:2::2 lladdr $(mac_get $h3) \
+		nud permanent dev br2
 	full_test_span_gre_stp gt6 $swp3.555 "mirror to ip6gretap"
-}
-
-test_all()
-{
-	slow_path_trap_install $swp1 ingress
-	slow_path_trap_install $swp1 egress
-
-	tests_run
-
-	slow_path_trap_uninstall $swp1 egress
-	slow_path_trap_uninstall $swp1 ingress
 }
 
 trap cleanup EXIT
@@ -110,14 +109,6 @@ trap cleanup EXIT
 setup_prepare
 setup_wait
 
-tcflags="skip_hw"
-test_all
-
-if ! tc_offload_check; then
-	echo "WARN: Could not test offloaded functionality"
-else
-	tcflags="skip_sw"
-	test_all
-fi
+tests_run
 
 exit $EXIT_STATUS

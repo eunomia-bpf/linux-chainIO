@@ -494,7 +494,7 @@ static int wdt_temp_release(struct inode *inode, struct file *file)
 }
 
 /**
- *	notify_sys:
+ *	wdt_notify_sys:
  *	@this: our notifier block
  *	@code: the event being reported
  *	@unused: unused
@@ -520,7 +520,6 @@ static int wdt_notify_sys(struct notifier_block *this, unsigned long code,
 
 static const struct file_operations wdt_fops = {
 	.owner		= THIS_MODULE,
-	.llseek		= no_llseek,
 	.write		= wdt_write,
 	.unlocked_ioctl	= wdt_ioctl,
 	.compat_ioctl	= compat_ptr_ioctl,
@@ -536,7 +535,6 @@ static struct miscdevice wdt_miscdev = {
 
 static const struct file_operations wdt_temp_fops = {
 	.owner		= THIS_MODULE,
-	.llseek		= no_llseek,
 	.read		= wdt_temp_read,
 	.open		= wdt_temp_open,
 	.release	= wdt_temp_release,
@@ -558,7 +556,7 @@ static struct notifier_block wdt_notifier = {
 };
 
 /**
- *	cleanup_module:
+ *	wdt_exit:
  *
  *	Unload the watchdog. You cannot do this with any file handles open.
  *	If your watchdog is set to continue ticking on close and you unload

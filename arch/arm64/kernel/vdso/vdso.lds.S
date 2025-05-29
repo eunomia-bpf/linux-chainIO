@@ -11,6 +11,9 @@
 #include <linux/const.h>
 #include <asm/page.h>
 #include <asm/vdso.h>
+#include <asm/vdso/vsyscall.h>
+#include <asm-generic/vmlinux.lds.h>
+#include <vdso/datapage.h>
 
 OUTPUT_FORMAT("elf64-littleaarch64", "elf64-bigaarch64", "elf64-littleaarch64")
 OUTPUT_ARCH(aarch64)
@@ -18,10 +21,11 @@ OUTPUT_ARCH(aarch64)
 SECTIONS
 {
 	PROVIDE(_vdso_data = . - __VVAR_PAGES * PAGE_SIZE);
+	PROVIDE(_vdso_rng_data = _vdso_data + __VDSO_RND_DATA_OFFSET);
 #ifdef CONFIG_TIME_NS
 	PROVIDE(_timens_data = _vdso_data + PAGE_SIZE);
 #endif
-	. = VDSO_LBASE + SIZEOF_HEADERS;
+	. = SIZEOF_HEADERS;
 
 	.hash		: { *(.hash) }			:text
 	.gnu.hash	: { *(.gnu.hash) }
@@ -31,6 +35,13 @@ SECTIONS
 	.gnu.version_d	: { *(.gnu.version_d) }
 	.gnu.version_r	: { *(.gnu.version_r) }
 
+	/*
+	 * Discard .note.gnu.property sections which are unused and have
+	 * different alignment requirement from vDSO note sections.
+	 */
+	/DISCARD/	: {
+		*(.note.GNU-stack .note.gnu.property)
+	}
 	.note		: { *(.note.*) }		:text	:note
 
 	. = ALIGN(16);
@@ -40,20 +51,35 @@ SECTIONS
 	PROVIDE (_etext = .);
 	PROVIDE (etext = .);
 
-	.eh_frame_hdr	: { *(.eh_frame_hdr) }		:text	:eh_frame_hdr
-	.eh_frame	: { KEEP (*(.eh_frame)) }	:text
+	. = ALIGN(4);
+	.altinstructions : {
+		*(.altinstructions)
+	}
 
 	.dynamic	: { *(.dynamic) }		:text	:dynamic
 
-	.rodata		: { *(.rodata*) }		:text
+	.rela.dyn	: ALIGN(8) { *(.rela .rela*) }
+
+	.rodata		: {
+		*(.rodata*)
+		*(.got)
+		*(.got.plt)
+		*(.plt)
+		*(.plt.*)
+		*(.iplt)
+		*(.igot .igot.plt)
+	}						:text
 
 	_end = .;
 	PROVIDE(end = .);
 
+	DWARF_DEBUG
+	ELF_DETAILS
+
 	/DISCARD/	: {
-		*(.note.GNU-stack)
 		*(.data .data.* .gnu.linkonce.d.* .sdata*)
 		*(.bss .sbss .dynbss .dynsbss)
+		*(.eh_frame .eh_frame_hdr)
 	}
 }
 
@@ -66,7 +92,6 @@ PHDRS
 	text		PT_LOAD		FLAGS(5) FILEHDR PHDRS; /* PF_R|PF_X */
 	dynamic		PT_DYNAMIC	FLAGS(4);		/* PF_R */
 	note		PT_NOTE		FLAGS(4);		/* PF_R */
-	eh_frame_hdr	PT_GNU_EH_FRAME;
 }
 
 /*
@@ -80,6 +105,7 @@ VERSION
 		__kernel_gettimeofday;
 		__kernel_clock_gettime;
 		__kernel_clock_getres;
+		__kernel_getrandom;
 	local: *;
 	};
 }

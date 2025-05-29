@@ -4,25 +4,7 @@
 
 #include <linux/types.h>
 #include <linux/percpu.h>
-
-/*
- * There are two chunk types: root and memcg-aware.
- * Chunks of each type have separate slots list.
- *
- * Memcg-aware chunks have an attached vector of obj_cgroup pointers, which is
- * used to store memcg membership data of a percpu object.  Obj_cgroups are
- * ref-counted pointers to a memory cgroup with an ability to switch dynamically
- * to the parent memory cgroup.  This allows to reclaim a deleted memory cgroup
- * without reclaiming of all outstanding objects, which hold a reference at it.
- */
-enum pcpu_chunk_type {
-	PCPU_CHUNK_ROOT,
-#ifdef CONFIG_MEMCG_KMEM
-	PCPU_CHUNK_MEMCG,
-#endif
-	PCPU_NR_CHUNK_TYPES,
-	PCPU_FAIL_ALLOC = PCPU_NR_CHUNK_TYPES
-};
+#include <linux/memcontrol.h>
 
 /*
  * pcpu_block_md is the metadata block struct.
@@ -50,6 +32,19 @@ struct pcpu_block_md {
 	int			nr_bits;	/* total bits responsible for */
 };
 
+struct pcpuobj_ext {
+#ifdef CONFIG_MEMCG
+	struct obj_cgroup	*cgroup;
+#endif
+#ifdef CONFIG_MEM_ALLOC_PROFILING
+	union codetag_ref	tag;
+#endif
+};
+
+#if defined(CONFIG_MEMCG) || defined(CONFIG_MEM_ALLOC_PROFILING)
+#define NEED_PCPUOBJ_EXT
+#endif
+
 struct pcpu_chunk {
 #ifdef CONFIG_PERCPU_STATS
 	int			nr_alloc;	/* # of allocations */
@@ -59,22 +54,31 @@ struct pcpu_chunk {
 	struct list_head	list;		/* linked to pcpu_slot lists */
 	int			free_bytes;	/* free bytes in the chunk */
 	struct pcpu_block_md	chunk_md;
-	void			*base_addr;	/* base address of this chunk */
+	unsigned long		*bound_map;	/* boundary map */
+
+	/*
+	 * base_addr is the base address of this chunk.
+	 * To reduce false sharing, current layout is optimized to make sure
+	 * base_addr locate in the different cacheline with free_bytes and
+	 * chunk_md.
+	 */
+	void			*base_addr ____cacheline_aligned_in_smp;
 
 	unsigned long		*alloc_map;	/* allocation map */
-	unsigned long		*bound_map;	/* boundary map */
 	struct pcpu_block_md	*md_blocks;	/* metadata blocks */
 
 	void			*data;		/* chunk data */
 	bool			immutable;	/* no [de]population allowed */
+	bool			isolated;	/* isolated from active chunk
+						   slots */
 	int			start_offset;	/* the overlap with the previous
 						   region to have a page aligned
 						   base_addr */
 	int			end_offset;	/* additional area required to
 						   have the region end page
 						   aligned */
-#ifdef CONFIG_MEMCG_KMEM
-	struct obj_cgroup	**obj_cgroups;	/* vector of object cgroups */
+#ifdef NEED_PCPUOBJ_EXT
+	struct pcpuobj_ext	*obj_exts;	/* vector of object cgroups */
 #endif
 
 	int			nr_pages;	/* # of pages served by this chunk */
@@ -83,10 +87,21 @@ struct pcpu_chunk {
 	unsigned long		populated[];	/* populated bitmap */
 };
 
+static inline bool need_pcpuobj_ext(void)
+{
+	if (IS_ENABLED(CONFIG_MEM_ALLOC_PROFILING))
+		return true;
+	if (!mem_cgroup_kmem_disabled())
+		return true;
+	return false;
+}
+
 extern spinlock_t pcpu_lock;
 
 extern struct list_head *pcpu_chunk_lists;
 extern int pcpu_nr_slots;
+extern int pcpu_sidelined_slot;
+extern int pcpu_to_depopulate_slot;
 extern int pcpu_nr_empty_pop_pages;
 
 extern struct pcpu_chunk *pcpu_first_chunk;
@@ -128,35 +143,23 @@ static inline int pcpu_chunk_map_bits(struct pcpu_chunk *chunk)
 	return pcpu_nr_pages_to_map_bits(chunk->nr_pages);
 }
 
-#ifdef CONFIG_MEMCG_KMEM
-static inline enum pcpu_chunk_type pcpu_chunk_type(struct pcpu_chunk *chunk)
+/**
+ * pcpu_obj_full_size - helper to calculate size of each accounted object
+ * @size: size of area to allocate in bytes
+ *
+ * For each accounted object there is an extra space which is used to store
+ * obj_cgroup membership if kmemcg is not disabled. Charge it too.
+ */
+static inline size_t pcpu_obj_full_size(size_t size)
 {
-	if (chunk->obj_cgroups)
-		return PCPU_CHUNK_MEMCG;
-	return PCPU_CHUNK_ROOT;
-}
+	size_t extra_size = 0;
 
-static inline bool pcpu_is_memcg_chunk(enum pcpu_chunk_type chunk_type)
-{
-	return chunk_type == PCPU_CHUNK_MEMCG;
-}
-
-#else
-static inline enum pcpu_chunk_type pcpu_chunk_type(struct pcpu_chunk *chunk)
-{
-	return PCPU_CHUNK_ROOT;
-}
-
-static inline bool pcpu_is_memcg_chunk(enum pcpu_chunk_type chunk_type)
-{
-	return false;
-}
+#ifdef CONFIG_MEMCG
+	if (!mem_cgroup_kmem_disabled())
+		extra_size += size / PCPU_MIN_ALLOC_SIZE * sizeof(struct obj_cgroup *);
 #endif
 
-static inline struct list_head *pcpu_chunk_list(enum pcpu_chunk_type chunk_type)
-{
-	return &pcpu_chunk_lists[pcpu_nr_slots *
-				 pcpu_is_memcg_chunk(chunk_type)];
+	return size * num_possible_cpus() + extra_size;
 }
 
 #ifdef CONFIG_PERCPU_STATS
@@ -170,7 +173,7 @@ struct percpu_stats {
 	u64 nr_max_alloc;	/* max # of live allocations */
 	u32 nr_chunks;		/* current # of live chunks */
 	u32 nr_max_chunks;	/* max # of live chunks */
-	size_t min_alloc_size;	/* min allocaiton size */
+	size_t min_alloc_size;	/* min allocation size */
 	size_t max_alloc_size;	/* max allocation size */
 };
 

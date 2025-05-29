@@ -4,8 +4,9 @@
 #include <linux/ptrace.h>
 #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
+#include "bpf_misc.h"
 
-static volatile const struct {
+const struct {
 	unsigned a[4];
 	/*
 	 * if the struct's size is multiple of 16, compiler will put it into
@@ -15,11 +16,11 @@ static volatile const struct {
 	char _y;
 } rdonly_values = { .a = {2, 3, 4, 5} };
 
-static volatile struct {
+struct {
 	unsigned did_run;
 	unsigned iters;
 	unsigned sum;
-} res;
+} res = {};
 
 SEC("raw_tracepoint/sys_enter:skip_loop")
 int skip_loop(struct pt_regs *ctx)
@@ -64,7 +65,7 @@ int full_loop(struct pt_regs *ctx)
 {
 	/* prevent compiler to optimize everything out */
 	unsigned * volatile p = (void *)&rdonly_values.a;
-	int i = sizeof(rdonly_values.a) / sizeof(rdonly_values.a[0]);
+	int i = ARRAY_SIZE(rdonly_values.a);
 	unsigned iters = 0, sum = 0;
 
 	/* validate verifier can allow full loop as well */

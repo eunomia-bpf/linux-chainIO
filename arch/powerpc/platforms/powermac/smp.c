@@ -22,6 +22,7 @@
 #include <linux/sched/hotplug.h>
 #include <linux/smp.h>
 #include <linux/interrupt.h>
+#include <linux/irqdomain.h>
 #include <linux/kernel_stat.h>
 #include <linux/delay.h>
 #include <linux/init.h>
@@ -34,12 +35,11 @@
 
 #include <asm/ptrace.h>
 #include <linux/atomic.h>
-#include <asm/code-patching.h>
+#include <asm/text-patching.h>
 #include <asm/irq.h>
 #include <asm/page.h>
 #include <asm/sections.h>
 #include <asm/io.h>
-#include <asm/prom.h>
 #include <asm/smp.h>
 #include <asm/machdep.h>
 #include <asm/pmac_feature.h>
@@ -146,6 +146,7 @@ static inline void psurge_clr_ipi(int cpu)
 		switch(psurge_type) {
 		case PSURGE_DUAL:
 			out_8(psurge_sec_intr, ~0);
+			break;
 		case PSURGE_NONE:
 			break;
 		default:
@@ -185,7 +186,7 @@ static const struct irq_domain_ops psurge_host_ops = {
 	.map	= psurge_host_map,
 };
 
-static int psurge_secondary_ipi_init(void)
+static int __init psurge_secondary_ipi_init(void)
 {
 	int rc = -ENOMEM;
 
@@ -412,7 +413,7 @@ static void __init smp_psurge_setup_cpu(int cpu_nr)
 		printk(KERN_ERR "Couldn't get primary IPI interrupt");
 }
 
-void __init smp_psurge_take_timebase(void)
+static void __init smp_psurge_take_timebase(void)
 {
 	if (psurge_type != PSURGE_DUAL)
 		return;
@@ -428,7 +429,7 @@ void __init smp_psurge_take_timebase(void)
 	set_dec(tb_ticks_per_jiffy/2);
 }
 
-void __init smp_psurge_give_timebase(void)
+static void __init smp_psurge_give_timebase(void)
 {
 	/* Nothing to do here */
 }
@@ -597,8 +598,10 @@ static void __init smp_core99_setup_i2c_hwsync(int ncpus)
 			name = "Pulsar";
 			break;
 		}
-		if (pmac_tb_freeze != NULL)
+		if (pmac_tb_freeze != NULL) {
+			of_node_put(cc);
 			break;
+		}
 	}
 	if (pmac_tb_freeze != NULL) {
 		/* Open i2c bus for synchronous access */
@@ -705,11 +708,12 @@ static void __init smp_core99_setup(int ncpus)
 		struct device_node *cpus =
 			of_find_node_by_path("/cpus");
 		if (cpus &&
-		    of_get_property(cpus, "platform-cpu-timebase", NULL)) {
+		    of_property_read_bool(cpus, "platform-cpu-timebase")) {
 			pmac_tb_freeze = smp_core99_pfunc_tb_freeze;
 			printk(KERN_INFO "Processor timebase sync using"
 			       " platform function\n");
 		}
+		of_node_put(cpus);
 	}
 
 #else /* CONFIG_PPC64 */
@@ -810,7 +814,7 @@ static int smp_core99_kick_cpu(int nr)
 	 *   b __secondary_start_pmac_0 + nr*8
 	 */
 	target = (unsigned long) __secondary_start_pmac_0 + nr * 8;
-	patch_branch((struct ppc_inst *)vector, target, BRANCH_SET_LINK);
+	patch_branch(vector, target, BRANCH_SET_LINK);
 
 	/* Put some life in our friend */
 	pmac_call_feature(PMAC_FTR_RESET_CPU, NULL, nr, 0);
@@ -823,7 +827,7 @@ static int smp_core99_kick_cpu(int nr)
 	mdelay(1);
 
 	/* Restore our exception vector */
-	patch_instruction((struct ppc_inst *)vector, ppc_inst(save_vector));
+	patch_uint(vector, save_vector);
 
 	local_irq_restore(flags);
 	if (ppc_md.progress) ppc_md.progress("smp_core99_kick_cpu done", 0x347);
@@ -874,8 +878,6 @@ static int smp_core99_cpu_online(unsigned int cpu)
 
 static void __init smp_core99_bringup_done(void)
 {
-	extern void g5_phy_disable_cpu1(void);
-
 	/* Close i2c bus if it was used for tb sync */
 	if (pmac_tb_clock_chip_host)
 		pmac_i2c_close(pmac_tb_clock_chip_host);
@@ -910,6 +912,8 @@ static int smp_core99_cpu_disable(void)
 		return rc;
 
 	mpic_cpu_set_priority(0xf);
+
+	cleanup_cpu_mmu_context();
 
 	return 0;
 }

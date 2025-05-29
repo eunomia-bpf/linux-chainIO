@@ -1,65 +1,9 @@
-/******************************************************************************
- *
- * This file is provided under a dual BSD/GPLv2 license.  When using or
- * redistributing this file, you may do so under either license.
- *
- * GPL LICENSE SUMMARY
- *
- * Copyright(c) 2014 Intel Mobile Communications GmbH
- * Copyright(c) 2017 Intel Deutschland GmbH
- * Copyright(C) 2018 - 2020 Intel Corporation
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of version 2 of the GNU General Public License as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * The full GNU General Public License is included in this distribution
- * in the file called COPYING.
- *
- * Contact Information:
- *  Intel Linux Wireless <linuxwifi@intel.com>
- * Intel Corporation, 5200 N.E. Elam Young Parkway, Hillsboro, OR 97124-6497
- *
- * BSD LICENSE
- *
- * Copyright(c) 2014 Intel Mobile Communications GmbH
- * Copyright(c) 2017 Intel Deutschland GmbH
- * Copyright(C) 2018 - 2020 Intel Corporation
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- *  * Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *  * Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *  * Neither the name Intel Corporation nor the names of its
- *    contributors may be used to endorse or promote products derived
- *    from this software without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- * OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- *****************************************************************************/
-
+// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
+/*
+ * Copyright (C) 2014 Intel Mobile Communications GmbH
+ * Copyright (C) 2017 Intel Deutschland GmbH
+ * Copyright (C) 2018-2020, 2022-2024 Intel Corporation
+ */
 #include <linux/etherdevice.h>
 #include "mvm.h"
 #include "time-event.h"
@@ -200,21 +144,21 @@ void iwl_mvm_recalc_tdls_state(struct iwl_mvm *mvm, struct ieee80211_vif *vif,
 }
 
 void iwl_mvm_mac_mgd_protect_tdls_discover(struct ieee80211_hw *hw,
-					   struct ieee80211_vif *vif)
+					   struct ieee80211_vif *vif,
+					   unsigned int link_id)
 {
 	struct iwl_mvm *mvm = IWL_MAC80211_GET_MVM(hw);
 	u32 duration = 2 * vif->bss_conf.dtim_period * vif->bss_conf.beacon_int;
 
 	/* Protect the session to hear the TDLS setup response on the channel */
-	mutex_lock(&mvm->mutex);
+	guard(mvm)(mvm);
 	if (fw_has_capa(&mvm->fw->ucode_capa,
 			IWL_UCODE_TLV_CAPA_SESSION_PROT_CMD))
 		iwl_mvm_schedule_session_protection(mvm, vif, duration,
-						    duration, true);
+						    duration, true, link_id);
 	else
 		iwl_mvm_protect_session(mvm, vif, duration,
 					duration, 100, true);
-	mutex_unlock(&mvm->mutex);
 }
 
 static const char *
@@ -252,7 +196,7 @@ static void iwl_mvm_tdls_update_cs_state(struct iwl_mvm *mvm,
 		mvm->tdls_cs.peer.sent_timestamp = iwl_mvm_get_systime(mvm);
 
 	if (state == IWL_MVM_TDLS_SW_IDLE)
-		mvm->tdls_cs.cur_sta_id = IWL_MVM_INVALID_STA;
+		mvm->tdls_cs.cur_sta_id = IWL_INVALID_STA;
 }
 
 void iwl_mvm_rx_tdls_notif(struct iwl_mvm *mvm, struct iwl_rx_cmd_buffer *rxb)
@@ -306,7 +250,7 @@ iwl_mvm_tdls_check_action(struct iwl_mvm *mvm,
 
 	/* get the existing peer if it's there */
 	if (mvm->tdls_cs.state != IWL_MVM_TDLS_SW_IDLE &&
-	    mvm->tdls_cs.cur_sta_id != IWL_MVM_INVALID_STA) {
+	    mvm->tdls_cs.cur_sta_id != IWL_INVALID_STA) {
 		struct ieee80211_sta *sta = rcu_dereference_protected(
 				mvm->fw_id_to_mac_id[mvm->tdls_cs.cur_sta_id],
 				lockdep_is_held(&mvm->mutex));
@@ -425,7 +369,7 @@ iwl_mvm_tdls_config_channel_switch(struct iwl_mvm *mvm,
 		goto out;
 	}
 	mvmsta = iwl_mvm_sta_from_mac80211(sta);
-	cmd.peer_sta_id = cpu_to_le32(mvmsta->sta_id);
+	cmd.peer_sta_id = cpu_to_le32(mvmsta->deflink.sta_id);
 
 	if (!chandef) {
 		if (mvm->tdls_cs.state == IWL_MVM_TDLS_SW_REQ_SENT &&
@@ -436,7 +380,7 @@ iwl_mvm_tdls_config_channel_switch(struct iwl_mvm *mvm,
 			   type == TDLS_MOVE_CH) {
 			/* we need to return to base channel */
 			struct ieee80211_chanctx_conf *chanctx =
-					rcu_dereference(vif->chanctx_conf);
+					rcu_dereference(vif->bss_conf.chanctx_conf);
 
 			if (WARN_ON_ONCE(!chanctx)) {
 				rcu_read_unlock();
@@ -470,7 +414,7 @@ iwl_mvm_tdls_config_channel_switch(struct iwl_mvm *mvm,
 	}
 
 	iwl_mvm_set_tx_cmd(mvm, skb, &tail->frame.tx_cmd, info,
-			   mvmsta->sta_id);
+			   mvmsta->deflink.sta_id);
 
 	iwl_mvm_set_tx_cmd_rate(mvm, &tail->frame.tx_cmd, info, sta,
 				hdr->frame_control);
@@ -487,7 +431,7 @@ iwl_mvm_tdls_config_channel_switch(struct iwl_mvm *mvm,
 
 	/* channel switch has started, update state */
 	if (type != TDLS_MOVE_CH) {
-		mvm->tdls_cs.cur_sta_id = mvmsta->sta_id;
+		mvm->tdls_cs.cur_sta_id = mvmsta->deflink.sta_id;
 		iwl_mvm_tdls_update_cs_state(mvm,
 					     type == TDLS_SEND_CHAN_SW_REQ ?
 					     IWL_MVM_TDLS_SW_REQ_SENT :
@@ -515,21 +459,21 @@ void iwl_mvm_tdls_ch_switch_work(struct work_struct *work)
 	int ret;
 
 	mvm = container_of(work, struct iwl_mvm, tdls_cs.dwork.work);
-	mutex_lock(&mvm->mutex);
+	guard(mvm)(mvm);
 
 	/* called after an active channel switch has finished or timed-out */
 	iwl_mvm_tdls_update_cs_state(mvm, IWL_MVM_TDLS_SW_IDLE);
 
 	/* station might be gone, in that case do nothing */
-	if (mvm->tdls_cs.peer.sta_id == IWL_MVM_INVALID_STA)
-		goto out;
+	if (mvm->tdls_cs.peer.sta_id == IWL_INVALID_STA)
+		return;
 
 	sta = rcu_dereference_protected(
 				mvm->fw_id_to_mac_id[mvm->tdls_cs.peer.sta_id],
 				lockdep_is_held(&mvm->mutex));
 	/* the station may not be here, but if it is, it must be a TDLS peer */
 	if (!sta || IS_ERR(sta) || WARN_ON(!sta->tdls))
-		goto out;
+		return;
 
 	mvmsta = iwl_mvm_sta_from_mac80211(sta);
 	vif = mvmsta->vif;
@@ -548,8 +492,6 @@ void iwl_mvm_tdls_ch_switch_work(struct work_struct *work)
 	/* retry after a DTIM if we failed sending now */
 	delay = TU_TO_MS(vif->bss_conf.dtim_period * vif->bss_conf.beacon_int);
 	schedule_delayed_work(&mvm->tdls_cs.dwork, msecs_to_jiffies(delay));
-out:
-	mutex_unlock(&mvm->mutex);
 }
 
 int
@@ -564,18 +506,17 @@ iwl_mvm_tdls_channel_switch(struct ieee80211_hw *hw,
 	unsigned int delay;
 	int ret;
 
-	mutex_lock(&mvm->mutex);
+	guard(mvm)(mvm);
 
 	IWL_DEBUG_TDLS(mvm, "TDLS channel switch with %pM ch %d width %d\n",
 		       sta->addr, chandef->chan->center_freq, chandef->width);
 
 	/* we only support a single peer for channel switching */
-	if (mvm->tdls_cs.peer.sta_id != IWL_MVM_INVALID_STA) {
+	if (mvm->tdls_cs.peer.sta_id != IWL_INVALID_STA) {
 		IWL_DEBUG_TDLS(mvm,
 			       "Existing peer. Can't start switch with %pM\n",
 			       sta->addr);
-		ret = -EBUSY;
-		goto out;
+		return -EBUSY;
 	}
 
 	ret = iwl_mvm_tdls_config_channel_switch(mvm, vif,
@@ -584,20 +525,18 @@ iwl_mvm_tdls_channel_switch(struct ieee80211_hw *hw,
 						 oper_class, chandef, 0, 0, 0,
 						 tmpl_skb, ch_sw_tm_ie);
 	if (ret)
-		goto out;
+		return ret;
 
 	/*
 	 * Mark the peer as "in tdls switch" for this vif. We only allow a
 	 * single such peer per vif.
 	 */
 	mvm->tdls_cs.peer.skb = skb_copy(tmpl_skb, GFP_KERNEL);
-	if (!mvm->tdls_cs.peer.skb) {
-		ret = -ENOMEM;
-		goto out;
-	}
+	if (!mvm->tdls_cs.peer.skb)
+		return -ENOMEM;
 
 	mvmsta = iwl_mvm_sta_from_mac80211(sta);
-	mvm->tdls_cs.peer.sta_id = mvmsta->sta_id;
+	mvm->tdls_cs.peer.sta_id = mvmsta->deflink.sta_id;
 	mvm->tdls_cs.peer.chandef = *chandef;
 	mvm->tdls_cs.peer.initiator = sta->tdls_initiator;
 	mvm->tdls_cs.peer.op_class = oper_class;
@@ -611,10 +550,7 @@ iwl_mvm_tdls_channel_switch(struct ieee80211_hw *hw,
 			     vif->bss_conf.beacon_int);
 	mod_delayed_work(system_wq, &mvm->tdls_cs.dwork,
 			 msecs_to_jiffies(delay));
-
-out:
-	mutex_unlock(&mvm->mutex);
-	return ret;
+	return 0;
 }
 
 void iwl_mvm_tdls_cancel_channel_switch(struct ieee80211_hw *hw,
@@ -630,7 +566,7 @@ void iwl_mvm_tdls_cancel_channel_switch(struct ieee80211_hw *hw,
 	IWL_DEBUG_TDLS(mvm, "TDLS cancel channel switch with %pM\n", sta->addr);
 
 	/* we only support a single peer for channel switching */
-	if (mvm->tdls_cs.peer.sta_id == IWL_MVM_INVALID_STA) {
+	if (mvm->tdls_cs.peer.sta_id == IWL_INVALID_STA) {
 		IWL_DEBUG_TDLS(mvm, "No ch switch peer - %pM\n", sta->addr);
 		goto out;
 	}
@@ -651,7 +587,7 @@ void iwl_mvm_tdls_cancel_channel_switch(struct ieee80211_hw *hw,
 	    mvm->tdls_cs.state != IWL_MVM_TDLS_SW_IDLE)
 		wait_for_phy = true;
 
-	mvm->tdls_cs.peer.sta_id = IWL_MVM_INVALID_STA;
+	mvm->tdls_cs.peer.sta_id = IWL_INVALID_STA;
 	dev_kfree_skb(mvm->tdls_cs.peer.skb);
 	mvm->tdls_cs.peer.skb = NULL;
 
@@ -681,7 +617,7 @@ iwl_mvm_tdls_recv_channel_switch(struct ieee80211_hw *hw,
 		params->action_code == WLAN_TDLS_CHANNEL_SWITCH_REQUEST ?
 		"REQ" : "RESP";
 
-	mutex_lock(&mvm->mutex);
+	guard(mvm)(mvm);
 
 	IWL_DEBUG_TDLS(mvm,
 		       "Received TDLS ch switch action %s from %pM status %d\n",
@@ -694,7 +630,7 @@ iwl_mvm_tdls_recv_channel_switch(struct ieee80211_hw *hw,
 	if (params->action_code == WLAN_TDLS_CHANNEL_SWITCH_RESPONSE &&
 	    params->status != 0 &&
 	    mvm->tdls_cs.state == IWL_MVM_TDLS_SW_REQ_SENT &&
-	    mvm->tdls_cs.cur_sta_id != IWL_MVM_INVALID_STA) {
+	    mvm->tdls_cs.cur_sta_id != IWL_INVALID_STA) {
 		struct ieee80211_sta *cur_sta;
 
 		/* make sure it's the same peer */
@@ -725,5 +661,4 @@ retry:
 		1024 / 1000;
 	mod_delayed_work(system_wq, &mvm->tdls_cs.dwork,
 			 msecs_to_jiffies(delay));
-	mutex_unlock(&mvm->mutex);
 }

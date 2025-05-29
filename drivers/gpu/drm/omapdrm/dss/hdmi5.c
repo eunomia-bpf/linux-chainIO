@@ -2,7 +2,7 @@
 /*
  * HDMI driver for OMAP5
  *
- * Copyright (C) 2014 Texas Instruments Incorporated - http://www.ti.com/
+ * Copyright (C) 2014 Texas Instruments Incorporated - https://www.ti.com/
  *
  * Authors:
  *	Yong Zhi
@@ -32,6 +32,7 @@
 
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_state_helper.h>
+#include <drm/drm_edid.h>
 
 #include "omapdss.h"
 #include "hdmi5_core.h"
@@ -44,10 +45,10 @@ static int hdmi_runtime_get(struct omap_hdmi *hdmi)
 	DSSDBG("hdmi_runtime_get\n");
 
 	r = pm_runtime_get_sync(&hdmi->pdev->dev);
-	WARN_ON(r < 0);
-	if (r < 0)
+	if (WARN_ON(r < 0)) {
+		pm_runtime_put_noidle(&hdmi->pdev->dev);
 		return r;
-
+	}
 	return 0;
 }
 
@@ -424,11 +425,11 @@ static void hdmi5_bridge_disable(struct drm_bridge *bridge,
 	mutex_unlock(&hdmi->lock);
 }
 
-static struct edid *hdmi5_bridge_get_edid(struct drm_bridge *bridge,
-					  struct drm_connector *connector)
+static const struct drm_edid *hdmi5_bridge_edid_read(struct drm_bridge *bridge,
+						     struct drm_connector *connector)
 {
 	struct omap_hdmi *hdmi = drm_bridge_to_hdmi(bridge);
-	struct edid *edid;
+	const struct drm_edid *drm_edid;
 	bool need_enable;
 	int idlemode;
 	int r;
@@ -451,7 +452,7 @@ static struct edid *hdmi5_bridge_get_edid(struct drm_bridge *bridge,
 
 	hdmi5_core_ddc_init(&hdmi->core);
 
-	edid = drm_do_get_edid(connector, hdmi5_core_ddc_read, &hdmi->core);
+	drm_edid = drm_edid_read_custom(connector, hdmi5_core_ddc_read, &hdmi->core);
 
 	hdmi5_core_ddc_uninit(&hdmi->core);
 
@@ -463,7 +464,7 @@ static struct edid *hdmi5_bridge_get_edid(struct drm_bridge *bridge,
 	if (need_enable)
 		hdmi_core_disable(hdmi);
 
-	return (struct edid *)edid;
+	return drm_edid;
 }
 
 static const struct drm_bridge_funcs hdmi5_bridge_funcs = {
@@ -474,7 +475,7 @@ static const struct drm_bridge_funcs hdmi5_bridge_funcs = {
 	.atomic_reset = drm_atomic_helper_bridge_reset,
 	.atomic_enable = hdmi5_bridge_enable,
 	.atomic_disable = hdmi5_bridge_disable,
-	.get_edid = hdmi5_bridge_get_edid,
+	.edid_read = hdmi5_bridge_edid_read,
 };
 
 static void hdmi5_bridge_init(struct omap_hdmi *hdmi)
@@ -681,7 +682,6 @@ static int hdmi5_init_output(struct omap_hdmi *hdmi)
 	out->type = OMAP_DISPLAY_TYPE_HDMI;
 	out->name = "hdmi.0";
 	out->dispc_channel = OMAP_DSS_CHANNEL_DIGIT;
-	out->owner = THIS_MODULE;
 	out->of_port = 0;
 
 	r = omapdss_device_init_output(out, &hdmi->bridge);
@@ -798,7 +798,7 @@ err_free:
 	return r;
 }
 
-static int hdmi5_remove(struct platform_device *pdev)
+static void hdmi5_remove(struct platform_device *pdev)
 {
 	struct omap_hdmi *hdmi = platform_get_drvdata(pdev);
 
@@ -809,7 +809,6 @@ static int hdmi5_remove(struct platform_device *pdev)
 	pm_runtime_disable(&pdev->dev);
 
 	kfree(hdmi);
-	return 0;
 }
 
 static const struct of_device_id hdmi_of_match[] = {
@@ -820,7 +819,7 @@ static const struct of_device_id hdmi_of_match[] = {
 
 struct platform_driver omapdss_hdmi5hw_driver = {
 	.probe		= hdmi5_probe,
-	.remove		= hdmi5_remove,
+	.remove_new	= hdmi5_remove,
 	.driver         = {
 		.name   = "omapdss_hdmi5",
 		.of_match_table = hdmi_of_match,

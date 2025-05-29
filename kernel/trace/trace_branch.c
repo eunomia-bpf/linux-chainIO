@@ -30,14 +30,13 @@ static struct trace_array *branch_tracer;
 static void
 probe_likely_condition(struct ftrace_likely_data *f, int val, int expect)
 {
-	struct trace_event_call *call = &event_branch;
 	struct trace_array *tr = branch_tracer;
 	struct trace_buffer *buffer;
 	struct trace_array_cpu *data;
 	struct ring_buffer_event *event;
 	struct trace_branch *entry;
 	unsigned long flags;
-	int pc;
+	unsigned int trace_ctx;
 	const char *p;
 
 	if (current->trace_recursion & TRACE_BRANCH_BIT)
@@ -59,10 +58,10 @@ probe_likely_condition(struct ftrace_likely_data *f, int val, int expect)
 	if (atomic_read(&data->disabled))
 		goto out;
 
-	pc = preempt_count();
+	trace_ctx = tracing_gen_ctx_flags(flags);
 	buffer = tr->array_buffer.buffer;
 	event = trace_buffer_lock_reserve(buffer, TRACE_BRANCH,
-					  sizeof(*entry), flags, pc);
+					  sizeof(*entry), trace_ctx);
 	if (!event)
 		goto out;
 
@@ -74,16 +73,13 @@ probe_likely_condition(struct ftrace_likely_data *f, int val, int expect)
 		p--;
 	p++;
 
-	strncpy(entry->func, f->data.func, TRACE_FUNC_SIZE);
-	strncpy(entry->file, p, TRACE_FILE_SIZE);
-	entry->func[TRACE_FUNC_SIZE] = 0;
-	entry->file[TRACE_FILE_SIZE] = 0;
+	strscpy(entry->func, f->data.func);
+	strscpy(entry->file, p);
 	entry->constant = f->constant;
 	entry->line = f->data.line;
 	entry->correct = val == expect;
 
-	if (!call_filter_check_discard(call, entry, buffer, event))
-		trace_buffer_unlock_commit_nostack(buffer, event);
+	trace_buffer_unlock_commit_nostack(buffer, event);
 
  out:
 	current->trace_recursion &= ~TRACE_BRANCH_BIT;

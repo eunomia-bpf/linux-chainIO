@@ -28,7 +28,6 @@
 #include "ppatomctrl.h"
 #include "atombios.h"
 #include "cgs_common.h"
-#include "ppevvmath.h"
 
 #define MEM_ID_MASK           0xff000000
 #define MEM_ID_SHIFT          24
@@ -73,8 +72,9 @@ static int atomctrl_retrieve_ac_timing(
 					j++;
 				} else if ((table->mc_reg_address[i].uc_pre_reg_data &
 							LOW_NIBBLE_MASK) == DATA_EQU_PREV) {
-					table->mc_reg_table_entry[num_ranges].mc_data[i] =
-						table->mc_reg_table_entry[num_ranges].mc_data[i-1];
+					if (i)
+						table->mc_reg_table_entry[num_ranges].mc_data[i] =
+							table->mc_reg_table_entry[num_ranges].mc_data[i-1];
 				}
 			}
 			num_ranges++;
@@ -92,11 +92,11 @@ static int atomctrl_retrieve_ac_timing(
 }
 
 /**
- * Get memory clock AC timing registers index from VBIOS table
+ * atomctrl_set_mc_reg_address_table - Get memory clock AC timing registers index from VBIOS table
  * VBIOS set end of memory clock AC timing registers by ucPreRegDataLength bit6 = 1
- * @param    reg_block the address ATOM_INIT_REG_BLOCK
- * @param    table the address of MCRegTable
- * @return   0
+ * @reg_block: the address ATOM_INIT_REG_BLOCK
+ * @table: the address of MCRegTable
+ * Return:   0
  */
 static int atomctrl_set_mc_reg_address_table(
 		ATOM_INIT_REG_BLOCK *reg_block,
@@ -166,7 +166,44 @@ int atomctrl_initialize_mc_reg_table(
 	return result;
 }
 
-/**
+int atomctrl_initialize_mc_reg_table_v2_2(
+		struct pp_hwmgr *hwmgr,
+		uint8_t module_index,
+		pp_atomctrl_mc_reg_table *table)
+{
+	ATOM_VRAM_INFO_HEADER_V2_2 *vram_info;
+	ATOM_INIT_REG_BLOCK *reg_block;
+	int result = 0;
+	u8 frev, crev;
+	u16 size;
+
+	vram_info = (ATOM_VRAM_INFO_HEADER_V2_2 *)
+		smu_atom_get_data_table(hwmgr->adev,
+				GetIndexIntoMasterTable(DATA, VRAM_Info), &size, &frev, &crev);
+
+	if (module_index >= vram_info->ucNumOfVRAMModule) {
+		pr_err("Invalid VramInfo table.");
+		result = -1;
+	} else if (vram_info->sHeader.ucTableFormatRevision < 2) {
+		pr_err("Invalid VramInfo table.");
+		result = -1;
+	}
+
+	if (0 == result) {
+		reg_block = (ATOM_INIT_REG_BLOCK *)
+			((uint8_t *)vram_info + le16_to_cpu(vram_info->usMemClkPatchTblOffset));
+		result = atomctrl_set_mc_reg_address_table(reg_block, table);
+	}
+
+	if (0 == result) {
+		result = atomctrl_retrieve_ac_timing(module_index,
+					reg_block, table);
+	}
+
+	return result;
+}
+
+/*
  * Set DRAM timings based on engine clock and memory clock.
  */
 int atomctrl_set_engine_dram_timings_rv770(
@@ -189,10 +226,10 @@ int atomctrl_set_engine_dram_timings_rv770(
 
 	return amdgpu_atom_execute_table(adev->mode_info.atom_context,
 			GetIndexIntoMasterTable(COMMAND, DynamicMemorySettings),
-			(uint32_t *)&engine_clock_parameters);
+			(uint32_t *)&engine_clock_parameters, sizeof(engine_clock_parameters));
 }
 
-/**
+/*
  * Private Function to get the PowerPlay Table Address.
  * WARNING: The tabled returned by this function is in
  * dynamically allocated memory.
@@ -237,12 +274,13 @@ static const ATOM_VOLTAGE_OBJECT_V3 *atomctrl_lookup_voltage_type_v3(
 	return NULL;
 }
 
-/** atomctrl_get_memory_pll_dividers_si().
+/**
+ * atomctrl_get_memory_pll_dividers_si
  *
- * @param hwmgr                 input parameter: pointer to HwMgr
- * @param clock_value             input parameter: memory clock
- * @param dividers                 output parameter: memory PLL dividers
- * @param strobe_mode            input parameter: 1 for strobe mode,  0 for performance mode
+ * @hwmgr:           input parameter: pointer to HwMgr
+ * @clock_value:     input parameter: memory clock
+ * @mpll_param:      output parameter: memory clock parameters
+ * @strobe_mode:     input parameter: 1 for strobe mode,  0 for performance mode
  */
 int atomctrl_get_memory_pll_dividers_si(
 		struct pp_hwmgr *hwmgr,
@@ -259,7 +297,7 @@ int atomctrl_get_memory_pll_dividers_si(
 
 	result = amdgpu_atom_execute_table(adev->mode_info.atom_context,
 		 GetIndexIntoMasterTable(COMMAND, ComputeMemoryClockParam),
-		(uint32_t *)&mpll_parameters);
+		(uint32_t *)&mpll_parameters, sizeof(mpll_parameters));
 
 	if (0 == result) {
 		mpll_param->mpll_fb_divider.clk_frac =
@@ -289,11 +327,12 @@ int atomctrl_get_memory_pll_dividers_si(
 	return result;
 }
 
-/** atomctrl_get_memory_pll_dividers_vi().
+/**
+ * atomctrl_get_memory_pll_dividers_vi
  *
- * @param hwmgr                 input parameter: pointer to HwMgr
- * @param clock_value             input parameter: memory clock
- * @param dividers               output parameter: memory PLL dividers
+ * @hwmgr:                 input parameter: pointer to HwMgr
+ * @clock_value:           input parameter: memory clock
+ * @mpll_param:            output parameter: memory clock parameters
  */
 int atomctrl_get_memory_pll_dividers_vi(struct pp_hwmgr *hwmgr,
 		uint32_t clock_value, pp_atomctrl_memory_clock_param *mpll_param)
@@ -306,7 +345,7 @@ int atomctrl_get_memory_pll_dividers_vi(struct pp_hwmgr *hwmgr,
 
 	result = amdgpu_atom_execute_table(adev->mode_info.atom_context,
 			GetIndexIntoMasterTable(COMMAND, ComputeMemoryClockParam),
-			(uint32_t *)&mpll_parameters);
+			(uint32_t *)&mpll_parameters, sizeof(mpll_parameters));
 
 	if (!result)
 		mpll_param->mpll_post_divider =
@@ -327,7 +366,7 @@ int atomctrl_get_memory_pll_dividers_ai(struct pp_hwmgr *hwmgr,
 
 	result = amdgpu_atom_execute_table(adev->mode_info.atom_context,
 			GetIndexIntoMasterTable(COMMAND, ComputeMemoryClockParam),
-			(uint32_t *)&mpll_parameters);
+			(uint32_t *)&mpll_parameters, sizeof(mpll_parameters));
 
 	/* VEGAM's mpll takes sometime to finish computing */
 	udelay(10);
@@ -357,7 +396,7 @@ int atomctrl_get_engine_pll_dividers_kong(struct pp_hwmgr *hwmgr,
 
 	result = amdgpu_atom_execute_table(adev->mode_info.atom_context,
 		 GetIndexIntoMasterTable(COMMAND, ComputeMemoryEnginePLL),
-		(uint32_t *)&pll_parameters);
+		(uint32_t *)&pll_parameters, sizeof(pll_parameters));
 
 	if (0 == result) {
 		dividers->pll_post_divider = pll_parameters.ucPostDiv;
@@ -381,7 +420,7 @@ int atomctrl_get_engine_pll_dividers_vi(
 
 	result = amdgpu_atom_execute_table(adev->mode_info.atom_context,
 		 GetIndexIntoMasterTable(COMMAND, ComputeMemoryEnginePLL),
-		(uint32_t *)&pll_patameters);
+		(uint32_t *)&pll_patameters, sizeof(pll_patameters));
 
 	if (0 == result) {
 		dividers->pll_post_divider =
@@ -418,7 +457,7 @@ int atomctrl_get_engine_pll_dividers_ai(struct pp_hwmgr *hwmgr,
 
 	result = amdgpu_atom_execute_table(adev->mode_info.atom_context,
 		 GetIndexIntoMasterTable(COMMAND, ComputeMemoryEnginePLL),
-		(uint32_t *)&pll_patameters);
+		(uint32_t *)&pll_patameters, sizeof(pll_patameters));
 
 	if (0 == result) {
 		dividers->usSclk_fcw_frac     = le16_to_cpu(pll_patameters.usSclk_fcw_frac);
@@ -451,7 +490,7 @@ int atomctrl_get_dfs_pll_dividers_vi(
 
 	result = amdgpu_atom_execute_table(adev->mode_info.atom_context,
 		 GetIndexIntoMasterTable(COMMAND, ComputeMemoryEnginePLL),
-		(uint32_t *)&pll_patameters);
+		(uint32_t *)&pll_patameters, sizeof(pll_patameters));
 
 	if (0 == result) {
 		dividers->pll_post_divider =
@@ -475,7 +514,7 @@ int atomctrl_get_dfs_pll_dividers_vi(
 	return result;
 }
 
-/**
+/*
  * Get the reference clock in 10KHz
  */
 uint32_t atomctrl_get_reference_clock(struct pp_hwmgr *hwmgr)
@@ -498,7 +537,7 @@ uint32_t atomctrl_get_reference_clock(struct pp_hwmgr *hwmgr)
 	return clock;
 }
 
-/**
+/*
  * Returns true if the given voltage type is controlled by GPIO pins.
  * voltage_type is one of SET_VOLTAGE_TYPE_ASIC_VDDC,
  * SET_VOLTAGE_TYPE_ASIC_MVDDC, SET_VOLTAGE_TYPE_ASIC_MVDDQ.
@@ -593,7 +632,7 @@ static bool atomctrl_lookup_gpio_pin(
 	return false;
 }
 
-/**
+/*
  * Private Function to get the PowerPlay Table Address.
  * WARNING: The tabled returned by this function is in
  * dynamically allocated memory.
@@ -616,7 +655,7 @@ static ATOM_GPIO_PIN_LUT *get_gpio_lookup_table(void *device)
 	return (ATOM_GPIO_PIN_LUT *)table_address;
 }
 
-/**
+/*
  * Returns 1 if the given pin id find in lookup table.
  */
 bool atomctrl_get_pp_assign_pin(
@@ -637,449 +676,15 @@ bool atomctrl_get_pp_assign_pin(
 	return bRet;
 }
 
-int atomctrl_calculate_voltage_evv_on_sclk(
-		struct pp_hwmgr *hwmgr,
-		uint8_t voltage_type,
-		uint32_t sclk,
-		uint16_t virtual_voltage_Id,
-		uint16_t *voltage,
-		uint16_t dpm_level,
-		bool debug)
-{
-	ATOM_ASIC_PROFILING_INFO_V3_4 *getASICProfilingInfo;
-	struct amdgpu_device *adev = hwmgr->adev;
-	EFUSE_LINEAR_FUNC_PARAM sRO_fuse;
-	EFUSE_LINEAR_FUNC_PARAM sCACm_fuse;
-	EFUSE_LINEAR_FUNC_PARAM sCACb_fuse;
-	EFUSE_LOGISTIC_FUNC_PARAM sKt_Beta_fuse;
-	EFUSE_LOGISTIC_FUNC_PARAM sKv_m_fuse;
-	EFUSE_LOGISTIC_FUNC_PARAM sKv_b_fuse;
-	EFUSE_INPUT_PARAMETER sInput_FuseValues;
-	READ_EFUSE_VALUE_PARAMETER sOutput_FuseValues;
-
-	uint32_t ul_RO_fused, ul_CACb_fused, ul_CACm_fused, ul_Kt_Beta_fused, ul_Kv_m_fused, ul_Kv_b_fused;
-	fInt fSM_A0, fSM_A1, fSM_A2, fSM_A3, fSM_A4, fSM_A5, fSM_A6, fSM_A7;
-	fInt fMargin_RO_a, fMargin_RO_b, fMargin_RO_c, fMargin_fixed, fMargin_FMAX_mean, fMargin_Plat_mean, fMargin_FMAX_sigma, fMargin_Plat_sigma, fMargin_DC_sigma;
-	fInt fLkg_FT, repeat;
-	fInt fMicro_FMAX, fMicro_CR, fSigma_FMAX, fSigma_CR, fSigma_DC, fDC_SCLK, fSquared_Sigma_DC, fSquared_Sigma_CR, fSquared_Sigma_FMAX;
-	fInt fRLL_LoadLine, fPowerDPMx, fDerateTDP, fVDDC_base, fA_Term, fC_Term, fB_Term, fRO_DC_margin;
-	fInt fRO_fused, fCACm_fused, fCACb_fused, fKv_m_fused, fKv_b_fused, fKt_Beta_fused, fFT_Lkg_V0NORM;
-	fInt fSclk_margin, fSclk, fEVV_V;
-	fInt fV_min, fV_max, fT_prod, fLKG_Factor, fT_FT, fV_FT, fV_x, fTDP_Power, fTDP_Power_right, fTDP_Power_left, fTDP_Current, fV_NL;
-	uint32_t ul_FT_Lkg_V0NORM;
-	fInt fLn_MaxDivMin, fMin, fAverage, fRange;
-	fInt fRoots[2];
-	fInt fStepSize = GetScaledFraction(625, 100000);
-
-	int result;
-
-	getASICProfilingInfo = (ATOM_ASIC_PROFILING_INFO_V3_4 *)
-			smu_atom_get_data_table(hwmgr->adev,
-					GetIndexIntoMasterTable(DATA, ASIC_ProfilingInfo),
-					NULL, NULL, NULL);
-
-	if (!getASICProfilingInfo)
-		return -1;
-
-	if (getASICProfilingInfo->asHeader.ucTableFormatRevision < 3 ||
-	    (getASICProfilingInfo->asHeader.ucTableFormatRevision == 3 &&
-	     getASICProfilingInfo->asHeader.ucTableContentRevision < 4))
-		return -1;
-
-	/*-----------------------------------------------------------
-	 *GETTING MULTI-STEP PARAMETERS RELATED TO CURRENT DPM LEVEL
-	 *-----------------------------------------------------------
-	 */
-	fRLL_LoadLine = Divide(getASICProfilingInfo->ulLoadLineSlop, 1000);
-
-	switch (dpm_level) {
-	case 1:
-		fPowerDPMx = Convert_ULONG_ToFraction(le16_to_cpu(getASICProfilingInfo->usPowerDpm1));
-		fDerateTDP = GetScaledFraction(le32_to_cpu(getASICProfilingInfo->ulTdpDerateDPM1), 1000);
-		break;
-	case 2:
-		fPowerDPMx = Convert_ULONG_ToFraction(le16_to_cpu(getASICProfilingInfo->usPowerDpm2));
-		fDerateTDP = GetScaledFraction(le32_to_cpu(getASICProfilingInfo->ulTdpDerateDPM2), 1000);
-		break;
-	case 3:
-		fPowerDPMx = Convert_ULONG_ToFraction(le16_to_cpu(getASICProfilingInfo->usPowerDpm3));
-		fDerateTDP = GetScaledFraction(le32_to_cpu(getASICProfilingInfo->ulTdpDerateDPM3), 1000);
-		break;
-	case 4:
-		fPowerDPMx = Convert_ULONG_ToFraction(le16_to_cpu(getASICProfilingInfo->usPowerDpm4));
-		fDerateTDP = GetScaledFraction(le32_to_cpu(getASICProfilingInfo->ulTdpDerateDPM4), 1000);
-		break;
-	case 5:
-		fPowerDPMx = Convert_ULONG_ToFraction(le16_to_cpu(getASICProfilingInfo->usPowerDpm5));
-		fDerateTDP = GetScaledFraction(le32_to_cpu(getASICProfilingInfo->ulTdpDerateDPM5), 1000);
-		break;
-	case 6:
-		fPowerDPMx = Convert_ULONG_ToFraction(le16_to_cpu(getASICProfilingInfo->usPowerDpm6));
-		fDerateTDP = GetScaledFraction(le32_to_cpu(getASICProfilingInfo->ulTdpDerateDPM6), 1000);
-		break;
-	case 7:
-		fPowerDPMx = Convert_ULONG_ToFraction(le16_to_cpu(getASICProfilingInfo->usPowerDpm7));
-		fDerateTDP = GetScaledFraction(le32_to_cpu(getASICProfilingInfo->ulTdpDerateDPM7), 1000);
-		break;
-	default:
-		pr_err("DPM Level not supported\n");
-		fPowerDPMx = Convert_ULONG_ToFraction(1);
-		fDerateTDP = GetScaledFraction(le32_to_cpu(getASICProfilingInfo->ulTdpDerateDPM0), 1000);
-	}
-
-	/*-------------------------
-	 * DECODING FUSE VALUES
-	 * ------------------------
-	 */
-	/*Decode RO_Fused*/
-	sRO_fuse = getASICProfilingInfo->sRoFuse;
-
-	sInput_FuseValues.usEfuseIndex = sRO_fuse.usEfuseIndex;
-	sInput_FuseValues.ucBitShift = sRO_fuse.ucEfuseBitLSB;
-	sInput_FuseValues.ucBitLength = sRO_fuse.ucEfuseLength;
-
-	sOutput_FuseValues.sEfuse = sInput_FuseValues;
-
-	result = amdgpu_atom_execute_table(adev->mode_info.atom_context,
-			GetIndexIntoMasterTable(COMMAND, ReadEfuseValue),
-			(uint32_t *)&sOutput_FuseValues);
-
-	if (result)
-		return result;
-
-	/* Finally, the actual fuse value */
-	ul_RO_fused = le32_to_cpu(sOutput_FuseValues.ulEfuseValue);
-	fMin = GetScaledFraction(le32_to_cpu(sRO_fuse.ulEfuseMin), 1);
-	fRange = GetScaledFraction(le32_to_cpu(sRO_fuse.ulEfuseEncodeRange), 1);
-	fRO_fused = fDecodeLinearFuse(ul_RO_fused, fMin, fRange, sRO_fuse.ucEfuseLength);
-
-	sCACm_fuse = getASICProfilingInfo->sCACm;
-
-	sInput_FuseValues.usEfuseIndex = sCACm_fuse.usEfuseIndex;
-	sInput_FuseValues.ucBitShift = sCACm_fuse.ucEfuseBitLSB;
-	sInput_FuseValues.ucBitLength = sCACm_fuse.ucEfuseLength;
-
-	sOutput_FuseValues.sEfuse = sInput_FuseValues;
-
-	result = amdgpu_atom_execute_table(adev->mode_info.atom_context,
-			GetIndexIntoMasterTable(COMMAND, ReadEfuseValue),
-			(uint32_t *)&sOutput_FuseValues);
-
-	if (result)
-		return result;
-
-	ul_CACm_fused = le32_to_cpu(sOutput_FuseValues.ulEfuseValue);
-	fMin = GetScaledFraction(le32_to_cpu(sCACm_fuse.ulEfuseMin), 1000);
-	fRange = GetScaledFraction(le32_to_cpu(sCACm_fuse.ulEfuseEncodeRange), 1000);
-
-	fCACm_fused = fDecodeLinearFuse(ul_CACm_fused, fMin, fRange, sCACm_fuse.ucEfuseLength);
-
-	sCACb_fuse = getASICProfilingInfo->sCACb;
-
-	sInput_FuseValues.usEfuseIndex = sCACb_fuse.usEfuseIndex;
-	sInput_FuseValues.ucBitShift = sCACb_fuse.ucEfuseBitLSB;
-	sInput_FuseValues.ucBitLength = sCACb_fuse.ucEfuseLength;
-	sOutput_FuseValues.sEfuse = sInput_FuseValues;
-
-	result = amdgpu_atom_execute_table(adev->mode_info.atom_context,
-			GetIndexIntoMasterTable(COMMAND, ReadEfuseValue),
-			(uint32_t *)&sOutput_FuseValues);
-
-	if (result)
-		return result;
-
-	ul_CACb_fused = le32_to_cpu(sOutput_FuseValues.ulEfuseValue);
-	fMin = GetScaledFraction(le32_to_cpu(sCACb_fuse.ulEfuseMin), 1000);
-	fRange = GetScaledFraction(le32_to_cpu(sCACb_fuse.ulEfuseEncodeRange), 1000);
-
-	fCACb_fused = fDecodeLinearFuse(ul_CACb_fused, fMin, fRange, sCACb_fuse.ucEfuseLength);
-
-	sKt_Beta_fuse = getASICProfilingInfo->sKt_b;
-
-	sInput_FuseValues.usEfuseIndex = sKt_Beta_fuse.usEfuseIndex;
-	sInput_FuseValues.ucBitShift = sKt_Beta_fuse.ucEfuseBitLSB;
-	sInput_FuseValues.ucBitLength = sKt_Beta_fuse.ucEfuseLength;
-
-	sOutput_FuseValues.sEfuse = sInput_FuseValues;
-
-	result = amdgpu_atom_execute_table(adev->mode_info.atom_context,
-			GetIndexIntoMasterTable(COMMAND, ReadEfuseValue),
-			(uint32_t *)&sOutput_FuseValues);
-
-	if (result)
-		return result;
-
-	ul_Kt_Beta_fused = le32_to_cpu(sOutput_FuseValues.ulEfuseValue);
-	fAverage = GetScaledFraction(le32_to_cpu(sKt_Beta_fuse.ulEfuseEncodeAverage), 1000);
-	fRange = GetScaledFraction(le32_to_cpu(sKt_Beta_fuse.ulEfuseEncodeRange), 1000);
-
-	fKt_Beta_fused = fDecodeLogisticFuse(ul_Kt_Beta_fused,
-			fAverage, fRange, sKt_Beta_fuse.ucEfuseLength);
-
-	sKv_m_fuse = getASICProfilingInfo->sKv_m;
-
-	sInput_FuseValues.usEfuseIndex = sKv_m_fuse.usEfuseIndex;
-	sInput_FuseValues.ucBitShift = sKv_m_fuse.ucEfuseBitLSB;
-	sInput_FuseValues.ucBitLength = sKv_m_fuse.ucEfuseLength;
-
-	sOutput_FuseValues.sEfuse = sInput_FuseValues;
-
-	result = amdgpu_atom_execute_table(adev->mode_info.atom_context,
-			GetIndexIntoMasterTable(COMMAND, ReadEfuseValue),
-			(uint32_t *)&sOutput_FuseValues);
-	if (result)
-		return result;
-
-	ul_Kv_m_fused = le32_to_cpu(sOutput_FuseValues.ulEfuseValue);
-	fAverage = GetScaledFraction(le32_to_cpu(sKv_m_fuse.ulEfuseEncodeAverage), 1000);
-	fRange = GetScaledFraction((le32_to_cpu(sKv_m_fuse.ulEfuseEncodeRange) & 0x7fffffff), 1000);
-	fRange = fMultiply(fRange, ConvertToFraction(-1));
-
-	fKv_m_fused = fDecodeLogisticFuse(ul_Kv_m_fused,
-			fAverage, fRange, sKv_m_fuse.ucEfuseLength);
-
-	sKv_b_fuse = getASICProfilingInfo->sKv_b;
-
-	sInput_FuseValues.usEfuseIndex = sKv_b_fuse.usEfuseIndex;
-	sInput_FuseValues.ucBitShift = sKv_b_fuse.ucEfuseBitLSB;
-	sInput_FuseValues.ucBitLength = sKv_b_fuse.ucEfuseLength;
-	sOutput_FuseValues.sEfuse = sInput_FuseValues;
-
-	result = amdgpu_atom_execute_table(adev->mode_info.atom_context,
-			GetIndexIntoMasterTable(COMMAND, ReadEfuseValue),
-			(uint32_t *)&sOutput_FuseValues);
-
-	if (result)
-		return result;
-
-	ul_Kv_b_fused = le32_to_cpu(sOutput_FuseValues.ulEfuseValue);
-	fAverage = GetScaledFraction(le32_to_cpu(sKv_b_fuse.ulEfuseEncodeAverage), 1000);
-	fRange = GetScaledFraction(le32_to_cpu(sKv_b_fuse.ulEfuseEncodeRange), 1000);
-
-	fKv_b_fused = fDecodeLogisticFuse(ul_Kv_b_fused,
-			fAverage, fRange, sKv_b_fuse.ucEfuseLength);
-
-	/* Decoding the Leakage - No special struct container */
-	/*
-	 * usLkgEuseIndex=56
-	 * ucLkgEfuseBitLSB=6
-	 * ucLkgEfuseLength=10
-	 * ulLkgEncodeLn_MaxDivMin=69077
-	 * ulLkgEncodeMax=1000000
-	 * ulLkgEncodeMin=1000
-	 * ulEfuseLogisticAlpha=13
-	 */
-
-	sInput_FuseValues.usEfuseIndex = getASICProfilingInfo->usLkgEuseIndex;
-	sInput_FuseValues.ucBitShift = getASICProfilingInfo->ucLkgEfuseBitLSB;
-	sInput_FuseValues.ucBitLength = getASICProfilingInfo->ucLkgEfuseLength;
-
-	sOutput_FuseValues.sEfuse = sInput_FuseValues;
-
-	result = amdgpu_atom_execute_table(adev->mode_info.atom_context,
-			GetIndexIntoMasterTable(COMMAND, ReadEfuseValue),
-			(uint32_t *)&sOutput_FuseValues);
-
-	if (result)
-		return result;
-
-	ul_FT_Lkg_V0NORM = le32_to_cpu(sOutput_FuseValues.ulEfuseValue);
-	fLn_MaxDivMin = GetScaledFraction(le32_to_cpu(getASICProfilingInfo->ulLkgEncodeLn_MaxDivMin), 10000);
-	fMin = GetScaledFraction(le32_to_cpu(getASICProfilingInfo->ulLkgEncodeMin), 10000);
-
-	fFT_Lkg_V0NORM = fDecodeLeakageID(ul_FT_Lkg_V0NORM,
-			fLn_MaxDivMin, fMin, getASICProfilingInfo->ucLkgEfuseLength);
-	fLkg_FT = fFT_Lkg_V0NORM;
-
-	/*-------------------------------------------
-	 * PART 2 - Grabbing all required values
-	 *-------------------------------------------
-	 */
-	fSM_A0 = fMultiply(GetScaledFraction(le32_to_cpu(getASICProfilingInfo->ulSM_A0), 1000000),
-			ConvertToFraction(uPow(-1, getASICProfilingInfo->ucSM_A0_sign)));
-	fSM_A1 = fMultiply(GetScaledFraction(le32_to_cpu(getASICProfilingInfo->ulSM_A1), 1000000),
-			ConvertToFraction(uPow(-1, getASICProfilingInfo->ucSM_A1_sign)));
-	fSM_A2 = fMultiply(GetScaledFraction(le32_to_cpu(getASICProfilingInfo->ulSM_A2), 100000),
-			ConvertToFraction(uPow(-1, getASICProfilingInfo->ucSM_A2_sign)));
-	fSM_A3 = fMultiply(GetScaledFraction(le32_to_cpu(getASICProfilingInfo->ulSM_A3), 1000000),
-			ConvertToFraction(uPow(-1, getASICProfilingInfo->ucSM_A3_sign)));
-	fSM_A4 = fMultiply(GetScaledFraction(le32_to_cpu(getASICProfilingInfo->ulSM_A4), 1000000),
-			ConvertToFraction(uPow(-1, getASICProfilingInfo->ucSM_A4_sign)));
-	fSM_A5 = fMultiply(GetScaledFraction(le32_to_cpu(getASICProfilingInfo->ulSM_A5), 1000),
-			ConvertToFraction(uPow(-1, getASICProfilingInfo->ucSM_A5_sign)));
-	fSM_A6 = fMultiply(GetScaledFraction(le32_to_cpu(getASICProfilingInfo->ulSM_A6), 1000),
-			ConvertToFraction(uPow(-1, getASICProfilingInfo->ucSM_A6_sign)));
-	fSM_A7 = fMultiply(GetScaledFraction(le32_to_cpu(getASICProfilingInfo->ulSM_A7), 1000),
-			ConvertToFraction(uPow(-1, getASICProfilingInfo->ucSM_A7_sign)));
-
-	fMargin_RO_a = ConvertToFraction(le32_to_cpu(getASICProfilingInfo->ulMargin_RO_a));
-	fMargin_RO_b = ConvertToFraction(le32_to_cpu(getASICProfilingInfo->ulMargin_RO_b));
-	fMargin_RO_c = ConvertToFraction(le32_to_cpu(getASICProfilingInfo->ulMargin_RO_c));
-
-	fMargin_fixed = ConvertToFraction(le32_to_cpu(getASICProfilingInfo->ulMargin_fixed));
-
-	fMargin_FMAX_mean = GetScaledFraction(
-		le32_to_cpu(getASICProfilingInfo->ulMargin_Fmax_mean), 10000);
-	fMargin_Plat_mean = GetScaledFraction(
-		le32_to_cpu(getASICProfilingInfo->ulMargin_plat_mean), 10000);
-	fMargin_FMAX_sigma = GetScaledFraction(
-		le32_to_cpu(getASICProfilingInfo->ulMargin_Fmax_sigma), 10000);
-	fMargin_Plat_sigma = GetScaledFraction(
-		le32_to_cpu(getASICProfilingInfo->ulMargin_plat_sigma), 10000);
-
-	fMargin_DC_sigma = GetScaledFraction(
-		le32_to_cpu(getASICProfilingInfo->ulMargin_DC_sigma), 100);
-	fMargin_DC_sigma = fDivide(fMargin_DC_sigma, ConvertToFraction(1000));
-
-	fCACm_fused = fDivide(fCACm_fused, ConvertToFraction(100));
-	fCACb_fused = fDivide(fCACb_fused, ConvertToFraction(100));
-	fKt_Beta_fused = fDivide(fKt_Beta_fused, ConvertToFraction(100));
-	fKv_m_fused =  fNegate(fDivide(fKv_m_fused, ConvertToFraction(100)));
-	fKv_b_fused = fDivide(fKv_b_fused, ConvertToFraction(10));
-
-	fSclk = GetScaledFraction(sclk, 100);
-
-	fV_max = fDivide(GetScaledFraction(
-				 le32_to_cpu(getASICProfilingInfo->ulMaxVddc), 1000), ConvertToFraction(4));
-	fT_prod = GetScaledFraction(le32_to_cpu(getASICProfilingInfo->ulBoardCoreTemp), 10);
-	fLKG_Factor = GetScaledFraction(le32_to_cpu(getASICProfilingInfo->ulEvvLkgFactor), 100);
-	fT_FT = GetScaledFraction(le32_to_cpu(getASICProfilingInfo->ulLeakageTemp), 10);
-	fV_FT = fDivide(GetScaledFraction(
-				le32_to_cpu(getASICProfilingInfo->ulLeakageVoltage), 1000), ConvertToFraction(4));
-	fV_min = fDivide(GetScaledFraction(
-				 le32_to_cpu(getASICProfilingInfo->ulMinVddc), 1000), ConvertToFraction(4));
-
-	/*-----------------------
-	 * PART 3
-	 *-----------------------
-	 */
-
-	fA_Term = fAdd(fMargin_RO_a, fAdd(fMultiply(fSM_A4, fSclk), fSM_A5));
-	fB_Term = fAdd(fAdd(fMultiply(fSM_A2, fSclk), fSM_A6), fMargin_RO_b);
-	fC_Term = fAdd(fMargin_RO_c,
-			fAdd(fMultiply(fSM_A0, fLkg_FT),
-			fAdd(fMultiply(fSM_A1, fMultiply(fLkg_FT, fSclk)),
-			fAdd(fMultiply(fSM_A3, fSclk),
-			fSubtract(fSM_A7, fRO_fused)))));
-
-	fVDDC_base = fSubtract(fRO_fused,
-			fSubtract(fMargin_RO_c,
-					fSubtract(fSM_A3, fMultiply(fSM_A1, fSclk))));
-	fVDDC_base = fDivide(fVDDC_base, fAdd(fMultiply(fSM_A0, fSclk), fSM_A2));
-
-	repeat = fSubtract(fVDDC_base,
-			fDivide(fMargin_DC_sigma, ConvertToFraction(1000)));
-
-	fRO_DC_margin = fAdd(fMultiply(fMargin_RO_a,
-			fGetSquare(repeat)),
-			fAdd(fMultiply(fMargin_RO_b, repeat),
-			fMargin_RO_c));
-
-	fDC_SCLK = fSubtract(fRO_fused,
-			fSubtract(fRO_DC_margin,
-			fSubtract(fSM_A3,
-			fMultiply(fSM_A2, repeat))));
-	fDC_SCLK = fDivide(fDC_SCLK, fAdd(fMultiply(fSM_A0, repeat), fSM_A1));
-
-	fSigma_DC = fSubtract(fSclk, fDC_SCLK);
-
-	fMicro_FMAX = fMultiply(fSclk, fMargin_FMAX_mean);
-	fMicro_CR = fMultiply(fSclk, fMargin_Plat_mean);
-	fSigma_FMAX = fMultiply(fSclk, fMargin_FMAX_sigma);
-	fSigma_CR = fMultiply(fSclk, fMargin_Plat_sigma);
-
-	fSquared_Sigma_DC = fGetSquare(fSigma_DC);
-	fSquared_Sigma_CR = fGetSquare(fSigma_CR);
-	fSquared_Sigma_FMAX = fGetSquare(fSigma_FMAX);
-
-	fSclk_margin = fAdd(fMicro_FMAX,
-			fAdd(fMicro_CR,
-			fAdd(fMargin_fixed,
-			fSqrt(fAdd(fSquared_Sigma_FMAX,
-			fAdd(fSquared_Sigma_DC, fSquared_Sigma_CR))))));
-	/*
-	 fA_Term = fSM_A4 * (fSclk + fSclk_margin) + fSM_A5;
-	 fB_Term = fSM_A2 * (fSclk + fSclk_margin) + fSM_A6;
-	 fC_Term = fRO_DC_margin + fSM_A0 * fLkg_FT + fSM_A1 * fLkg_FT * (fSclk + fSclk_margin) + fSM_A3 * (fSclk + fSclk_margin) + fSM_A7 - fRO_fused;
-	 */
-
-	fA_Term = fAdd(fMultiply(fSM_A4, fAdd(fSclk, fSclk_margin)), fSM_A5);
-	fB_Term = fAdd(fMultiply(fSM_A2, fAdd(fSclk, fSclk_margin)), fSM_A6);
-	fC_Term = fAdd(fRO_DC_margin,
-			fAdd(fMultiply(fSM_A0, fLkg_FT),
-			fAdd(fMultiply(fMultiply(fSM_A1, fLkg_FT),
-			fAdd(fSclk, fSclk_margin)),
-			fAdd(fMultiply(fSM_A3,
-			fAdd(fSclk, fSclk_margin)),
-			fSubtract(fSM_A7, fRO_fused)))));
-
-	SolveQuadracticEqn(fA_Term, fB_Term, fC_Term, fRoots);
-
-	if (GreaterThan(fRoots[0], fRoots[1]))
-		fEVV_V = fRoots[1];
-	else
-		fEVV_V = fRoots[0];
-
-	if (GreaterThan(fV_min, fEVV_V))
-		fEVV_V = fV_min;
-	else if (GreaterThan(fEVV_V, fV_max))
-		fEVV_V = fSubtract(fV_max, fStepSize);
-
-	fEVV_V = fRoundUpByStepSize(fEVV_V, fStepSize, 0);
-
-	/*-----------------
-	 * PART 4
-	 *-----------------
-	 */
-
-	fV_x = fV_min;
-
-	while (GreaterThan(fAdd(fV_max, fStepSize), fV_x)) {
-		fTDP_Power_left = fMultiply(fMultiply(fMultiply(fAdd(
-				fMultiply(fCACm_fused, fV_x), fCACb_fused), fSclk),
-				fGetSquare(fV_x)), fDerateTDP);
-
-		fTDP_Power_right = fMultiply(fFT_Lkg_V0NORM, fMultiply(fLKG_Factor,
-				fMultiply(fExponential(fMultiply(fAdd(fMultiply(fKv_m_fused,
-				fT_prod), fKv_b_fused), fV_x)), fV_x)));
-		fTDP_Power_right = fMultiply(fTDP_Power_right, fExponential(fMultiply(
-				fKt_Beta_fused, fT_prod)));
-		fTDP_Power_right = fDivide(fTDP_Power_right, fExponential(fMultiply(
-				fAdd(fMultiply(fKv_m_fused, fT_prod), fKv_b_fused), fV_FT)));
-		fTDP_Power_right = fDivide(fTDP_Power_right, fExponential(fMultiply(
-				fKt_Beta_fused, fT_FT)));
-
-		fTDP_Power = fAdd(fTDP_Power_left, fTDP_Power_right);
-
-		fTDP_Current = fDivide(fTDP_Power, fV_x);
-
-		fV_NL = fAdd(fV_x, fDivide(fMultiply(fTDP_Current, fRLL_LoadLine),
-				ConvertToFraction(10)));
-
-		fV_NL = fRoundUpByStepSize(fV_NL, fStepSize, 0);
-
-		if (GreaterThan(fV_max, fV_NL) &&
-			(GreaterThan(fV_NL, fEVV_V) ||
-			Equal(fV_NL, fEVV_V))) {
-			fV_NL = fMultiply(fV_NL, ConvertToFraction(1000));
-
-			*voltage = (uint16_t)fV_NL.partial.real;
-			break;
-		} else
-			fV_x = fAdd(fV_x, fStepSize);
-	}
-
-	return result;
-}
-
-/** atomctrl_get_voltage_evv_on_sclk gets voltage via call to ATOM COMMAND table.
- * @param hwmgr	input: pointer to hwManager
- * @param voltage_type            input: type of EVV voltage VDDC or VDDGFX
- * @param sclk                        input: in 10Khz unit. DPM state SCLK frequency
- *		which is define in PPTable SCLK/VDDC dependence
- *				table associated with this virtual_voltage_Id
- * @param virtual_voltage_Id      input: voltage id which match per voltage DPM state: 0xff01, 0xff02.. 0xff08
- * @param voltage		       output: real voltage level in unit of mv
+/**
+ * atomctrl_get_voltage_evv_on_sclk: gets voltage via call to ATOM COMMAND table.
+ * @hwmgr:              input: pointer to hwManager
+ * @voltage_type:       input: type of EVV voltage VDDC or VDDGFX
+ * @sclk:               input: in 10Khz unit. DPM state SCLK frequency
+ *		         which is define in PPTable SCLK/VDDC dependence
+ *			 table associated with this virtual_voltage_Id
+ * @virtual_voltage_Id: input: voltage id which match per voltage DPM state: 0xff01, 0xff02.. 0xff08
+ * @voltage: 	        output: real voltage level in unit of mv
  */
 int atomctrl_get_voltage_evv_on_sclk(
 		struct pp_hwmgr *hwmgr,
@@ -1102,7 +707,7 @@ int atomctrl_get_voltage_evv_on_sclk(
 
 	result = amdgpu_atom_execute_table(adev->mode_info.atom_context,
 			GetIndexIntoMasterTable(COMMAND, GetVoltageInfo),
-			(uint32_t *)&get_voltage_info_param_space);
+			(uint32_t *)&get_voltage_info_param_space, sizeof(get_voltage_info_param_space));
 
 	*voltage = result ? 0 :
 			le16_to_cpu(((GET_EVV_VOLTAGE_INFO_OUTPUT_PARAMETER_V1_2 *)
@@ -1112,10 +717,10 @@ int atomctrl_get_voltage_evv_on_sclk(
 }
 
 /**
- * atomctrl_get_voltage_evv gets voltage via call to ATOM COMMAND table.
- * @param hwmgr	input: pointer to hwManager
- * @param virtual_voltage_id      input: voltage id which match per voltage DPM state: 0xff01, 0xff02.. 0xff08
- * @param voltage		       output: real voltage level in unit of mv
+ * atomctrl_get_voltage_evv: gets voltage via call to ATOM COMMAND table.
+ * @hwmgr:              input: pointer to hwManager
+ * @virtual_voltage_id: input: voltage id which match per voltage DPM state: 0xff01, 0xff02.. 0xff08
+ * @voltage: 	       output: real voltage level in unit of mv
  */
 int atomctrl_get_voltage_evv(struct pp_hwmgr *hwmgr,
 			     uint16_t virtual_voltage_id,
@@ -1147,7 +752,7 @@ int atomctrl_get_voltage_evv(struct pp_hwmgr *hwmgr,
 
 	result = amdgpu_atom_execute_table(adev->mode_info.atom_context,
 			GetIndexIntoMasterTable(COMMAND, GetVoltageInfo),
-			(uint32_t *)&get_voltage_info_param_space);
+			(uint32_t *)&get_voltage_info_param_space, sizeof(get_voltage_info_param_space));
 
 	if (0 != result)
 		return result;
@@ -1158,7 +763,7 @@ int atomctrl_get_voltage_evv(struct pp_hwmgr *hwmgr,
 	return result;
 }
 
-/**
+/*
  * Get the mpll reference clock in 10KHz
  */
 uint32_t atomctrl_get_mpll_reference_clock(struct pp_hwmgr *hwmgr)
@@ -1191,7 +796,7 @@ uint32_t atomctrl_get_mpll_reference_clock(struct pp_hwmgr *hwmgr)
 	return clock;
 }
 
-/**
+/*
  * Get the asic internal spread spectrum table
  */
 static ATOM_ASIC_INTERNAL_SS_INFO *asic_internal_ss_get_ss_table(void *device)
@@ -1208,7 +813,18 @@ static ATOM_ASIC_INTERNAL_SS_INFO *asic_internal_ss_get_ss_table(void *device)
 	return table;
 }
 
-/**
+bool atomctrl_is_asic_internal_ss_supported(struct pp_hwmgr *hwmgr)
+{
+	ATOM_ASIC_INTERNAL_SS_INFO *table =
+		asic_internal_ss_get_ss_table(hwmgr->adev);
+
+	if (table)
+		return true;
+	else
+		return false;
+}
+
+/*
  * Get the asic internal spread spectrum assignment
  */
 static int asic_internal_ss_get_ss_asignment(struct pp_hwmgr *hwmgr,
@@ -1271,7 +887,7 @@ static int asic_internal_ss_get_ss_asignment(struct pp_hwmgr *hwmgr,
 	return entry_found ? 0 : 1;
 }
 
-/**
+/*
  * Get the memory clock spread spectrum info
  */
 int atomctrl_get_memory_clock_spread_spectrum(
@@ -1282,7 +898,8 @@ int atomctrl_get_memory_clock_spread_spectrum(
 	return asic_internal_ss_get_ss_asignment(hwmgr,
 			ASIC_INTERNAL_MEMORY_SS, memory_clock, ssInfo);
 }
-/**
+
+/*
  * Get the engine clock spread spectrum info
  */
 int atomctrl_get_engine_clock_spread_spectrum(
@@ -1295,11 +912,17 @@ int atomctrl_get_engine_clock_spread_spectrum(
 }
 
 int atomctrl_read_efuse(struct pp_hwmgr *hwmgr, uint16_t start_index,
-		uint16_t end_index, uint32_t mask, uint32_t *efuse)
+		uint16_t end_index, uint32_t *efuse)
 {
 	struct amdgpu_device *adev = hwmgr->adev;
+	uint32_t mask;
 	int result;
 	READ_EFUSE_VALUE_PARAMETER efuse_param;
+
+	if ((end_index - start_index)  == 31)
+		mask = 0xFFFFFFFF;
+	else
+		mask = (1 << ((end_index - start_index) + 1)) - 1;
 
 	efuse_param.sEfuse.usEfuseIndex = cpu_to_le16((start_index / 32) * 4);
 	efuse_param.sEfuse.ucBitShift = (uint8_t)
@@ -1309,7 +932,7 @@ int atomctrl_read_efuse(struct pp_hwmgr *hwmgr, uint16_t start_index,
 
 	result = amdgpu_atom_execute_table(adev->mode_info.atom_context,
 			GetIndexIntoMasterTable(COMMAND, ReadEfuseValue),
-			(uint32_t *)&efuse_param);
+			(uint32_t *)&efuse_param, sizeof(efuse_param));
 	*efuse = result ? 0 : le32_to_cpu(efuse_param.ulEfuseValue) & mask;
 
 	return result;
@@ -1330,7 +953,7 @@ int atomctrl_set_ac_timing_ai(struct pp_hwmgr *hwmgr, uint32_t memory_clock,
 
 	result = amdgpu_atom_execute_table(adev->mode_info.atom_context,
 		 GetIndexIntoMasterTable(COMMAND, DynamicMemorySettings),
-		(uint32_t *)&memory_clock_parameters);
+		(uint32_t *)&memory_clock_parameters, sizeof(memory_clock_parameters));
 
 	return result;
 }
@@ -1349,7 +972,7 @@ int atomctrl_get_voltage_evv_on_sclk_ai(struct pp_hwmgr *hwmgr, uint8_t voltage_
 
 	result = amdgpu_atom_execute_table(adev->mode_info.atom_context,
 			GetIndexIntoMasterTable(COMMAND, GetVoltageInfo),
-			(uint32_t *)&get_voltage_info_param_space);
+			(uint32_t *)&get_voltage_info_param_space, sizeof(get_voltage_info_param_space));
 
 	*voltage = result ? 0 :
 		le32_to_cpu(((GET_EVV_VOLTAGE_INFO_OUTPUT_PARAMETER_V1_3 *)(&get_voltage_info_param_space))->ulVoltageLevel);
@@ -1380,6 +1003,20 @@ int atomctrl_get_smc_sclk_range_table(struct pp_hwmgr *hwmgr, struct pp_atom_ctr
 		table->entry[i].usRcw_trans_lower =
 			le16_to_cpu(psmu_info->asSclkFcwRangeEntry[i].ucRcw_trans_lower);
 	}
+
+	return 0;
+}
+
+int atomctrl_get_vddc_shared_railinfo(struct pp_hwmgr *hwmgr, uint8_t *shared_rail)
+{
+	ATOM_SMU_INFO_V2_1 *psmu_info =
+		(ATOM_SMU_INFO_V2_1 *)smu_atom_get_data_table(hwmgr->adev,
+			GetIndexIntoMasterTable(DATA, SMU_Info),
+			NULL, NULL, NULL);
+	if (!psmu_info)
+		return -1;
+
+	*shared_rail = psmu_info->ucSharePowerSource;
 
 	return 0;
 }
@@ -1462,7 +1099,7 @@ int atomctrl_get_leakage_id_from_efuse(struct pp_hwmgr *hwmgr, uint16_t *virtual
 
 	result = amdgpu_atom_execute_table(adev->mode_info.atom_context,
 			GetIndexIntoMasterTable(COMMAND, SetVoltage),
-			(uint32_t *)voltage_parameters);
+			(uint32_t *)voltage_parameters, sizeof(*voltage_parameters));
 
 	*virtual_voltage_id = voltage_parameters->usVoltageLevel;
 
@@ -1559,4 +1196,57 @@ void atomctrl_get_voltage_range(struct pp_hwmgr *hwmgr, uint32_t *max_vddc,
 	}
 	*max_vddc = 0;
 	*min_vddc = 0;
+}
+
+int atomctrl_get_edc_hilo_leakage_offset_table(struct pp_hwmgr *hwmgr,
+					       AtomCtrl_HiLoLeakageOffsetTable *table)
+{
+	ATOM_GFX_INFO_V2_3 *gfxinfo = smu_atom_get_data_table(hwmgr->adev,
+					GetIndexIntoMasterTable(DATA, GFX_Info),
+					NULL, NULL, NULL);
+	if (!gfxinfo)
+		return -ENOENT;
+
+	table->usHiLoLeakageThreshold = gfxinfo->usHiLoLeakageThreshold;
+	table->usEdcDidtLoDpm7TableOffset = gfxinfo->usEdcDidtLoDpm7TableOffset;
+	table->usEdcDidtHiDpm7TableOffset = gfxinfo->usEdcDidtHiDpm7TableOffset;
+
+	return 0;
+}
+
+static AtomCtrl_EDCLeakgeTable *get_edc_leakage_table(struct pp_hwmgr *hwmgr,
+						      uint16_t offset)
+{
+	void *table_address;
+	char *temp;
+
+	table_address = smu_atom_get_data_table(hwmgr->adev,
+			GetIndexIntoMasterTable(DATA, GFX_Info),
+			NULL, NULL, NULL);
+	if (!table_address)
+		return NULL;
+
+	temp = (char *)table_address;
+	table_address += offset;
+
+	return (AtomCtrl_EDCLeakgeTable *)temp;
+}
+
+int atomctrl_get_edc_leakage_table(struct pp_hwmgr *hwmgr,
+				   AtomCtrl_EDCLeakgeTable *table,
+				   uint16_t offset)
+{
+	uint32_t length, i;
+	AtomCtrl_EDCLeakgeTable *leakage_table =
+		get_edc_leakage_table(hwmgr, offset);
+
+	if (!leakage_table)
+		return -ENOENT;
+
+	length = sizeof(leakage_table->DIDT_REG) /
+		 sizeof(leakage_table->DIDT_REG[0]);
+	for (i = 0; i < length; i++)
+		table->DIDT_REG[i] = leakage_table->DIDT_REG[i];
+
+	return 0;
 }

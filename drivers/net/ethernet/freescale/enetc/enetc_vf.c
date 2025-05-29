@@ -78,17 +78,37 @@ static int enetc_vf_set_mac_addr(struct net_device *ndev, void *addr)
 {
 	struct enetc_ndev_priv *priv = netdev_priv(ndev);
 	struct sockaddr *saddr = addr;
+	int err;
 
 	if (!is_valid_ether_addr(saddr->sa_data))
 		return -EADDRNOTAVAIL;
 
-	return enetc_msg_vsi_set_primary_mac_addr(priv, saddr);
+	err = enetc_msg_vsi_set_primary_mac_addr(priv, saddr);
+	if (err)
+		return err;
+
+	eth_hw_addr_set(ndev, saddr->sa_data);
+
+	return 0;
 }
 
 static int enetc_vf_set_features(struct net_device *ndev,
 				 netdev_features_t features)
 {
-	return enetc_set_features(ndev, features);
+	enetc_set_features(ndev, features);
+
+	return 0;
+}
+
+static int enetc_vf_setup_tc(struct net_device *ndev, enum tc_setup_type type,
+			     void *type_data)
+{
+	switch (type) {
+	case TC_SETUP_QDISC_MQPRIO:
+		return enetc_setup_tc_mqprio(ndev, type_data);
+	default:
+		return -EOPNOTSUPP;
+	}
 }
 
 /* Probing/ Init */
@@ -99,8 +119,8 @@ static const struct net_device_ops enetc_ndev_ops = {
 	.ndo_get_stats		= enetc_get_stats,
 	.ndo_set_mac_address	= enetc_vf_set_mac_addr,
 	.ndo_set_features	= enetc_vf_set_features,
-	.ndo_do_ioctl		= enetc_ioctl,
-	.ndo_setup_tc		= enetc_setup_tc,
+	.ndo_eth_ioctl		= enetc_ioctl,
+	.ndo_setup_tc		= enetc_vf_setup_tc,
 };
 
 static void enetc_vf_netdev_setup(struct enetc_si *si, struct net_device *ndev,
@@ -115,29 +135,28 @@ static void enetc_vf_netdev_setup(struct enetc_si *si, struct net_device *ndev,
 	si->ndev = ndev;
 
 	priv->msg_enable = (NETIF_MSG_IFUP << 1) - 1;
+	priv->sysclk_freq = si->drvdata->sysclk_freq;
 	ndev->netdev_ops = ndev_ops;
 	enetc_set_ethtool_ops(ndev);
 	ndev->watchdog_timeo = 5 * HZ;
 	ndev->max_mtu = ENETC_MAX_MTU;
 
-	ndev->hw_features = NETIF_F_SG | NETIF_F_RXCSUM | NETIF_F_HW_CSUM |
+	ndev->hw_features = NETIF_F_SG | NETIF_F_RXCSUM |
 			    NETIF_F_HW_VLAN_CTAG_TX |
-			    NETIF_F_HW_VLAN_CTAG_RX;
-	ndev->features = NETIF_F_HIGHDMA | NETIF_F_SG |
-			 NETIF_F_RXCSUM | NETIF_F_HW_CSUM |
+			    NETIF_F_HW_VLAN_CTAG_RX |
+			    NETIF_F_HW_CSUM | NETIF_F_TSO | NETIF_F_TSO6;
+	ndev->features = NETIF_F_HIGHDMA | NETIF_F_SG | NETIF_F_RXCSUM |
 			 NETIF_F_HW_VLAN_CTAG_TX |
-			 NETIF_F_HW_VLAN_CTAG_RX;
+			 NETIF_F_HW_VLAN_CTAG_RX |
+			 NETIF_F_HW_CSUM | NETIF_F_TSO | NETIF_F_TSO6;
+	ndev->vlan_features = NETIF_F_SG | NETIF_F_HW_CSUM |
+			      NETIF_F_TSO | NETIF_F_TSO6;
 
 	if (si->num_rss)
 		ndev->hw_features |= NETIF_F_RXHASH;
 
-	if (si->errata & ENETC_ERR_TXCSUM) {
-		ndev->hw_features &= ~NETIF_F_HW_CSUM;
-		ndev->features &= ~NETIF_F_HW_CSUM;
-	}
-
 	/* pick up primary MAC address from SI */
-	enetc_get_primary_mac_addr(&si->hw, ndev->dev_addr);
+	enetc_load_primary_mac_addr(&si->hw, ndev);
 }
 
 static int enetc_vf_probe(struct pci_dev *pdev,
@@ -149,12 +168,17 @@ static int enetc_vf_probe(struct pci_dev *pdev,
 	int err;
 
 	err = enetc_pci_probe(pdev, KBUILD_MODNAME, 0);
-	if (err) {
-		dev_err(&pdev->dev, "PCI probing failed\n");
-		return err;
-	}
+	if (err)
+		return dev_err_probe(&pdev->dev, err, "PCI probing failed\n");
 
 	si = pci_get_drvdata(pdev);
+	si->revision = ENETC_REV_1_0;
+	err = enetc_get_driver_data(si);
+	if (err) {
+		dev_err_probe(&pdev->dev, err,
+			      "Could not get VF driver data\n");
+		goto err_alloc_netdev;
+	}
 
 	enetc_get_si_caps(si);
 
@@ -171,10 +195,21 @@ static int enetc_vf_probe(struct pci_dev *pdev,
 
 	enetc_init_si_rings_params(priv);
 
+	err = enetc_setup_cbdr(priv->dev, &si->hw, ENETC_CBDR_DEFAULT_SIZE,
+			       &si->cbd_ring);
+	if (err)
+		goto err_setup_cbdr;
+
 	err = enetc_alloc_si_resources(priv);
 	if (err) {
 		dev_err(&pdev->dev, "SI resource alloc failed\n");
 		goto err_alloc_si_res;
+	}
+
+	err = enetc_configure_si(priv);
+	if (err) {
+		dev_err(&pdev->dev, "Failed to configure SI\n");
+		goto err_config_si;
 	}
 
 	err = enetc_alloc_msix(priv);
@@ -193,9 +228,12 @@ static int enetc_vf_probe(struct pci_dev *pdev,
 
 err_reg_netdev:
 	enetc_free_msix(priv);
+err_config_si:
 err_alloc_msix:
 	enetc_free_si_resources(priv);
 err_alloc_si_res:
+	enetc_teardown_cbdr(&si->cbd_ring);
+err_setup_cbdr:
 	si->ndev = NULL;
 	free_netdev(ndev);
 err_alloc_netdev:
@@ -215,6 +253,7 @@ static void enetc_vf_remove(struct pci_dev *pdev)
 	enetc_free_msix(priv);
 
 	enetc_free_si_resources(priv);
+	enetc_teardown_cbdr(&si->cbd_ring);
 
 	free_netdev(si->ndev);
 

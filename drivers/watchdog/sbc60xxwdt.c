@@ -146,7 +146,7 @@ static void wdt_startup(void)
 static void wdt_turnoff(void)
 {
 	/* Stop the timer */
-	del_timer(&timer);
+	del_timer_sync(&timer);
 	inb_p(wdt_stop);
 	pr_info("Watchdog timer is now disabled...\n");
 }
@@ -275,7 +275,6 @@ static long fop_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 
 static const struct file_operations wdt_fops = {
 	.owner		= THIS_MODULE,
-	.llseek		= no_llseek,
 	.write		= fop_write,
 	.open		= fop_open,
 	.release	= fop_close,

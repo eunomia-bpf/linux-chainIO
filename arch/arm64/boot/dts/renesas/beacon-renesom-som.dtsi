@@ -4,17 +4,13 @@
  */
 
 #include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/clock/versaclock.h>
 
 / {
 	memory@48000000 {
 		device_type = "memory";
 		/* first 128MB is reserved for secure area. */
 		reg = <0x0 0x48000000 0x0 0x78000000>;
-	};
-
-	memory@600000000 {
-		device_type = "memory";
-		reg = <0x6 0x00000000 0x0 0x80000000>;
 	};
 
 	osc_32k: osc_32k {
@@ -24,7 +20,7 @@
 		clock-output-names = "osc_32k";
 	};
 
-	reg_1p8v: regulator0 {
+	reg_1p8v: regulator-1p8v {
 		compatible = "regulator-fixed";
 		regulator-name = "fixed-1.8V";
 		regulator-min-microvolt = <1800000>;
@@ -33,7 +29,7 @@
 		regulator-always-on;
 	};
 
-	reg_3p3v: regulator1 {
+	reg_3p3v: regulator-3p3v {
 		compatible = "regulator-fixed";
 		regulator-name = "fixed-3.3V";
 		regulator-min-microvolt = <3300000>;
@@ -54,14 +50,19 @@
 &avb {
 	pinctrl-0 = <&avb_pins>;
 	pinctrl-names = "default";
+	phy-mode = "rgmii-rxid";
 	phy-handle = <&phy0>;
-	phy-mode = "rgmii-id";
+	rx-internal-delay-ps = <1800>;
+	tx-internal-delay-ps = <2000>;
+	clocks = <&cpg CPG_MOD 812>, <&versaclock5 4>;
+	clock-names = "fck", "refclk";
 	status = "okay";
 
 	phy0: ethernet-phy@0 {
+		compatible = "ethernet-phy-id0022.1640",
+			     "ethernet-phy-ieee802.3-c22";
 		reg = <0>;
-		interrupt-parent = <&gpio2>;
-		interrupts = <11 IRQ_TYPE_LEVEL_LOW>;
+		interrupts-extended = <&gpio2 11 IRQ_TYPE_LEVEL_LOW>;
 		reset-gpios = <&gpio2 10 GPIO_ACTIVE_LOW>;
 	};
 };
@@ -75,7 +76,7 @@
 };
 
 &gpio6 {
-	usb_hub_reset {
+	usb-hub-reset-hog {
 		gpio-hog;
 		gpios = <10 GPIO_ACTIVE_HIGH>;
 		output-high;
@@ -88,7 +89,6 @@
 	pinctrl-names = "default";
 	uart-has-rtscts;
 	status = "okay";
-	max-speed = <4000000>;
 
 	bluetooth {
 		compatible = "brcm,bcm43438-bt";
@@ -97,6 +97,7 @@
 		device-wakeup-gpios = <&pca9654 5 GPIO_ACTIVE_HIGH>;
 		clocks = <&osc_32k>;
 		clock-names = "extclk";
+		max-speed = <4000000>;
 	};
 };
 
@@ -108,7 +109,7 @@
 
 &i2c4 {
 	status = "okay";
-	clock-frequency = <400000>;
+	clock-frequency = <100000>;
 
 	pca9654: gpio@20 {
 		compatible = "onnn,pca9654";
@@ -129,8 +130,7 @@
 	pca9654_lte: gpio@21 {
 		compatible = "onnn,pca9654";
 		reg = <0x21>;
-		interrupt-parent = <&gpio5>;
-		interrupts = <25 IRQ_TYPE_EDGE_FALLING>;
+		interrupts-extended = <&gpio5 25 IRQ_TYPE_EDGE_FALLING>;
 		interrupt-controller;
 		#interrupt-cells = <2>;
 		gpio-controller;
@@ -147,7 +147,7 @@
 	};
 
 	eeprom@50 {
-		compatible = "microchip,at24c64", "atmel,24c64";
+		compatible = "microchip,24c64", "atmel,24c64";
 		pagesize = <32>;
 		read-only;	/* Manufacturing EEPROM programmed at factory */
 		reg = <0x50>;
@@ -164,12 +164,39 @@
 		#clock-cells = <1>;
 		clocks = <&x304_clk>;
 		clock-names = "xin";
+		idt,shutdown = <0>;
+		idt,output-enable-active = <0>;
 		/* du_dotclkin0, du_dotclkin2, usb_extal, avb_txcrefclk */
 		assigned-clocks = <&versaclock5 1>,
 				   <&versaclock5 2>,
 				   <&versaclock5 3>,
 				   <&versaclock5 4>;
+
 		assigned-clock-rates = <33333333>, <33333333>, <50000000>, <125000000>;
+
+		OUT1 {
+			idt,mode = <VC5_CMOS>;
+			idt,voltage-microvolt = <1800000>;
+			idt,slew-percent = <100>;
+		};
+
+		OUT2 {
+			idt,mode = <VC5_CMOS>;
+			idt,voltage-microvolt = <1800000>;
+			idt,slew-percent = <100>;
+		};
+
+		OUT3 {
+			idt,mode = <VC5_CMOS>;
+			idt,voltage-microvolt = <1800000>;
+			idt,slew-percent = <100>;
+		};
+
+		OUT4 {
+			idt,mode = <VC5_CMOS>;
+			idt,voltage-microvolt = <3300000>;
+			idt,slew-percent = <100>;
+		};
 	};
 };
 
@@ -266,7 +293,6 @@
 	vqmmc-supply = <&reg_1p8v>;
 	non-removable;
 	cap-power-off-card;
-	pm-ignore-notify;
 	keep-power-in-suspend;
 	mmc-pwrseq = <&wlan_pwrseq>;
 	status = "okay";
@@ -276,8 +302,7 @@
 	brcmf: bcrmf@1 {
 		reg = <1>;
 		compatible = "brcm,bcm4329-fmac";
-		interrupt-parent = <&gpio1>;
-		interrupts = <27 IRQ_TYPE_LEVEL_LOW>;
+		interrupts-extended = <&gpio1 27 IRQ_TYPE_LEVEL_LOW>;
 		interrupt-names = "host-wake";
 	};
 };
@@ -290,23 +315,19 @@
 	vqmmc-supply = <&reg_1p8v>;
 	bus-width = <8>;
 	mmc-hs200-1_8v;
+	no-sd;
+	no-sdio;
 	non-removable;
 	fixed-emmc-driver-type = <1>;
 	status = "okay";
 };
 
-&usb_extal_clk {
-	clock-frequency = <50000000>;
+&usb2_clksel {
+	clocks = <&cpg CPG_MOD 703>, <&cpg CPG_MOD 704>,
+		  <&versaclock5 3>, <&usb3s0_clk>;
+	status = "okay";
 };
 
 &usb3s0_clk {
 	clock-frequency = <100000000>;
-};
-
-&vspb {
-	status = "okay";
-};
-
-&vspi0 {
-	status = "okay";
 };

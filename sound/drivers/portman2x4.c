@@ -57,7 +57,6 @@ MODULE_PARM_DESC(enable, "Enable " CARD_NAME " soundcard.");
 MODULE_AUTHOR("Levent Guendogdu, Tobias Gehrig, Matthias Koenig");
 MODULE_DESCRIPTION("Midiman Portman2x4");
 MODULE_LICENSE("GPL");
-MODULE_SUPPORTED_DEVICE("{{Midiman,Portman2x4}}");
 
 /*********************************************************************
  * Chip specific
@@ -183,19 +182,9 @@ static inline void portman_write_command(struct portman *pm, u8 value)
 	parport_write_control(pm->pardev->port, value);
 }
 
-static inline u8 portman_read_command(struct portman *pm)
-{
-	return parport_read_control(pm->pardev->port);
-}
-
 static inline u8 portman_read_status(struct portman *pm)
 {
 	return parport_read_status(pm->pardev->port);
-}
-
-static inline u8 portman_read_data(struct portman *pm)
-{
-	return parport_read_data(pm->pardev->port);
 }
 
 static inline void portman_write_data(struct portman *pm, u8 value)
@@ -396,9 +385,8 @@ static void portman_flush_input(struct portman *pm, unsigned char port)
 		command = RXDATA1;
 		break;
 	default:
-		snd_printk(KERN_WARNING
-			   "portman_flush_input() Won't flush port %i\n",
-			   port);
+		dev_warn(pm->card->dev, "%s Won't flush port %i\n",
+			 __func__, port);
 		return;
 	}
 
@@ -679,7 +667,6 @@ static struct parport_driver portman_parport_driver = {
 	.probe		= snd_portman_dev_probe,
 	.match_port	= snd_portman_attach,
 	.detach		= snd_portman_detach,
-	.devmodel	= true,
 };
 
 /*********************************************************************
@@ -724,7 +711,7 @@ static int snd_portman_probe(struct platform_device *pdev)
 	err = snd_card_new(&pdev->dev, index[dev], id[dev], THIS_MODULE,
 			   0, &card);
 	if (err < 0) {
-		snd_printd("Cannot create card\n");
+		dev_dbg(&pdev->dev, "Cannot create card\n");
 		return err;
 	}
 	strcpy(card->driver, DRIVER_NAME);
@@ -738,20 +725,21 @@ static int snd_portman_probe(struct platform_device *pdev)
 					    &portman_cb,   /* callbacks */
 					    pdev->id);	   /* device number */
 	if (pardev == NULL) {
-		snd_printd("Cannot register pardevice\n");
+		dev_dbg(card->dev, "Cannot register pardevice\n");
 		err = -EIO;
 		goto __err;
 	}
 
 	/* claim parport */
 	if (parport_claim(pardev)) {
-		snd_printd("Cannot claim parport 0x%lx\n", pardev->port->base);
+		dev_dbg(card->dev, "Cannot claim parport 0x%lx\n", pardev->port->base);
 		err = -EIO;
 		goto free_pardev;
 	}
 
-	if ((err = portman_create(card, pardev, &pm)) < 0) {
-		snd_printd("Cannot create main component\n");
+	err = portman_create(card, pardev, &pm);
+	if (err < 0) {
+		dev_dbg(card->dev, "Cannot create main component\n");
 		goto release_pardev;
 	}
 	card->private_data = pm;
@@ -763,24 +751,27 @@ static int snd_portman_probe(struct platform_device *pdev)
 		goto __err;
 	}
 	
-	if ((err = snd_portman_rawmidi_create(card)) < 0) {
-		snd_printd("Creating Rawmidi component failed\n");
+	err = snd_portman_rawmidi_create(card);
+	if (err < 0) {
+		dev_dbg(card->dev, "Creating Rawmidi component failed\n");
 		goto __err;
 	}
 
 	/* init device */
-	if ((err = portman_device_init(pm)) < 0)
+	err = portman_device_init(pm);
+	if (err < 0)
 		goto __err;
 
 	platform_set_drvdata(pdev, card);
 
 	/* At this point card will be usable */
-	if ((err = snd_card_register(card)) < 0) {
-		snd_printd("Cannot register card\n");
+	err = snd_card_register(card);
+	if (err < 0) {
+		dev_dbg(card->dev, "Cannot register card\n");
 		goto __err;
 	}
 
-	snd_printk(KERN_INFO "Portman 2x4 on 0x%lx\n", p->base);
+	dev_info(card->dev, "Portman 2x4 on 0x%lx\n", p->base);
 	return 0;
 
 release_pardev:
@@ -792,14 +783,12 @@ __err:
 	return err;
 }
 
-static int snd_portman_remove(struct platform_device *pdev)
+static void snd_portman_remove(struct platform_device *pdev)
 {
 	struct snd_card *card = platform_get_drvdata(pdev);
 
 	if (card)
 		snd_card_free(card);
-
-	return 0;
 }
 
 
@@ -832,7 +821,8 @@ static int __init snd_portman_module_init(void)
 {
 	int err;
 
-	if ((err = platform_driver_register(&snd_portman_driver)) < 0)
+	err = platform_driver_register(&snd_portman_driver);
+	if (err < 0)
 		return err;
 
 	if (parport_register_driver(&portman_parport_driver) != 0) {

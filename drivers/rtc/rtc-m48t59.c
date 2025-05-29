@@ -71,7 +71,7 @@ static int m48t59_rtc_read_time(struct device *dev, struct rtc_time *tm)
 	/* Issue the READ command */
 	M48T59_SET_BITS(M48T59_CNTL_READ, M48T59_CNTL);
 
-	tm->tm_year	= bcd2bin(M48T59_READ(M48T59_YEAR));
+	tm->tm_year	= bcd2bin(M48T59_READ(M48T59_YEAR)) + pdata->yy_offset;
 	/* tm_mon is 0-11 */
 	tm->tm_mon	= bcd2bin(M48T59_READ(M48T59_MONTH)) - 1;
 	tm->tm_mday	= bcd2bin(M48T59_READ(M48T59_MDAY));
@@ -82,10 +82,6 @@ static int m48t59_rtc_read_time(struct device *dev, struct rtc_time *tm)
 		dev_dbg(dev, "Century bit is enabled\n");
 		tm->tm_year += 100;	/* one century */
 	}
-#ifdef CONFIG_SPARC
-	/* Sun SPARC machines count years since 1968 */
-	tm->tm_year += 68;
-#endif
 
 	tm->tm_wday	= bcd2bin(val & 0x07);
 	tm->tm_hour	= bcd2bin(M48T59_READ(M48T59_HOUR) & 0x3F);
@@ -106,12 +102,7 @@ static int m48t59_rtc_set_time(struct device *dev, struct rtc_time *tm)
 	struct m48t59_private *m48t59 = dev_get_drvdata(dev);
 	unsigned long flags;
 	u8 val = 0;
-	int year = tm->tm_year;
-
-#ifdef CONFIG_SPARC
-	/* Sun SPARC machines count years since 1968 */
-	year -= 68;
-#endif
+	int year = tm->tm_year - pdata->yy_offset;
 
 	dev_dbg(dev, "RTC set time %04d-%02d-%02d %02d/%02d/%02d\n",
 		year + 1900, tm->tm_mon, tm->tm_mday,
@@ -132,7 +123,7 @@ static int m48t59_rtc_set_time(struct device *dev, struct rtc_time *tm)
 	M48T59_WRITE((bin2bcd(tm->tm_mon + 1) & 0x1F), M48T59_MONTH);
 	M48T59_WRITE(bin2bcd(year % 100), M48T59_YEAR);
 
-	if (pdata->type == M48T59RTC_TYPE_M48T59 && (year / 100))
+	if (pdata->type == M48T59RTC_TYPE_M48T59 && (year >= 100))
 		val = (M48T59_WDAY_CEB | M48T59_WDAY_CB);
 	val |= (bin2bcd(tm->tm_wday) & 0x07);
 	M48T59_WRITE(val, M48T59_WDAY);
@@ -162,11 +153,7 @@ static int m48t59_rtc_readalarm(struct device *dev, struct rtc_wkalrm *alrm)
 	/* Issue the READ command */
 	M48T59_SET_BITS(M48T59_CNTL_READ, M48T59_CNTL);
 
-	tm->tm_year = bcd2bin(M48T59_READ(M48T59_YEAR));
-#ifdef CONFIG_SPARC
-	/* Sun SPARC machines count years since 1968 */
-	tm->tm_year += 68;
-#endif
+	tm->tm_year = bcd2bin(M48T59_READ(M48T59_YEAR)) + pdata->yy_offset;
 	/* tm_mon is 0-11 */
 	tm->tm_mon = bcd2bin(M48T59_READ(M48T59_MONTH)) - 1;
 
@@ -197,12 +184,7 @@ static int m48t59_rtc_setalarm(struct device *dev, struct rtc_wkalrm *alrm)
 	struct rtc_time *tm = &alrm->time;
 	u8 mday, hour, min, sec;
 	unsigned long flags;
-	int year = tm->tm_year;
-
-#ifdef CONFIG_SPARC
-	/* Sun SPARC machines count years since 1968 */
-	year -= 68;
-#endif
+	int year = tm->tm_year - pdata->yy_offset;
 
 	/* If no irq, we don't support ALARM */
 	if (m48t59->irq == NO_IRQ)
@@ -313,11 +295,6 @@ static const struct rtc_class_ops m48t59_rtc_ops = {
 	.alarm_irq_enable = m48t59_rtc_alarm_irq_enable,
 };
 
-static const struct rtc_class_ops m48t02_rtc_ops = {
-	.read_time	= m48t59_rtc_read_time,
-	.set_time	= m48t59_rtc_set_time,
-};
-
 static int m48t59_nvram_read(void *priv, unsigned int offset, void *val,
 			     size_t size)
 {
@@ -366,7 +343,6 @@ static int m48t59_rtc_probe(struct platform_device *pdev)
 	struct m48t59_private *m48t59 = NULL;
 	struct resource *res;
 	int ret = -ENOMEM;
-	const struct rtc_class_ops *ops;
 	struct nvmem_config nvmem_cfg = {
 		.name = "m48t59-",
 		.word_size = 1,
@@ -427,7 +403,7 @@ static int m48t59_rtc_probe(struct platform_device *pdev)
 	/* Try to get irq number. We also can work in
 	 * the mode without IRQ.
 	 */
-	m48t59->irq = platform_get_irq(pdev, 0);
+	m48t59->irq = platform_get_irq_optional(pdev, 0);
 	if (m48t59->irq <= 0)
 		m48t59->irq = NO_IRQ;
 
@@ -438,17 +414,21 @@ static int m48t59_rtc_probe(struct platform_device *pdev)
 		if (ret)
 			return ret;
 	}
+
+	m48t59->rtc = devm_rtc_allocate_device(&pdev->dev);
+	if (IS_ERR(m48t59->rtc))
+		return PTR_ERR(m48t59->rtc);
+
 	switch (pdata->type) {
 	case M48T59RTC_TYPE_M48T59:
-		ops = &m48t59_rtc_ops;
 		pdata->offset = 0x1ff0;
 		break;
 	case M48T59RTC_TYPE_M48T02:
-		ops = &m48t02_rtc_ops;
+		clear_bit(RTC_FEATURE_ALARM, m48t59->rtc->features);
 		pdata->offset = 0x7f0;
 		break;
 	case M48T59RTC_TYPE_M48T08:
-		ops = &m48t02_rtc_ops;
+		clear_bit(RTC_FEATURE_ALARM, m48t59->rtc->features);
 		pdata->offset = 0x1ff0;
 		break;
 	default:
@@ -459,19 +439,16 @@ static int m48t59_rtc_probe(struct platform_device *pdev)
 	spin_lock_init(&m48t59->lock);
 	platform_set_drvdata(pdev, m48t59);
 
-	m48t59->rtc = devm_rtc_allocate_device(&pdev->dev);
-	if (IS_ERR(m48t59->rtc))
-		return PTR_ERR(m48t59->rtc);
-
-	m48t59->rtc->nvram_old_abi = true;
-	m48t59->rtc->ops = ops;
+	m48t59->rtc->ops = &m48t59_rtc_ops;
+	m48t59->rtc->range_min = RTC_TIMESTAMP_BEGIN_1900;
+	m48t59->rtc->range_max = RTC_TIMESTAMP_END_2099;
 
 	nvmem_cfg.size = pdata->offset;
-	ret = rtc_nvmem_register(m48t59->rtc, &nvmem_cfg);
+	ret = devm_rtc_nvmem_register(m48t59->rtc, &nvmem_cfg);
 	if (ret)
 		return ret;
 
-	ret = rtc_register_device(m48t59->rtc);
+	ret = devm_rtc_register_device(m48t59->rtc);
 	if (ret)
 		return ret;
 

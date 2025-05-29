@@ -266,7 +266,8 @@ int snd_pcm_format_signed(snd_pcm_format_t format)
 	int val;
 	if (!valid_format(format))
 		return -EINVAL;
-	if ((val = pcm_formats[(INT)format].signd) < 0)
+	val = pcm_formats[(INT)format].signd;
+	if (val < 0)
 		return -EINVAL;
 	return val;
 }
@@ -314,7 +315,8 @@ int snd_pcm_format_little_endian(snd_pcm_format_t format)
 	int val;
 	if (!valid_format(format))
 		return -EINVAL;
-	if ((val = pcm_formats[(INT)format].le) < 0)
+	val = pcm_formats[(INT)format].le;
+	if (val < 0)
 		return -EINVAL;
 	return val;
 }
@@ -350,7 +352,8 @@ int snd_pcm_format_width(snd_pcm_format_t format)
 	int val;
 	if (!valid_format(format))
 		return -EINVAL;
-	if ((val = pcm_formats[(INT)format].width) == 0)
+	val = pcm_formats[(INT)format].width;
+	if (!val)
 		return -EINVAL;
 	return val;
 }
@@ -368,7 +371,8 @@ int snd_pcm_format_physical_width(snd_pcm_format_t format)
 	int val;
 	if (!valid_format(format))
 		return -EINVAL;
-	if ((val = pcm_formats[(INT)format].phys) == 0)
+	val = pcm_formats[(INT)format].phys;
+	if (!val)
 		return -EINVAL;
 	return val;
 }
@@ -429,7 +433,7 @@ int snd_pcm_format_set_silence(snd_pcm_format_t format, void *data, unsigned int
 		return 0;
 	width = pcm_formats[(INT)format].phys; /* physical width */
 	pat = pcm_formats[(INT)format].silence;
-	if (! width)
+	if (!width || !pat)
 		return -EINVAL;
 	/* signed or 1 byte data */
 	if (pcm_formats[(INT)format].signd == 1 || width <= 8) {
@@ -490,18 +494,20 @@ EXPORT_SYMBOL(snd_pcm_format_set_silence);
 int snd_pcm_hw_limit_rates(struct snd_pcm_hardware *hw)
 {
 	int i;
+	unsigned int rmin, rmax;
+
+	rmin = UINT_MAX;
+	rmax = 0;
 	for (i = 0; i < (int)snd_pcm_known_rates.count; i++) {
 		if (hw->rates & (1 << i)) {
-			hw->rate_min = snd_pcm_known_rates.list[i];
-			break;
+			rmin = min(rmin, snd_pcm_known_rates.list[i]);
+			rmax = max(rmax, snd_pcm_known_rates.list[i]);
 		}
 	}
-	for (i = (int)snd_pcm_known_rates.count - 1; i >= 0; i--) {
-		if (hw->rates & (1 << i)) {
-			hw->rate_max = snd_pcm_known_rates.list[i];
-			break;
-		}
-	}
+	if (rmin > rmax)
+		return -EINVAL;
+	hw->rate_min = rmin;
+	hw->rate_max = rmax;
 	return 0;
 }
 EXPORT_SYMBOL(snd_pcm_hw_limit_rates);

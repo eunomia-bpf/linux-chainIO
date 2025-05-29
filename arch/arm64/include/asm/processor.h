@@ -8,9 +8,6 @@
 #ifndef __ASM_PROCESSOR_H
 #define __ASM_PROCESSOR_H
 
-#define KERNEL_DS		UL(-1)
-#define USER_DS			((UL(1) << VA_BITS) - 1)
-
 /*
  * On arm64 systems, unaligned accesses by the CPU are cheap, and so there is
  * no point in shifting all network buffers by 2 bytes just to make some IP
@@ -18,6 +15,13 @@
  * performance on some platforms.
  */
 #define NET_IP_ALIGN	0
+
+#define MTE_CTRL_GCR_USER_EXCL_SHIFT	0
+#define MTE_CTRL_GCR_USER_EXCL_MASK	0xffff
+
+#define MTE_CTRL_TCF_SYNC		(1UL << 16)
+#define MTE_CTRL_TCF_ASYNC		(1UL << 17)
+#define MTE_CTRL_TCF_ASYMM		(1UL << 18)
 
 #ifndef __ASSEMBLY__
 
@@ -48,6 +52,7 @@
 
 #define DEFAULT_MAP_WINDOW_64	(UL(1) << VA_BITS_MIN)
 #define TASK_SIZE_64		(UL(1) << vabits_actual)
+#define TASK_SIZE_MAX		(UL(1) << VA_BITS)
 
 #ifdef CONFIG_COMPAT
 #if defined(CONFIG_ARM64_64K_PAGES) && defined(CONFIG_KUSER_HELPERS)
@@ -87,8 +92,8 @@
 #endif /* CONFIG_COMPAT */
 
 #ifndef CONFIG_ARM64_FORCE_52BIT
-#define arch_get_mmap_end(addr) ((addr > DEFAULT_MAP_WINDOW) ? TASK_SIZE :\
-				DEFAULT_MAP_WINDOW)
+#define arch_get_mmap_end(addr, len, flags) \
+		(((addr) > DEFAULT_MAP_WINDOW) ? TASK_SIZE : DEFAULT_MAP_WINDOW)
 
 #define arch_get_mmap_base(addr, base) ((addr > DEFAULT_MAP_WINDOW) ? \
 					base + TASK_SIZE - DEFAULT_MAP_WINDOW :\
@@ -109,6 +114,18 @@ struct debug_info {
 	struct perf_event	*hbp_break[ARM_MAX_BRP];
 	struct perf_event	*hbp_watch[ARM_MAX_WRP];
 #endif
+};
+
+enum vec_type {
+	ARM64_VEC_SVE = 0,
+	ARM64_VEC_SME,
+	ARM64_VEC_MAX,
+};
+
+enum fp_type {
+	FP_STATE_CURRENT,	/* Save based on current task state. */
+	FP_STATE_FPSIMD,
+	FP_STATE_SVE,
 };
 
 struct cpu_context {
@@ -138,25 +155,106 @@ struct thread_struct {
 	struct {
 		unsigned long	tp_value;	/* TLS register */
 		unsigned long	tp2_value;
+		u64		fpmr;
+		unsigned long	pad;
 		struct user_fpsimd_state fpsimd_state;
 	} uw;
 
+	enum fp_type		fp_type;	/* registers FPSIMD or SVE? */
 	unsigned int		fpsimd_cpu;
 	void			*sve_state;	/* SVE registers, if any */
-	unsigned int		sve_vl;		/* SVE vector length */
-	unsigned int		sve_vl_onexec;	/* SVE vl after next exec */
+	void			*sme_state;	/* ZA and ZT state, if any */
+	unsigned int		vl[ARM64_VEC_MAX];	/* vector length */
+	unsigned int		vl_onexec[ARM64_VEC_MAX]; /* vl after next exec */
 	unsigned long		fault_address;	/* fault info */
 	unsigned long		fault_code;	/* ESR_EL1 value */
 	struct debug_info	debug;		/* debugging */
+
+	struct user_fpsimd_state	kernel_fpsimd_state;
+	unsigned int			kernel_fpsimd_cpu;
 #ifdef CONFIG_ARM64_PTR_AUTH
 	struct ptrauth_keys_user	keys_user;
+#ifdef CONFIG_ARM64_PTR_AUTH_KERNEL
 	struct ptrauth_keys_kernel	keys_kernel;
 #endif
+#endif
 #ifdef CONFIG_ARM64_MTE
-	u64			sctlr_tcf0;
-	u64			gcr_user_incl;
+	u64			mte_ctrl;
+#endif
+	u64			sctlr_user;
+	u64			svcr;
+	u64			tpidr2_el0;
+	u64			por_el0;
+#ifdef CONFIG_ARM64_GCS
+	unsigned int		gcs_el0_mode;
+	unsigned int		gcs_el0_locked;
+	u64			gcspr_el0;
+	u64			gcs_base;
+	u64			gcs_size;
 #endif
 };
+
+static inline unsigned int thread_get_vl(struct thread_struct *thread,
+					 enum vec_type type)
+{
+	return thread->vl[type];
+}
+
+static inline unsigned int thread_get_sve_vl(struct thread_struct *thread)
+{
+	return thread_get_vl(thread, ARM64_VEC_SVE);
+}
+
+static inline unsigned int thread_get_sme_vl(struct thread_struct *thread)
+{
+	return thread_get_vl(thread, ARM64_VEC_SME);
+}
+
+static inline unsigned int thread_get_cur_vl(struct thread_struct *thread)
+{
+	if (system_supports_sme() && (thread->svcr & SVCR_SM_MASK))
+		return thread_get_sme_vl(thread);
+	else
+		return thread_get_sve_vl(thread);
+}
+
+unsigned int task_get_vl(const struct task_struct *task, enum vec_type type);
+void task_set_vl(struct task_struct *task, enum vec_type type,
+		 unsigned long vl);
+void task_set_vl_onexec(struct task_struct *task, enum vec_type type,
+			unsigned long vl);
+unsigned int task_get_vl_onexec(const struct task_struct *task,
+				enum vec_type type);
+
+static inline unsigned int task_get_sve_vl(const struct task_struct *task)
+{
+	return task_get_vl(task, ARM64_VEC_SVE);
+}
+
+static inline unsigned int task_get_sme_vl(const struct task_struct *task)
+{
+	return task_get_vl(task, ARM64_VEC_SME);
+}
+
+static inline void task_set_sve_vl(struct task_struct *task, unsigned long vl)
+{
+	task_set_vl(task, ARM64_VEC_SVE, vl);
+}
+
+static inline unsigned int task_get_sve_vl_onexec(const struct task_struct *task)
+{
+	return task_get_vl_onexec(task, ARM64_VEC_SVE);
+}
+
+static inline void task_set_sve_vl_onexec(struct task_struct *task,
+					  unsigned long vl)
+{
+	task_set_vl_onexec(task, ARM64_VEC_SVE, vl);
+}
+
+#define SCTLR_USER_MASK                                                        \
+	(SCTLR_ELx_ENIA | SCTLR_ELx_ENIB | SCTLR_ELx_ENDA | SCTLR_ELx_ENDB |   \
+	 SCTLR_EL1_TCF0_MASK)
 
 static inline void arch_thread_struct_whitelist(unsigned long *offset,
 						unsigned long *size)
@@ -165,6 +263,8 @@ static inline void arch_thread_struct_whitelist(unsigned long *offset,
 	BUILD_BUG_ON(sizeof_field(struct thread_struct, uw) !=
 		     sizeof_field(struct thread_struct, uw.tp_value) +
 		     sizeof_field(struct thread_struct, uw.tp2_value) +
+		     sizeof_field(struct thread_struct, uw.fpmr) +
+		     sizeof_field(struct thread_struct, uw.pad) +
 		     sizeof_field(struct thread_struct, uw.fpsimd_state));
 
 	*offset = offsetof(struct thread_struct, uw);
@@ -192,21 +292,44 @@ void tls_preserve_current_state(void);
 	.fpsimd_cpu = NR_CPUS,			\
 }
 
-static inline void start_thread_common(struct pt_regs *regs, unsigned long pc)
+static inline void start_thread_common(struct pt_regs *regs, unsigned long pc,
+				       unsigned long pstate)
 {
-	memset(regs, 0, sizeof(*regs));
-	forget_syscall(regs);
-	regs->pc = pc;
+	/*
+	 * Ensure all GPRs are zeroed, and initialize PC + PSTATE.
+	 * The SP (or compat SP) will be initialized later.
+	 */
+	regs->user_regs = (struct user_pt_regs) {
+		.pc = pc,
+		.pstate = pstate,
+	};
 
+	/*
+	 * To allow the syscalls:sys_exit_execve tracepoint we need to preserve
+	 * syscallno, but do not need orig_x0 or the original GPRs.
+	 */
+	regs->orig_x0 = 0;
+
+	/*
+	 * An exec from a kernel thread won't have an existing PMR value.
+	 */
 	if (system_uses_irq_prio_masking())
-		regs->pmr_save = GIC_PRIO_IRQON;
+		regs->pmr = GIC_PRIO_IRQON;
+
+	/*
+	 * The pt_regs::stackframe field must remain valid throughout this
+	 * function as a stacktrace can be taken at any time. Any user or
+	 * kernel task should have a valid final frame.
+	 */
+	WARN_ON_ONCE(regs->stackframe.record.fp != 0);
+	WARN_ON_ONCE(regs->stackframe.record.lr != 0);
+	WARN_ON_ONCE(regs->stackframe.type != FRAME_META_TYPE_FINAL);
 }
 
 static inline void start_thread(struct pt_regs *regs, unsigned long pc,
 				unsigned long sp)
 {
-	start_thread_common(regs, pc);
-	regs->pstate = PSR_MODE_EL0t;
+	start_thread_common(regs, pc, PSR_MODE_EL0t);
 	spectre_v4_enable_task_mitigation(current);
 	regs->sp = sp;
 }
@@ -215,27 +338,25 @@ static inline void start_thread(struct pt_regs *regs, unsigned long pc,
 static inline void compat_start_thread(struct pt_regs *regs, unsigned long pc,
 				       unsigned long sp)
 {
-	start_thread_common(regs, pc);
-	regs->pstate = PSR_AA32_MODE_USR;
+	unsigned long pstate = PSR_AA32_MODE_USR;
 	if (pc & 1)
-		regs->pstate |= PSR_AA32_T_BIT;
+		pstate |= PSR_AA32_T_BIT;
+	if (IS_ENABLED(CONFIG_CPU_BIG_ENDIAN))
+		pstate |= PSR_AA32_E_BIT;
 
-#ifdef __AARCH64EB__
-	regs->pstate |= PSR_AA32_E_BIT;
-#endif
-
+	start_thread_common(regs, pc, pstate);
 	spectre_v4_enable_task_mitigation(current);
 	regs->compat_sp = sp;
 }
 #endif
 
-static inline bool is_ttbr0_addr(unsigned long addr)
+static __always_inline bool is_ttbr0_addr(unsigned long addr)
 {
 	/* entry assembly clears tags for TTBR0 addrs */
 	return addr < TASK_SIZE;
 }
 
-static inline bool is_ttbr1_addr(unsigned long addr)
+static __always_inline bool is_ttbr1_addr(unsigned long addr)
 {
 	/* TTBR1 addresses may have a tag if KASAN_SW_TAGS is in use */
 	return arch_kasan_reset_tag(addr) >= PAGE_OFFSET;
@@ -244,10 +365,9 @@ static inline bool is_ttbr1_addr(unsigned long addr)
 /* Forward declaration, a strange C thing */
 struct task_struct;
 
-/* Free all resources held by a thread. */
-extern void release_thread(struct task_struct *);
+unsigned long __get_wchan(struct task_struct *p);
 
-unsigned long get_wchan(struct task_struct *p);
+void update_sctlr_el1(u64 sctlr);
 
 /* Thread switching */
 extern struct task_struct *cpu_switch_to(struct task_struct *prev,
@@ -274,14 +394,6 @@ static inline void prefetchw(const void *ptr)
 	asm volatile("prfm pstl1keep, %a0\n" : : "p" (ptr));
 }
 
-#define ARCH_HAS_SPINLOCK_PREFETCH
-static inline void spin_lock_prefetch(const void *ptr)
-{
-	asm volatile(ARM64_LSE_ATOMIC_INSN(
-		     "prfm pstl1strm, %a0",
-		     "nop") : : "p" (ptr));
-}
-
 extern unsigned long __ro_after_init signal_minsigstksz; /* sigframe size */
 extern void __init minsigstksz_setup(void);
 
@@ -296,12 +408,19 @@ extern void __init minsigstksz_setup(void);
  */
 #include <asm/fpsimd.h>
 
-/* Userspace interface for PR_SVE_{SET,GET}_VL prctl()s: */
+/* Userspace interface for PR_S[MV]E_{SET,GET}_VL prctl()s: */
 #define SVE_SET_VL(arg)	sve_set_current_vl(arg)
 #define SVE_GET_VL()	sve_get_current_vl()
+#define SME_SET_VL(arg)	sme_set_current_vl(arg)
+#define SME_GET_VL()	sme_get_current_vl()
 
 /* PR_PAC_RESET_KEYS prctl */
 #define PAC_RESET_KEYS(tsk, arg)	ptrauth_prctl_reset_keys(tsk, arg)
+
+/* PR_PAC_{SET,GET}_ENABLED_KEYS prctl */
+#define PAC_SET_ENABLED_KEYS(tsk, keys, enabled)				\
+	ptrauth_set_enabled_keys(tsk, keys, enabled)
+#define PAC_GET_ENABLED_KEYS(tsk) ptrauth_get_enabled_keys(tsk)
 
 #ifdef CONFIG_ARM64_TAGGED_ADDR_ABI
 /* PR_{SET,GET}_TAGGED_ADDR_CTRL prctl */
@@ -311,20 +430,10 @@ long get_tagged_addr_ctrl(struct task_struct *task);
 #define GET_TAGGED_ADDR_CTRL()		get_tagged_addr_ctrl(current)
 #endif
 
-/*
- * For CONFIG_GCC_PLUGIN_STACKLEAK
- *
- * These need to be macros because otherwise we get stuck in a nightmare
- * of header definitions for the use of task_stack_page.
- */
-
-#define current_top_of_stack()							\
-({										\
-	struct stack_info _info;						\
-	BUG_ON(!on_accessible_stack(current, current_stack_pointer, &_info));	\
-	_info.high;								\
-})
-#define on_thread_stack()	(on_task_stack(current, current_stack_pointer, NULL))
+int get_tsc_mode(unsigned long adr);
+int set_tsc_mode(unsigned int val);
+#define GET_TSC_CTL(adr)        get_tsc_mode((adr))
+#define SET_TSC_CTL(val)        set_tsc_mode((val))
 
 #endif /* __ASSEMBLY__ */
 #endif /* __ASM_PROCESSOR_H */

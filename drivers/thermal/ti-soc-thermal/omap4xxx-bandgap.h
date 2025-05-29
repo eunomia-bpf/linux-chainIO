@@ -32,7 +32,7 @@
 /**
  * Register and bit definitions for OMAP4430
  *
- * All the macros bellow define the required bits for
+ * All the macros below define the required bits for
  * controlling temperature on OMAP4430. Bit defines are
  * grouped by register.
  */
@@ -40,7 +40,7 @@
 /* OMAP4430.TEMP_SENSOR bits */
 #define OMAP4430_BGAP_TEMPSOFF_MASK			BIT(12)
 #define OMAP4430_BGAP_TSHUT_MASK			BIT(11)
-#define OMAP4430_SINGLE_MODE_MASK			BIT(10)
+#define OMAP4430_CONTINUOUS_MODE_MASK			BIT(10)
 #define OMAP4430_BGAP_TEMP_SENSOR_SOC_MASK		BIT(9)
 #define OMAP4430_BGAP_TEMP_SENSOR_EOCZ_MASK		BIT(8)
 #define OMAP4430_BGAP_TEMP_SENSOR_DTEMP_MASK		(0xff << 0)
@@ -48,7 +48,7 @@
 /**
  * Temperature limits and thresholds for OMAP4430
  *
- * All the macros bellow are definitions for handling the
+ * All the macros below are definitions for handling the
  * ADC conversions and representation of temperature limits
  * and thresholds for OMAP4430.
  */
@@ -102,7 +102,7 @@
 /**
  * Register bitfields for OMAP4460
  *
- * All the macros bellow define the required bits for
+ * All the macros below define the required bits for
  * controlling temperature on OMAP4460. Bit defines are
  * grouped by register.
  */
@@ -113,7 +113,7 @@
 #define OMAP4460_BGAP_TEMP_SENSOR_DTEMP_MASK		(0x3ff << 0)
 
 /* OMAP4460.BANDGAP_CTRL bits */
-#define OMAP4460_SINGLE_MODE_MASK			BIT(31)
+#define OMAP4460_CONTINUOUS_MODE_MASK			BIT(31)
 #define OMAP4460_MASK_HOT_MASK				BIT(1)
 #define OMAP4460_MASK_COLD_MASK				BIT(0)
 
@@ -135,7 +135,7 @@
 /**
  * Temperature limits and thresholds for OMAP4460
  *
- * All the macros bellow are definitions for handling the
+ * All the macros below are definitions for handling the
  * ADC conversions and representation of temperature limits
  * and thresholds for OMAP4460.
  */

@@ -205,7 +205,7 @@ int sa1100_rtc_init(struct platform_device *pdev, struct sa1100_rtc *info)
 	info->rtc->max_user_freq = RTC_FREQ;
 	info->rtc->range_max = U32_MAX;
 
-	ret = rtc_register_device(info->rtc);
+	ret = devm_rtc_register_device(info->rtc);
 	if (ret) {
 		clk_disable_unprepare(info->clk);
 		return ret;
@@ -297,7 +297,7 @@ static int sa1100_rtc_probe(struct platform_device *pdev)
 	return sa1100_rtc_init(pdev, info);
 }
 
-static int sa1100_rtc_remove(struct platform_device *pdev)
+static void sa1100_rtc_remove(struct platform_device *pdev)
 {
 	struct sa1100_rtc *info = platform_get_drvdata(pdev);
 
@@ -307,8 +307,6 @@ static int sa1100_rtc_remove(struct platform_device *pdev)
 		spin_unlock_irq(&info->lock);
 		clk_disable_unprepare(info->clk);
 	}
-
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP

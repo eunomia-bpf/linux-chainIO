@@ -8,7 +8,7 @@ Abstract
 ========
 
 This file documents the mmap() facility available with the PACKET
-socket interface on 2.4/2.6/3.x kernels. This type of sockets is used for
+socket interface. This type of sockets is used for
 
 i) capture network traffic with utilities like tcpdump,
 ii) transmit network traffic, or any other that needs raw
@@ -16,7 +16,7 @@ ii) transmit network traffic, or any other that needs raw
 
 Howto can be found at:
 
-    https://sites.google.com/site/packetmmap/
+    https://web.archive.org/web/20220404160947/https://sites.google.com/site/packetmmap/
 
 Please send your comments to
     - Ulisses Alonso Camaró <uaca@i.hate.spam.alumni.uv.es>
@@ -25,12 +25,12 @@ Please send your comments to
 Why use PACKET_MMAP
 ===================
 
-In Linux 2.4/2.6/3.x if PACKET_MMAP is not enabled, the capture process is very
+Non PACKET_MMAP capture process (plain AF_PACKET) is very
 inefficient. It uses very limited buffers and requires one system call to
 capture each packet, it requires two if you want to get packet's timestamp
 (like libpcap always does).
 
-In the other hand PACKET_MMAP is very efficient. PACKET_MMAP provides a size
+On the other hand PACKET_MMAP is very efficient. PACKET_MMAP provides a size
 configurable circular buffer mapped in user space that can be used to either
 send or receive packets. This way reading packets just needs to wait for them,
 most of the time there is no need to issue a single system call. Concerning
@@ -153,7 +153,7 @@ As capture, each frame contains two parts::
     struct ifreq s_ifr;
     ...
 
-    strncpy (s_ifr.ifr_name, "eth0", sizeof(s_ifr.ifr_name));
+    strscpy_pad (s_ifr.ifr_name, "eth0", sizeof(s_ifr.ifr_name));
 
     /* get interface index of eth0 */
     ioctl(this->socket, SIOCGIFINDEX, &s_ifr);
@@ -166,7 +166,8 @@ As capture, each frame contains two parts::
     /* bind socket to eth0 */
     bind(this->socket, (struct sockaddr *)&my_addr, sizeof(struct sockaddr_ll));
 
- A complete tutorial is available at: https://sites.google.com/site/packetmmap/
+ A complete tutorial is available at:
+ https://web.archive.org/web/20220404160947/https://sites.google.com/site/packetmmap/
 
 By default, the user should put data at::
 
@@ -252,8 +253,7 @@ PACKET_MMAP setting constraints
 
 In kernel versions prior to 2.4.26 (for the 2.4 branch) and 2.6.5 (2.6 branch),
 the PACKET_MMAP buffer could hold only 32768 frames in a 32 bit architecture or
-16384 in a 64 bit architecture. For information on these kernel versions
-see http://pusa.uv.es/~ulisses/packet_mmap/packet_mmap.pre-2.4.26_2.6.5.txt
+16384 in a 64 bit architecture.
 
 Block size limit
 ----------------
@@ -264,20 +264,20 @@ the name indicates, this function allocates pages of memory, and the second
 argument is "order" or a power of two number of pages, that is
 (for PAGE_SIZE == 4096) order=0 ==> 4096 bytes, order=1 ==> 8192 bytes,
 order=2 ==> 16384 bytes, etc. The maximum size of a
-region allocated by __get_free_pages is determined by the MAX_ORDER macro. More
-precisely the limit can be calculated as::
+region allocated by __get_free_pages is determined by the MAX_PAGE_ORDER macro.
+More precisely the limit can be calculated as::
 
-   PAGE_SIZE << MAX_ORDER
+   PAGE_SIZE << MAX_PAGE_ORDER
 
    In a i386 architecture PAGE_SIZE is 4096 bytes
-   In a 2.4/i386 kernel MAX_ORDER is 10
-   In a 2.6/i386 kernel MAX_ORDER is 11
+   In a 2.4/i386 kernel MAX_PAGE_ORDER is 10
+   In a 2.6/i386 kernel MAX_PAGE_ORDER is 11
 
 So get_free_pages can allocate as much as 4MB or 8MB in a 2.4/2.6 kernel
 respectively, with an i386 architecture.
 
 User space programs can include /usr/include/sys/user.h and
-/usr/include/linux/mmzone.h to get PAGE_SIZE MAX_ORDER declarations.
+/usr/include/linux/mmzone.h to get PAGE_SIZE MAX_PAGE_ORDER declarations.
 
 The pagesize can also be determined dynamically with the getpagesize (2)
 system call.
@@ -325,7 +325,7 @@ Definitions:
 		(see /proc/slabinfo)
 <pointer size>  depends on the architecture -- ``sizeof(void *)``
 <page size>     depends on the architecture -- PAGE_SIZE or getpagesize (2)
-<max-order>     is the value defined with MAX_ORDER
+<max-order>     is the value defined with MAX_PAGE_ORDER
 <frame size>    it's an upper bound of frame's capture size (more on this later)
 ==============  ================================================================
 
@@ -437,7 +437,7 @@ and the following flags apply:
 Capture process
 ^^^^^^^^^^^^^^^
 
-     from include/linux/if_packet.h
+From include/linux/if_packet.h::
 
      #define TP_STATUS_COPY          (1 << 1)
      #define TP_STATUS_LOSING        (1 << 2)
@@ -756,7 +756,7 @@ AF_PACKET TPACKET_V3 example
 ============================
 
 AF_PACKET's TPACKET_V3 ring buffer can be configured to use non-static frame
-sizes by doing it's own memory management. It is based on blocks where polling
+sizes by doing its own memory management. It is based on blocks where polling
 works on a per block basis instead of per ring as in TPACKET_V2 and predecessor.
 
 It is said that TPACKET_V3 brings the following benefits:

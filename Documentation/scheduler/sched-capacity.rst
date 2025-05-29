@@ -39,14 +39,15 @@ per Hz, leading to::
 -------------------
 
 Two different capacity values are used within the scheduler. A CPU's
-``capacity_orig`` is its maximum attainable capacity, i.e. its maximum
-attainable performance level. A CPU's ``capacity`` is its ``capacity_orig`` to
-which some loss of available performance (e.g. time spent handling IRQs) is
-subtracted.
+``original capacity`` is its maximum attainable capacity, i.e. its maximum
+attainable performance level. This original capacity is returned by
+the function arch_scale_cpu_capacity(). A CPU's ``capacity`` is its ``original
+capacity`` to which some loss of available performance (e.g. time spent
+handling IRQs) is subtracted.
 
 Note that a CPU's ``capacity`` is solely intended to be used by the CFS class,
-while ``capacity_orig`` is class-agnostic. The rest of this document will use
-the term ``capacity`` interchangeably with ``capacity_orig`` for the sake of
+while ``original capacity`` is class-agnostic. The rest of this document will use
+the term ``capacity`` interchangeably with ``original capacity`` for the sake of
 brevity.
 
 1.3 Platform examples
@@ -258,9 +259,9 @@ Linux cannot currently figure out CPU capacity on its own, this information thus
 needs to be handed to it. Architectures must define arch_scale_cpu_capacity()
 for that purpose.
 
-The arm and arm64 architectures directly map this to the arch_topology driver
+The arm, arm64, and RISC-V architectures directly map this to the arch_topology driver
 CPU scaling data, which is derived from the capacity-dmips-mhz CPU binding; see
-Documentation/devicetree/bindings/arm/cpu-capacity.txt.
+Documentation/devicetree/bindings/cpu/cpu-capacity.txt.
 
 3.2 Frequency invariance
 ------------------------
@@ -284,8 +285,10 @@ whether the system exhibits asymmetric CPU capacities. Should that be the
 case:
 
 - The sched_asym_cpucapacity static key will be enabled.
-- The SD_ASYM_CPUCAPACITY flag will be set at the lowest sched_domain level that
-  spans all unique CPU capacity values.
+- The SD_ASYM_CPUCAPACITY_FULL flag will be set at the lowest sched_domain
+  level that spans all unique CPU capacity values.
+- The SD_ASYM_CPUCAPACITY flag will be set for any sched_domain that spans
+  CPUs with any range of asymmetry.
 
 The sched_asym_cpucapacity static key is intended to guard sections of code that
 cater to asymmetric CPU capacity systems. Do note however that said key is

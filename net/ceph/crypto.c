@@ -74,18 +74,6 @@ int ceph_crypto_key_clone(struct ceph_crypto_key *dst,
 	return set_secret(dst, src->key);
 }
 
-int ceph_crypto_key_encode(struct ceph_crypto_key *key, void **p, void *end)
-{
-	if (*p + sizeof(u16) + sizeof(key->created) +
-	    sizeof(u16) + key->len > end)
-		return -ERANGE;
-	ceph_encode_16(p, key->type);
-	ceph_encode_copy(p, &key->created, sizeof(key->created));
-	ceph_encode_16(p, key->len);
-	ceph_encode_copy(p, key->key, key->len);
-	return 0;
-}
-
 int ceph_crypto_key_decode(struct ceph_crypto_key *key, void **p, void *end)
 {
 	int ret;
@@ -96,6 +84,7 @@ int ceph_crypto_key_decode(struct ceph_crypto_key *key, void **p, void *end)
 	key->len = ceph_decode_16(p);
 	ceph_decode_need(p, end, key->len, bad);
 	ret = set_secret(key, *p);
+	memzero_explicit(*p, key->len);
 	*p += key->len;
 	return ret;
 
@@ -134,7 +123,7 @@ int ceph_crypto_key_unarmor(struct ceph_crypto_key *key, const char *inkey)
 void ceph_crypto_key_destroy(struct ceph_crypto_key *key)
 {
 	if (key) {
-		kfree(key->key);
+		kfree_sensitive(key->key);
 		key->key = NULL;
 		if (key->tfm) {
 			crypto_free_sync_skcipher(key->tfm);
@@ -146,7 +135,7 @@ void ceph_crypto_key_destroy(struct ceph_crypto_key *key)
 static const u8 *aes_iv = (u8 *)CEPH_AES_IV;
 
 /*
- * Should be used for buffers allocated with ceph_kvmalloc().
+ * Should be used for buffers allocated with kvmalloc().
  * Currently these are encrypt out-buffer (ceph_buffer) and decrypt
  * in-buffer (msg front).
  *

@@ -12,6 +12,7 @@
 #include <linux/interrupt.h>
 
 #include <linux/mmc/host.h>
+#include <linux/workqueue.h>
 
 #define DRV_NAME	"via_sdmmc"
 
@@ -307,7 +308,7 @@ struct via_crdr_mmc_host {
 	struct sdhcreg pm_sdhc_reg;
 
 	struct work_struct carddet_work;
-	struct tasklet_struct finish_tasklet;
+	struct work_struct finish_bh_work;
 
 	struct timer_list timer;
 	spinlock_t lock;
@@ -491,7 +492,7 @@ static void via_sdc_preparedata(struct via_crdr_mmc_host *host,
 
 	count = dma_map_sg(mmc_dev(host->mmc), data->sg, data->sg_len,
 		((data->flags & MMC_DATA_READ) ?
-		PCI_DMA_FROMDEVICE : PCI_DMA_TODEVICE));
+		DMA_FROM_DEVICE : DMA_TO_DEVICE));
 	BUG_ON(count != 1);
 
 	via_set_ddma(host, sg_dma_address(data->sg), sg_dma_len(data->sg),
@@ -638,12 +639,12 @@ static void via_sdc_finish_data(struct via_crdr_mmc_host *host)
 
 	dma_unmap_sg(mmc_dev(host->mmc), data->sg, data->sg_len,
 		((data->flags & MMC_DATA_READ) ?
-		PCI_DMA_FROMDEVICE : PCI_DMA_TODEVICE));
+		DMA_FROM_DEVICE : DMA_TO_DEVICE));
 
 	if (data->stop)
 		via_sdc_send_command(host, data->stop);
 	else
-		tasklet_schedule(&host->finish_tasklet);
+		queue_work(system_bh_wq, &host->finish_bh_work);
 }
 
 static void via_sdc_finish_command(struct via_crdr_mmc_host *host)
@@ -653,7 +654,7 @@ static void via_sdc_finish_command(struct via_crdr_mmc_host *host)
 	host->cmd->error = 0;
 
 	if (!host->cmd->data)
-		tasklet_schedule(&host->finish_tasklet);
+		queue_work(system_bh_wq, &host->finish_bh_work);
 
 	host->cmd = NULL;
 }
@@ -682,7 +683,7 @@ static void via_sdc_request(struct mmc_host *mmc, struct mmc_request *mrq)
 	status = readw(host->sdhc_mmiobase + VIA_CRDR_SDSTATUS);
 	if (!(status & VIA_CRDR_SDSTS_SLOTG) || host->reject) {
 		host->mrq->cmd->error = -ENOMEDIUM;
-		tasklet_schedule(&host->finish_tasklet);
+		queue_work(system_bh_wq, &host->finish_bh_work);
 	} else {
 		via_sdc_send_command(host, mrq->cmd);
 	}
@@ -848,7 +849,7 @@ static void via_sdc_cmd_isr(struct via_crdr_mmc_host *host, u16 intmask)
 		host->cmd->error = -EILSEQ;
 
 	if (host->cmd->error)
-		tasklet_schedule(&host->finish_tasklet);
+		queue_work(system_bh_wq, &host->finish_bh_work);
 	else if (intmask & VIA_CRDR_SDSTS_CRD)
 		via_sdc_finish_command(host);
 }
@@ -856,6 +857,9 @@ static void via_sdc_cmd_isr(struct via_crdr_mmc_host *host, u16 intmask)
 static void via_sdc_data_isr(struct via_crdr_mmc_host *host, u16 intmask)
 {
 	BUG_ON(intmask == 0);
+
+	if (!host->data)
+		return;
 
 	if (intmask & VIA_CRDR_SDSTS_DT)
 		host->data->error = -ETIMEDOUT;
@@ -952,20 +956,18 @@ static void via_sdc_timeout(struct timer_list *t)
 				sdhost->cmd->error = -ETIMEDOUT;
 			else
 				sdhost->mrq->cmd->error = -ETIMEDOUT;
-			tasklet_schedule(&sdhost->finish_tasklet);
+			queue_work(system_bh_wq, &sdhost->finish_bh_work);
 		}
 	}
 
 	spin_unlock_irqrestore(&sdhost->lock, flags);
 }
 
-static void via_sdc_tasklet_finish(unsigned long param)
+static void via_sdc_finish_bh_work(struct work_struct *t)
 {
-	struct via_crdr_mmc_host *host;
+	struct via_crdr_mmc_host *host = from_work(host, t, finish_bh_work);
 	unsigned long flags;
 	struct mmc_request *mrq;
-
-	host = (struct via_crdr_mmc_host *)param;
 
 	spin_lock_irqsave(&host->lock, flags);
 
@@ -1004,7 +1006,7 @@ static void via_sdc_card_detect(struct work_struct *work)
 			pr_err("%s: Card removed during transfer!\n",
 			       mmc_hostname(host->mmc));
 			host->mrq->cmd->error = -ENOMEDIUM;
-			tasklet_schedule(&host->finish_tasklet);
+			queue_work(system_bh_wq, &host->finish_bh_work);
 		}
 
 		spin_unlock_irqrestore(&host->lock, flags);
@@ -1050,8 +1052,7 @@ static void via_init_mmc_host(struct via_crdr_mmc_host *host)
 
 	INIT_WORK(&host->carddet_work, via_sdc_card_detect);
 
-	tasklet_init(&host->finish_tasklet, via_sdc_tasklet_finish,
-		     (unsigned long)host);
+	INIT_WORK(&host->finish_bh_work, via_sdc_finish_bh_work);
 
 	addrbase = host->sdhc_mmiobase;
 	writel(0x0, addrbase + VIA_CRDR_SDINTMASK);
@@ -1151,14 +1152,15 @@ static int via_sd_probe(struct pci_dev *pcidev,
 	    pcidev->subsystem_device == 0x3891)
 		sdhost->quirks = VIA_CRDR_QUIRK_300MS_PWRDELAY;
 
-	mmc_add_host(mmc);
+	ret = mmc_add_host(mmc);
+	if (ret)
+		goto unmap;
 
 	return 0;
 
 unmap:
 	iounmap(sdhost->mmiobase);
 free_mmc_host:
-	dev_set_drvdata(&pcidev->dev, NULL);
 	mmc_free_host(mmc);
 release:
 	pci_release_regions(pcidev);
@@ -1192,7 +1194,7 @@ static void via_sd_remove(struct pci_dev *pcidev)
 		sdhost->mrq->cmd->error = -ENOMEDIUM;
 		if (sdhost->mrq->stop)
 			sdhost->mrq->stop->error = -ENOMEDIUM;
-		tasklet_schedule(&sdhost->finish_tasklet);
+		queue_work(system_bh_wq, &sdhost->finish_bh_work);
 	}
 	spin_unlock_irqrestore(&sdhost->lock, flags);
 
@@ -1202,7 +1204,7 @@ static void via_sd_remove(struct pci_dev *pcidev)
 
 	del_timer_sync(&sdhost->timer);
 
-	tasklet_kill(&sdhost->finish_tasklet);
+	cancel_work_sync(&sdhost->finish_bh_work);
 
 	/* switch off power */
 	gatt = readb(sdhost->pcictrl_mmiobase + VIA_CRDR_PCICLKGATT);
@@ -1210,7 +1212,6 @@ static void via_sd_remove(struct pci_dev *pcidev)
 	writeb(gatt, sdhost->pcictrl_mmiobase + VIA_CRDR_PCICLKGATT);
 
 	iounmap(sdhost->mmiobase);
-	dev_set_drvdata(&pcidev->dev, NULL);
 	mmc_free_host(sdhost->mmc);
 	pci_release_regions(pcidev);
 	pci_disable_device(pcidev);
@@ -1274,7 +1275,6 @@ static int __maybe_unused via_sd_suspend(struct device *dev)
 static int __maybe_unused via_sd_resume(struct device *dev)
 {
 	struct via_crdr_mmc_host *sdhost;
-	int ret = 0;
 	u8 gatt;
 
 	sdhost = dev_get_drvdata(dev);
@@ -1295,7 +1295,7 @@ static int __maybe_unused via_sd_resume(struct device *dev)
 	via_restore_pcictrlreg(sdhost);
 	via_init_sdc_pm(sdhost);
 
-	return ret;
+	return 0;
 }
 
 static SIMPLE_DEV_PM_OPS(via_sd_pm_ops, via_sd_suspend, via_sd_resume);

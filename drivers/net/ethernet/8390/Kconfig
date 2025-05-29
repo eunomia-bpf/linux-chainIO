@@ -19,7 +19,7 @@ if NET_VENDOR_8390
 
 config PCMCIA_AXNET
 	tristate "Asix AX88190 PCMCIA support"
-	depends on PCMCIA
+	depends on PCMCIA && HAS_IOPORT
 	help
 	  Say Y here if you intend to attach an Asix AX88190-based PCMCIA
 	  (PC-card) Fast Ethernet card to your computer.  These cards are
@@ -102,6 +102,7 @@ config MCF8390
 config NE2000
 	tristate "NE2000/NE1000 support"
 	depends on (ISA || (Q40 && m) || MACH_TX49XX || ATARI_ETHERNEC)
+	select NETDEV_LEGACY_INIT if ISA
 	select CRC32
 	help
 	  If you have a network (Ethernet) card of this type, say Y here.
@@ -116,7 +117,7 @@ config NE2000
 
 config NE2K_PCI
 	tristate "PCI NE2000 and clones support (see help)"
-	depends on PCI
+	depends on PCI && HAS_IOPORT
 	select CRC32
 	help
 	  This driver is for NE2000 compatible PCI cards. It will not work
@@ -145,7 +146,7 @@ config APNE
 
 config PCMCIA_PCNET
 	tristate "NE2000 compatible PCMCIA support"
-	depends on PCMCIA
+	depends on PCMCIA && HAS_IOPORT
 	select CRC32
 	help
 	  Say Y here if you intend to attach an NE2000 compatible PCMCIA
@@ -169,6 +170,7 @@ config STNIC
 config ULTRA
 	tristate "SMC Ultra support"
 	depends on ISA
+	select NETDEV_LEGACY_INIT
 	select CRC32
 	help
 	  If you have a network (Ethernet) card of this type, say Y here.
@@ -186,6 +188,7 @@ config ULTRA
 config WD80x3
 	tristate "WD80*3 support"
 	depends on ISA
+	select NETDEV_LEGACY_INIT
 	select CRC32
 	help
 	  If you have a network (Ethernet) card of this type, say Y here.

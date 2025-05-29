@@ -34,7 +34,6 @@
 
 MODULE_DESCRIPTION("MIDI serial u16550");
 MODULE_LICENSE("GPL");
-MODULE_SUPPORTED_DEVICE("{{ALSA, MIDI serial u16550}}");
 
 #define SNDRV_SERIAL_SOUNDCANVAS 0 /* Roland Soundcanvas; F5 NN selects part */
 #define SNDRV_SERIAL_MS124T 1      /* Midiator MS-124T */
@@ -116,7 +115,6 @@ struct snd_uart16550 {
 	int irq;
 
 	unsigned long base;
-	struct resource *res_base;
 
 	unsigned int speed;
 	unsigned int speed_base;
@@ -226,9 +224,9 @@ static void snd_uart16550_io_loop(struct snd_uart16550 * uart)
 			snd_rawmidi_receive(uart->midi_input[substream], &c, 1);
 
 		if (status & UART_LSR_OE)
-			snd_printk(KERN_WARNING
-				   "%s: Overrun on device at 0x%lx\n",
-			       uart->rmidi->name, uart->base);
+			dev_warn(uart->card->dev,
+				 "%s: Overrun on device at 0x%lx\n",
+				 uart->rmidi->name, uart->base);
 	}
 
 	/* remember the last stream */
@@ -324,9 +322,9 @@ static int snd_uart16550_detect(struct snd_uart16550 *uart)
 		return -ENODEV;	/* Not configured */
 	}
 
-	uart->res_base = request_region(io_base, 8, "Serial MIDI");
-	if (uart->res_base == NULL) {
-		snd_printk(KERN_ERR "u16550: can't grab port 0x%lx\n", io_base);
+	if (!devm_request_region(uart->card->dev, io_base, 8, "Serial MIDI")) {
+		dev_err(uart->card->dev,
+			"u16550: can't grab port 0x%lx\n", io_base);
 		return -EBUSY;
 	}
 
@@ -622,9 +620,9 @@ static int snd_uart16550_output_byte(struct snd_uart16550 *uart,
 		}
 	} else {
 		if (!snd_uart16550_write_buffer(uart, midi_byte)) {
-			snd_printk(KERN_WARNING
-				   "%s: Buffer overrun on device at 0x%lx\n",
-				   uart->rmidi->name, uart->base);
+			dev_warn(uart->card->dev,
+				 "%s: Buffer overrun on device at 0x%lx\n",
+				 uart->rmidi->name, uart->base);
 			return 0;
 		}
 	}
@@ -753,21 +751,6 @@ static const struct snd_rawmidi_ops snd_uart16550_input =
 	.trigger =	snd_uart16550_input_trigger,
 };
 
-static int snd_uart16550_free(struct snd_uart16550 *uart)
-{
-	if (uart->irq >= 0)
-		free_irq(uart->irq, uart);
-	release_and_free_resource(uart->res_base);
-	kfree(uart);
-	return 0;
-};
-
-static int snd_uart16550_dev_free(struct snd_device *device)
-{
-	struct snd_uart16550 *uart = device->device_data;
-	return snd_uart16550_free(uart);
-}
-
 static int snd_uart16550_create(struct snd_card *card,
 				unsigned long iobase,
 				int irq,
@@ -777,14 +760,12 @@ static int snd_uart16550_create(struct snd_card *card,
 				int droponfull,
 				struct snd_uart16550 **ruart)
 {
-	static const struct snd_device_ops ops = {
-		.dev_free =	snd_uart16550_dev_free,
-	};
 	struct snd_uart16550 *uart;
 	int err;
 
 
-	if ((uart = kzalloc(sizeof(*uart), GFP_KERNEL)) == NULL)
+	uart = devm_kzalloc(card->dev, sizeof(*uart), GFP_KERNEL);
+	if (!uart)
 		return -ENOMEM;
 	uart->adaptor = adaptor;
 	uart->card = card;
@@ -793,17 +774,17 @@ static int snd_uart16550_create(struct snd_card *card,
 	uart->base = iobase;
 	uart->drop_on_full = droponfull;
 
-	if ((err = snd_uart16550_detect(uart)) <= 0) {
-		printk(KERN_ERR "no UART detected at 0x%lx\n", iobase);
-		snd_uart16550_free(uart);
+	err = snd_uart16550_detect(uart);
+	if (err <= 0) {
+		dev_err(card->dev, "no UART detected at 0x%lx\n", iobase);
 		return -ENODEV;
 	}
 
 	if (irq >= 0 && irq != SNDRV_AUTO_IRQ) {
-		if (request_irq(irq, snd_uart16550_interrupt,
-				0, "Serial MIDI", uart)) {
-			snd_printk(KERN_WARNING
-				   "irq %d busy. Using Polling.\n", irq);
+		if (devm_request_irq(card->dev, irq, snd_uart16550_interrupt,
+				     0, "Serial MIDI", uart)) {
+			dev_warn(card->dev,
+				 "irq %d busy. Using Polling.\n", irq);
 		} else {
 			uart->irq = irq;
 		}
@@ -817,12 +798,6 @@ static int snd_uart16550_create(struct snd_card *card,
 	memset(uart->prev_status, 0x80, sizeof(unsigned char) * SNDRV_SERIAL_MAX_OUTS);
 	timer_setup(&uart->buffer_timer, snd_uart16550_buffer_timer, 0);
 	uart->timer_running = 0;
-
-	/* Register device */
-	if ((err = snd_device_new(card, SNDRV_DEV_LOWLEVEL, uart, &ops)) < 0) {
-		snd_uart16550_free(uart);
-		return err;
-	}
 
 	switch (uart->adaptor) {
 	case SNDRV_SERIAL_MS124W_SA:
@@ -905,47 +880,43 @@ static int snd_serial_probe(struct platform_device *devptr)
 	case SNDRV_SERIAL_GENERIC:
 		break;
 	default:
-		snd_printk(KERN_ERR
-			   "Adaptor type is out of range 0-%d (%d)\n",
-			   SNDRV_SERIAL_MAX_ADAPTOR, adaptor[dev]);
+		dev_err(&devptr->dev,
+			"Adaptor type is out of range 0-%d (%d)\n",
+			SNDRV_SERIAL_MAX_ADAPTOR, adaptor[dev]);
 		return -ENODEV;
 	}
 
 	if (outs[dev] < 1 || outs[dev] > SNDRV_SERIAL_MAX_OUTS) {
-		snd_printk(KERN_ERR
-			   "Count of outputs is out of range 1-%d (%d)\n",
-			   SNDRV_SERIAL_MAX_OUTS, outs[dev]);
+		dev_err(&devptr->dev,
+			"Count of outputs is out of range 1-%d (%d)\n",
+			SNDRV_SERIAL_MAX_OUTS, outs[dev]);
 		return -ENODEV;
 	}
 
 	if (ins[dev] < 1 || ins[dev] > SNDRV_SERIAL_MAX_INS) {
-		snd_printk(KERN_ERR
-			   "Count of inputs is out of range 1-%d (%d)\n",
-			   SNDRV_SERIAL_MAX_INS, ins[dev]);
+		dev_err(&devptr->dev,
+			"Count of inputs is out of range 1-%d (%d)\n",
+			SNDRV_SERIAL_MAX_INS, ins[dev]);
 		return -ENODEV;
 	}
 
-	err  = snd_card_new(&devptr->dev, index[dev], id[dev], THIS_MODULE,
-			    0, &card);
+	err  = snd_devm_card_new(&devptr->dev, index[dev], id[dev], THIS_MODULE,
+				 0, &card);
 	if (err < 0)
 		return err;
 
 	strcpy(card->driver, "Serial");
 	strcpy(card->shortname, "Serial MIDI (UART16550A)");
 
-	if ((err = snd_uart16550_create(card,
-					port[dev],
-					irq[dev],
-					speed[dev],
-					base[dev],
-					adaptor[dev],
-					droponfull[dev],
-					&uart)) < 0)
-		goto _err;
+	err = snd_uart16550_create(card, port[dev], irq[dev], speed[dev],
+				   base[dev], adaptor[dev], droponfull[dev],
+				   &uart);
+	if (err < 0)
+		return err;
 
 	err = snd_uart16550_rmidi(uart, 0, outs[dev], ins[dev], &uart->rmidi);
 	if (err < 0)
-		goto _err;
+		return err;
 
 	sprintf(card->longname, "%s [%s] at %#lx, irq %d",
 		card->shortname,
@@ -953,20 +924,11 @@ static int snd_serial_probe(struct platform_device *devptr)
 		uart->base,
 		uart->irq);
 
-	if ((err = snd_card_register(card)) < 0)
-		goto _err;
+	err = snd_card_register(card);
+	if (err < 0)
+		return err;
 
 	platform_set_drvdata(devptr, card);
-	return 0;
-
- _err:
-	snd_card_free(card);
-	return err;
-}
-
-static int snd_serial_remove(struct platform_device *devptr)
-{
-	snd_card_free(platform_get_drvdata(devptr));
 	return 0;
 }
 
@@ -974,7 +936,6 @@ static int snd_serial_remove(struct platform_device *devptr)
 
 static struct platform_driver snd_serial_driver = {
 	.probe		= snd_serial_probe,
-	.remove		=  snd_serial_remove,
 	.driver		= {
 		.name	= SND_SERIAL_DRIVER,
 	},
@@ -993,7 +954,8 @@ static int __init alsa_card_serial_init(void)
 {
 	int i, cards, err;
 
-	if ((err = platform_driver_register(&snd_serial_driver)) < 0)
+	err = platform_driver_register(&snd_serial_driver);
+	if (err < 0)
 		return err;
 
 	cards = 0;
@@ -1014,7 +976,7 @@ static int __init alsa_card_serial_init(void)
 	}
 	if (! cards) {
 #ifdef MODULE
-		printk(KERN_ERR "serial midi soundcard not found or device busy\n");
+		pr_err("serial midi soundcard not found or device busy\n");
 #endif
 		snd_serial_unregister_all();
 		return -ENODEV;

@@ -314,7 +314,6 @@ enum db_state {
 struct c4iw_dev {
 	struct ib_device ibdev;
 	struct c4iw_rdev rdev;
-	u32 device_cap_flags;
 	struct xarray cqs;
 	struct xarray qps;
 	struct xarray mrs;
@@ -339,11 +338,6 @@ struct uld_ctx {
 static inline struct c4iw_dev *to_c4iw_dev(struct ib_device *ibdev)
 {
 	return container_of(ibdev, struct c4iw_dev, ibdev);
-}
-
-static inline struct c4iw_dev *rdev_to_c4iw_dev(struct c4iw_rdev *rdev)
-{
-	return container_of(rdev, struct c4iw_dev, rdev);
 }
 
 static inline struct c4iw_cq *get_chp(struct c4iw_dev *rhp, u32 cqid)
@@ -432,8 +426,8 @@ struct c4iw_cq {
 	struct t4_cq cq;
 	spinlock_t lock;
 	spinlock_t comp_handler_lock;
-	atomic_t refcnt;
-	wait_queue_head_t wait;
+	refcount_t refcnt;
+	struct completion cq_rel_comp;
 	struct c4iw_wr_wait *wr_waitp;
 };
 
@@ -538,11 +532,21 @@ static inline struct c4iw_ucontext *to_c4iw_ucontext(struct ib_ucontext *c)
 	return container_of(c, struct c4iw_ucontext, ibucontext);
 }
 
+enum {
+	CXGB4_MMAP_BAR,
+	CXGB4_MMAP_BAR_WC,
+	CXGB4_MMAP_CONTIG,
+	CXGB4_MMAP_NON_CONTIG,
+};
+
 struct c4iw_mm_entry {
 	struct list_head entry;
 	u64 addr;
 	u32 key;
+	void *vaddr;
+	dma_addr_t dma_addr;
 	unsigned len;
+	u8 mmap_flag;
 };
 
 static inline struct c4iw_mm_entry *remove_mmap(struct c4iw_ucontext *ucontext,
@@ -565,6 +569,32 @@ static inline struct c4iw_mm_entry *remove_mmap(struct c4iw_ucontext *ucontext,
 	}
 	spin_unlock(&ucontext->mmap_lock);
 	return NULL;
+}
+
+static inline void insert_flag_to_mmap(struct c4iw_rdev *rdev,
+				       struct c4iw_mm_entry *mm, u64 addr)
+{
+	if (addr >= pci_resource_start(rdev->lldi.pdev, 0) &&
+	    (addr < (pci_resource_start(rdev->lldi.pdev, 0) +
+		    pci_resource_len(rdev->lldi.pdev, 0))))
+		mm->mmap_flag = CXGB4_MMAP_BAR;
+	else if (addr >= pci_resource_start(rdev->lldi.pdev, 2) &&
+		 (addr < (pci_resource_start(rdev->lldi.pdev, 2) +
+			 pci_resource_len(rdev->lldi.pdev, 2)))) {
+		if (addr >= rdev->oc_mw_pa) {
+			mm->mmap_flag = CXGB4_MMAP_BAR_WC;
+		} else {
+			if (is_t4(rdev->lldi.adapter_type))
+				mm->mmap_flag = CXGB4_MMAP_BAR;
+			else
+				mm->mmap_flag = CXGB4_MMAP_BAR_WC;
+		}
+	} else {
+		if (addr)
+			mm->mmap_flag = CXGB4_MMAP_CONTIG;
+		else
+			mm->mmap_flag = CXGB4_MMAP_NON_CONTIG;
+	}
 }
 
 static inline void insert_mmap(struct c4iw_ucontext *ucontext,
@@ -657,12 +687,6 @@ static inline u32 c4iw_ib_to_tpt_access(int a)
 	       (a & IB_ACCESS_REMOTE_READ ? FW_RI_MEM_ACCESS_REM_READ : 0) |
 	       (a & IB_ACCESS_LOCAL_WRITE ? FW_RI_MEM_ACCESS_LOCAL_WRITE : 0) |
 	       FW_RI_MEM_ACCESS_LOCAL_READ;
-}
-
-static inline u32 c4iw_ib_to_tpt_bind_access(int acc)
-{
-	return (acc & IB_ACCESS_REMOTE_WRITE ? FW_RI_MEM_ACCESS_REM_WRITE : 0) |
-	       (acc & IB_ACCESS_REMOTE_READ ? FW_RI_MEM_ACCESS_REM_READ : 0);
 }
 
 enum c4iw_mmid_state {
@@ -942,15 +966,12 @@ void c4iw_id_table_free(struct c4iw_id_table *alloc);
 
 typedef int (*c4iw_handler_func)(struct c4iw_dev *dev, struct sk_buff *skb);
 
-int c4iw_ep_redirect(void *ctx, struct dst_entry *old, struct dst_entry *new,
-		     struct l2t_entry *l2t);
 void c4iw_put_qpid(struct c4iw_rdev *rdev, u32 qpid,
 		   struct c4iw_dev_ucontext *uctx);
 u32 c4iw_get_resource(struct c4iw_id_table *id_table);
 void c4iw_put_resource(struct c4iw_id_table *id_table, u32 entry);
 int c4iw_init_resource(struct c4iw_rdev *rdev, u32 nr_tpt,
 		       u32 nr_pdid, u32 nr_srqt);
-int c4iw_init_ctrl_qp(struct c4iw_rdev *rdev);
 int c4iw_pblpool_create(struct c4iw_rdev *rdev);
 int c4iw_rqtpool_create(struct c4iw_rdev *rdev);
 int c4iw_ocqp_pool_create(struct c4iw_rdev *rdev);
@@ -958,7 +979,6 @@ void c4iw_pblpool_destroy(struct c4iw_rdev *rdev);
 void c4iw_rqtpool_destroy(struct c4iw_rdev *rdev);
 void c4iw_ocqp_pool_destroy(struct c4iw_rdev *rdev);
 void c4iw_destroy_resource(struct c4iw_resource *rscp);
-int c4iw_destroy_ctrl_qp(struct c4iw_rdev *rdev);
 void c4iw_register_device(struct work_struct *work);
 void c4iw_unregister_device(struct c4iw_dev *dev);
 int __init c4iw_cm_init(void);
@@ -983,17 +1003,16 @@ struct ib_mr *c4iw_alloc_mr(struct ib_pd *pd, enum ib_mr_type mr_type,
 			    u32 max_num_sg);
 int c4iw_map_mr_sg(struct ib_mr *ibmr, struct scatterlist *sg, int sg_nents,
 		   unsigned int *sg_offset);
-int c4iw_dealloc_mw(struct ib_mw *mw);
 void c4iw_dealloc(struct uld_ctx *ctx);
-int c4iw_alloc_mw(struct ib_mw *mw, struct ib_udata *udata);
 struct ib_mr *c4iw_reg_user_mr(struct ib_pd *pd, u64 start,
 					   u64 length, u64 virt, int acc,
 					   struct ib_udata *udata);
 struct ib_mr *c4iw_get_dma_mr(struct ib_pd *pd, int acc);
 int c4iw_dereg_mr(struct ib_mr *ib_mr, struct ib_udata *udata);
 int c4iw_destroy_cq(struct ib_cq *ib_cq, struct ib_udata *udata);
+void c4iw_cq_rem_ref(struct c4iw_cq *chp);
 int c4iw_create_cq(struct ib_cq *ibcq, const struct ib_cq_init_attr *attr,
-		   struct ib_udata *udata);
+		   struct uverbs_attr_bundle *attrs);
 int c4iw_arm_cq(struct ib_cq *ibcq, enum ib_cq_notify_flags flags);
 int c4iw_modify_srq(struct ib_srq *ib_srq, struct ib_srq_attr *attr,
 		    enum ib_srq_attr_mask srq_attr_mask,
@@ -1002,9 +1021,8 @@ int c4iw_destroy_srq(struct ib_srq *ib_srq, struct ib_udata *udata);
 int c4iw_create_srq(struct ib_srq *srq, struct ib_srq_init_attr *attrs,
 		    struct ib_udata *udata);
 int c4iw_destroy_qp(struct ib_qp *ib_qp, struct ib_udata *udata);
-struct ib_qp *c4iw_create_qp(struct ib_pd *pd,
-			     struct ib_qp_init_attr *attrs,
-			     struct ib_udata *udata);
+int c4iw_create_qp(struct ib_qp *qp, struct ib_qp_init_attr *attrs,
+		   struct ib_udata *udata);
 int c4iw_ib_modify_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr,
 				 int attr_mask, struct ib_udata *udata);
 int c4iw_ib_query_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr,
@@ -1022,8 +1040,6 @@ int c4iw_ep_disconnect(struct c4iw_ep *ep, int abrupt, gfp_t gfp);
 int c4iw_flush_rq(struct t4_wq *wq, struct t4_cq *cq, int count);
 int c4iw_flush_sq(struct c4iw_qp *qhp);
 int c4iw_ev_handler(struct c4iw_dev *rnicp, u32 qid);
-u16 c4iw_rqes_posted(struct c4iw_qp *qhp);
-int c4iw_post_terminate(struct c4iw_qp *qhp, struct t4_cqe *err_cqe);
 u32 c4iw_get_cqid(struct c4iw_rdev *rdev, struct c4iw_dev_ucontext *uctx);
 void c4iw_put_cqid(struct c4iw_rdev *rdev, u32 qid,
 		struct c4iw_dev_ucontext *uctx);

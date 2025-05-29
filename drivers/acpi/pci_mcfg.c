@@ -41,6 +41,8 @@ struct mcfg_fixup {
 static struct mcfg_fixup mcfg_quirks[] = {
 /*	{ OEM_ID, OEM_TABLE_ID, REV, SEGMENT, BUS_RANGE, ops, cfgres }, */
 
+#ifdef CONFIG_ARM64
+
 #define AL_ECAM(table_id, rev, seg, ops) \
 	{ "AMAZON", table_id, rev, seg, MCFG_BUS_ANY, ops }
 
@@ -116,6 +118,13 @@ static struct mcfg_fixup mcfg_quirks[] = {
 	THUNDER_ECAM_QUIRK(2, 12),
 	THUNDER_ECAM_QUIRK(2, 13),
 
+	{ "NVIDIA", "TEGRA194", 1, 0, MCFG_BUS_ANY, &tegra194_pcie_ops},
+	{ "NVIDIA", "TEGRA194", 1, 1, MCFG_BUS_ANY, &tegra194_pcie_ops},
+	{ "NVIDIA", "TEGRA194", 1, 2, MCFG_BUS_ANY, &tegra194_pcie_ops},
+	{ "NVIDIA", "TEGRA194", 1, 3, MCFG_BUS_ANY, &tegra194_pcie_ops},
+	{ "NVIDIA", "TEGRA194", 1, 4, MCFG_BUS_ANY, &tegra194_pcie_ops},
+	{ "NVIDIA", "TEGRA194", 1, 5, MCFG_BUS_ANY, &tegra194_pcie_ops},
+
 #define XGENE_V1_ECAM_MCFG(rev, seg) \
 	{"APM   ", "XGENE   ", rev, seg, MCFG_BUS_ANY, \
 		&xgene_v1_pcie_ecam_ops }
@@ -162,6 +171,29 @@ static struct mcfg_fixup mcfg_quirks[] = {
 	ALTRA_ECAM_QUIRK(1, 13),
 	ALTRA_ECAM_QUIRK(1, 14),
 	ALTRA_ECAM_QUIRK(1, 15),
+#endif /* ARM64 */
+
+#ifdef CONFIG_LOONGARCH
+#define LOONGSON_ECAM_MCFG(table_id, seg) \
+	{ "LOONGS", table_id, 1, seg, MCFG_BUS_ANY, &loongson_pci_ecam_ops }
+
+	LOONGSON_ECAM_MCFG("\0", 0),
+	LOONGSON_ECAM_MCFG("LOONGSON", 0),
+	LOONGSON_ECAM_MCFG("\0", 1),
+	LOONGSON_ECAM_MCFG("LOONGSON", 1),
+	LOONGSON_ECAM_MCFG("\0", 2),
+	LOONGSON_ECAM_MCFG("LOONGSON", 2),
+	LOONGSON_ECAM_MCFG("\0", 3),
+	LOONGSON_ECAM_MCFG("LOONGSON", 3),
+	LOONGSON_ECAM_MCFG("\0", 4),
+	LOONGSON_ECAM_MCFG("LOONGSON", 4),
+	LOONGSON_ECAM_MCFG("\0", 5),
+	LOONGSON_ECAM_MCFG("LOONGSON", 5),
+	LOONGSON_ECAM_MCFG("\0", 6),
+	LOONGSON_ECAM_MCFG("LOONGSON", 6),
+	LOONGSON_ECAM_MCFG("\0", 7),
+	LOONGSON_ECAM_MCFG("LOONGSON", 7),
+#endif /* LOONGARCH */
 };
 
 static char mcfg_oem_id[ACPI_OEM_ID_SIZE];
@@ -173,7 +205,7 @@ static int pci_mcfg_quirk_matches(struct mcfg_fixup *f, u16 segment,
 {
 	if (!memcmp(f->oem_id, mcfg_oem_id, ACPI_OEM_ID_SIZE) &&
 	    !memcmp(f->oem_table_id, mcfg_oem_table_id,
-	            ACPI_OEM_TABLE_ID_SIZE) &&
+		    ACPI_OEM_TABLE_ID_SIZE) &&
 	    f->oem_revision == mcfg_oem_revision &&
 	    f->segment == segment &&
 	    resource_contains(&f->bus_range, bus_range))

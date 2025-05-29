@@ -38,19 +38,22 @@
 
 #ifndef __ASSEMBLY__
 
+#include <asm/asm.h>
+
 static inline int ____pcpu_sigp(u16 addr, u8 order, unsigned long parm,
 				u32 *status)
 {
-	register unsigned long reg1 asm ("1") = parm;
+	union register_pair r1 = { .odd = parm, };
 	int cc;
 
 	asm volatile(
-		"	sigp	%1,%2,0(%3)\n"
-		"	ipm	%0\n"
-		"	srl	%0,28\n"
-		: "=d" (cc), "+d" (reg1) : "d" (addr), "a" (order) : "cc");
-	*status = reg1;
-	return cc;
+		"	sigp	%[r1],%[addr],0(%[order])\n"
+		CC_IPM(cc)
+		: CC_OUT(cc, cc), [r1] "+d" (r1.pair)
+		: [addr] "d" (addr), [order] "a" (order)
+		: CC_CLOBBER);
+	*status = r1.even;
+	return CC_TRANSFORM(cc);
 }
 
 static inline int __pcpu_sigp(u16 addr, u8 order, unsigned long parm,

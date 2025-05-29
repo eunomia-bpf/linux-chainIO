@@ -23,7 +23,6 @@
 #define PTRS_PER_PTE	1024
 #define USER_PTRS_PER_PGD ((TASK_SIZE + (PGDIR_SIZE - 1)) / PGDIR_SIZE)
 #define PTRS_PER_PGD	1024
-#define FIRST_USER_ADDRESS	0UL
 
 #define pte_ERROR(e) \
         printk("%s:%d: bad pte %p(%08lx).\n", __FILE__, __LINE__, &(e), \
@@ -32,7 +31,7 @@
         printk("%s:%d: bad pgd %p(%08lx).\n", __FILE__, __LINE__, &(e), \
 	       pgd_val(e))
 
-static inline int pgd_newpage(pgd_t pgd)	{ return 0; }
+static inline int pgd_needsync(pgd_t pgd)	{ return 0; }
 static inline void pgd_mkuptodate(pgd_t pgd)	{ }
 
 #define set_pmd(pmdptr, pmdval) (*(pmdptr) = (pmdval))

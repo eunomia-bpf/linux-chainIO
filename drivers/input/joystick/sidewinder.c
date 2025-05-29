@@ -7,9 +7,6 @@
  * Microsoft SideWinder joystick family driver for Linux
  */
 
-/*
- */
-
 #include <linux/delay.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -580,7 +577,7 @@ static int sw_connect(struct gameport *gameport, struct gameport_driver *drv)
 
 	comment[0] = 0;
 
-	sw = kzalloc(sizeof(struct sw), GFP_KERNEL);
+	sw = kzalloc(sizeof(*sw), GFP_KERNEL);
 	buf = kmalloc(SW_LENGTH, GFP_KERNEL);
 	idbuf = kmalloc(SW_LENGTH, GFP_KERNEL);
 	if (!sw || !buf || !idbuf) {
@@ -660,6 +657,7 @@ static int sw_connect(struct gameport *gameport, struct gameport_driver *drv)
 					fallthrough;
 				case 45:				/* Ambiguous packet length */
 					if (j <= 40) {			/* ID length less or eq 40 -> FSP */
+					fallthrough;
 				case 43:
 						sw->type = SW_ID_FSP;
 						break;

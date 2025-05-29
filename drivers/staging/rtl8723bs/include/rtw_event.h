@@ -28,7 +28,7 @@ struct surveydone_event {
 };
 
 /*
-Used to report the link result of joinning the given bss
+Used to report the link result of joining the given bss
 
 
 join_res:
@@ -60,10 +60,6 @@ struct stadel_event {
  int mac_id;
 };
 
-struct addba_event {
-	unsigned int tid;
-};
-
 struct wmm_event {
 	unsigned char wmm;
 };
@@ -86,13 +82,6 @@ struct event_node {
 	unsigned short evt_sz;
 	volatile int	*caller_ff_tail;
 	int	caller_ff_sz;
-};
-
-struct c2hevent_queue {
-	volatile int	head;
-	volatile int	tail;
-	struct	event_node	nodes[C2HEVENT_SZ];
-	unsigned char seq;
 };
 
 #define NETWORK_QUEUE_SZ	4

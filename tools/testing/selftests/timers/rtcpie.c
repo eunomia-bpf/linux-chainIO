@@ -18,6 +18,8 @@
 #include <stdlib.h>
 #include <errno.h>
 
+#include "../kselftest.h"
+
 /*
  * This expects the new RTC class driver framework, working with
  * clocks that will often not be clones of what the PC-AT had.
@@ -27,7 +29,7 @@ static const char default_rtc[] = "/dev/rtc0";
 
 int main(int argc, char **argv)
 {
-	int i, fd, retval, irqcount = 0;
+	int i, fd, retval;
 	unsigned long tmp, data, old_pie_rate;
 	const char *rtc = default_rtc;
 	struct timeval start, end, diff;
@@ -35,8 +37,14 @@ int main(int argc, char **argv)
 	switch (argc) {
 	case 2:
 		rtc = argv[1];
-		/* FALLTHROUGH */
+		break;
 	case 1:
+		fd = open(default_rtc, O_RDONLY);
+		if (fd == -1) {
+			printf("Default RTC %s does not exist. Test Skipped!\n", default_rtc);
+			exit(KSFT_SKIP);
+		}
+		close(fd);
 		break;
 	default:
 		fprintf(stderr, "usage:  rtctest [rtcdev] [d]\n");
@@ -112,7 +120,6 @@ int main(int argc, char **argv)
 
 			fprintf(stderr, " %d",i);
 			fflush(stderr);
-			irqcount++;
 		}
 
 		/* Disable periodic interrupts */

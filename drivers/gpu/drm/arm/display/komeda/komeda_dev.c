@@ -6,16 +6,14 @@
  */
 #include <linux/io.h>
 #include <linux/iommu.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/of_graph.h>
 #include <linux/of_reserved_mem.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/dma-mapping.h>
-#ifdef CONFIG_DEBUG_FS
 #include <linux/debugfs.h>
 #include <linux/seq_file.h>
-#endif
 
 #include <drm/drm_print.h>
 
@@ -41,20 +39,8 @@ static int komeda_register_show(struct seq_file *sf, void *x)
 	return 0;
 }
 
-static int komeda_register_open(struct inode *inode, struct file *filp)
-{
-	return single_open(filp, komeda_register_show, inode->i_private);
-}
+DEFINE_SHOW_ATTRIBUTE(komeda_register);
 
-static const struct file_operations komeda_register_fops = {
-	.owner		= THIS_MODULE,
-	.open		= komeda_register_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
-
-#ifdef CONFIG_DEBUG_FS
 static void komeda_debugfs_init(struct komeda_dev *mdev)
 {
 	if (!debugfs_initialized())
@@ -66,14 +52,13 @@ static void komeda_debugfs_init(struct komeda_dev *mdev)
 	debugfs_create_x16("err_verbosity", 0664, mdev->debugfs_root,
 			   &mdev->err_verbosity);
 }
-#endif
 
 static ssize_t
 core_id_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct komeda_dev *mdev = dev_to_mdev(dev);
 
-	return snprintf(buf, PAGE_SIZE, "0x%08x\n", mdev->chip.core_id);
+	return sysfs_emit(buf, "0x%08x\n", mdev->chip.core_id);
 }
 static DEVICE_ATTR_RO(core_id);
 
@@ -96,7 +81,7 @@ config_id_show(struct device *dev, struct device_attribute *attr, char *buf)
 		if (pipe->layers[i]->layer_type == KOMEDA_FMT_RICH_LAYER)
 			config_id.n_richs++;
 	}
-	return snprintf(buf, PAGE_SIZE, "0x%08x\n", config_id.value);
+	return sysfs_emit(buf, "0x%08x\n", config_id.value);
 }
 static DEVICE_ATTR_RO(config_id);
 
@@ -105,7 +90,7 @@ aclk_hz_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct komeda_dev *mdev = dev_to_mdev(dev);
 
-	return snprintf(buf, PAGE_SIZE, "%lu\n", clk_get_rate(mdev->aclk));
+	return sysfs_emit(buf, "%lu\n", clk_get_rate(mdev->aclk));
 }
 static DEVICE_ATTR_RO(aclk_hz);
 
@@ -163,7 +148,6 @@ static int komeda_parse_dt(struct device *dev, struct komeda_dev *mdev)
 	ret = of_reserved_mem_device_init(dev);
 	if (ret && ret != -ENODEV)
 		return ret;
-	ret = 0;
 
 	for_each_available_child_of_node(np, child) {
 		if (of_node_name_eq(child, "pipeline")) {
@@ -261,8 +245,7 @@ struct komeda_dev *komeda_dev_create(struct device *dev)
 		goto disable_clk;
 	}
 
-	dev->dma_parms = &mdev->dma_parms;
-	dma_set_max_seg_size(dev, DMA_BIT_MASK(32));
+	dma_set_max_seg_size(dev, U32_MAX);
 
 	mdev->iommu = iommu_get_domain_for_dev(mdev->dev);
 	if (!mdev->iommu)
@@ -278,9 +261,7 @@ struct komeda_dev *komeda_dev_create(struct device *dev)
 
 	mdev->err_verbosity = KOMEDA_DEV_PRINT_ERR_EVENTS;
 
-#ifdef CONFIG_DEBUG_FS
 	komeda_debugfs_init(mdev);
-#endif
 
 	return mdev;
 
@@ -299,9 +280,7 @@ void komeda_dev_destroy(struct komeda_dev *mdev)
 
 	sysfs_remove_group(&dev->kobj, &komeda_sysfs_attr_group);
 
-#ifdef CONFIG_DEBUG_FS
 	debugfs_remove_recursive(mdev->debugfs_root);
-#endif
 
 	if (mdev->aclk)
 		clk_prepare_enable(mdev->aclk);

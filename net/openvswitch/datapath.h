@@ -51,6 +51,21 @@ struct dp_stats_percpu {
 };
 
 /**
+ * struct dp_nlsk_pids - array of netlink portids of for a datapath.
+ *                       This is used when OVS_DP_F_DISPATCH_UPCALL_PER_CPU
+ *                       is enabled and must be protected by rcu.
+ * @rcu: RCU callback head for deferred destruction.
+ * @n_pids: Size of @pids array.
+ * @pids: Array storing the Netlink socket PIDs indexed by CPU ID for packets
+ *       that miss the flow table.
+ */
+struct dp_nlsk_pids {
+	struct rcu_head rcu;
+	u32 n_pids;
+	u32 pids[];
+};
+
+/**
  * struct datapath - datapath for flow-based packet switching
  * @rcu: RCU callback head for deferred destruction.
  * @list_node: Element in global 'dps' list.
@@ -61,6 +76,7 @@ struct dp_stats_percpu {
  * @net: Reference to net namespace.
  * @max_headroom: the maximum headroom of all vports in this datapath; it will
  * be used by all the internal vports in this dp.
+ * @upcall_portids: RCU protected 'struct dp_nlsk_pids'.
  *
  * Context: See the comment on locking at the top of datapath.c for additional
  * locking information.
@@ -87,6 +103,8 @@ struct datapath {
 
 	/* Switch meters. */
 	struct dp_meter_table meter_tbl;
+
+	struct dp_nlsk_pids __rcu *upcall_portids;
 };
 
 /**
@@ -97,12 +115,15 @@ struct datapath {
  * fragmented.
  * @acts_origlen: The netlink size of the flow actions applied to this skb.
  * @cutlen: The number of bytes from the packet end to be removed.
+ * @probability: The sampling probability that was applied to this skb; 0 means
+ * no sampling has occurred; U32_MAX means 100% probability.
  */
 struct ovs_skb_cb {
 	struct vport		*input_vport;
 	u16			mru;
 	u16			acts_origlen;
 	u32			cutlen;
+	u32			probability;
 };
 #define OVS_CB(skb) ((struct ovs_skb_cb *)(skb)->cb)
 
@@ -139,9 +160,6 @@ struct ovs_net {
 #if	IS_ENABLED(CONFIG_NETFILTER_CONNCOUNT)
 	struct ovs_ct_limit_info *ct_limit_info;
 #endif
-
-	/* Module reference for configuring conntrack. */
-	bool xt_label;
 };
 
 /**
@@ -235,13 +253,13 @@ static inline struct datapath *get_dp(struct net *net, int dp_ifindex)
 extern struct notifier_block ovs_dp_device_notifier;
 extern struct genl_family dp_vport_genl_family;
 
-DECLARE_STATIC_KEY_FALSE(tc_recirc_sharing_support);
-
 void ovs_dp_process_packet(struct sk_buff *skb, struct sw_flow_key *key);
 void ovs_dp_detach_port(struct vport *);
 int ovs_dp_upcall(struct datapath *, struct sk_buff *,
 		  const struct sw_flow_key *, const struct dp_upcall_info *,
 		  uint32_t cutlen);
+
+u32 ovs_dp_get_upcall_portid(const struct datapath *dp, uint32_t cpu_id);
 
 const char *ovs_dp_name(const struct datapath *dp);
 struct sk_buff *ovs_vport_cmd_build_info(struct vport *vport, struct net *net,

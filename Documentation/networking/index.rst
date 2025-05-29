@@ -1,23 +1,26 @@
-Linux Networking Documentation
-==============================
+Networking
+==========
+
+Refer to :ref:`netdev-FAQ` for a guide on netdev development process specifics.
 
 Contents:
 
 .. toctree::
    :maxdepth: 2
 
-   netdev-FAQ
    af_xdp
    bareudp
    batman-adv
    can
    can_ucan_protocol
    device_drivers/index
+   diagnostic/index
    dsa/index
    devlink/index
    caif/index
    ethtool-netlink
    ieee802154
+   iso15765-2
    j1939
    kapi
    msg_zerocopy
@@ -35,6 +38,7 @@ Contents:
    scaling
    tls
    tls-offload
+   tls-handshake
    nfc
    6lowpan
    6pack
@@ -46,19 +50,19 @@ Contents:
    cdc_mbim
    dccp
    dctcp
-   decnet
+   devmem
    dns_resolver
    driver
    eql
    fib_trie
    filter
-   framerelay
    generic-hdlc
    generic_netlink
+   netlink_spec/index
    gen_stats
    gtp
    ila
-   ipddp
+   ioam6-sysctl
    ip_dynaddr
    ipsec
    ip-sysctl
@@ -69,49 +73,68 @@ Contents:
    l2tp
    lapb-module
    mac80211-injection
+   mctp
    mpls-sysctl
+   mptcp
+   mptcp-sysctl
    multiqueue
+   multi-pf-netdev
+   napi
+   net_cachelines/index
    netconsole
    netdev-features
    netdevices
    netfilter-sysctl
    netif-msg
+   nexthop-group-resilient
    nf_conntrack-sysctl
    nf_flowtable
+   oa-tc6-framework
    openvswitch
    operstates
    packet_mmap
    phonet
+   phy-link-topology
    pktgen
    plip
    ppp_generic
    proc_net_tcp
+   pse-pd/index
    radiotap-headers
    rds
    regulatory
+   representors
    rxrpc
    sctp
    secid
    seg6-sysctl
+   skbuff
+   smc-sysctl
+   sriov
    statistics
    strparser
    switchdev
    sysfs-tagging
    tc-actions-env-rules
+   tc-queue-filters
+   tcp_ao
    tcp-thin
    team
    timestamping
+   tipc
    tproxy
    tuntap
    udplite
    vrf
    vxlan
-   x25-iface
    x25
+   x25-iface
    xfrm_device
    xfrm_proc
    xfrm_sync
    xfrm_sysctl
+   xdp-rx-metadata
+   xsk-tx-metadata
 
 .. only::  subproject and html
 

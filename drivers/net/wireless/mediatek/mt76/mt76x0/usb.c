@@ -32,7 +32,8 @@ static struct usb_device_id mt76x0_device_table[] = {
 	{ USB_DEVICE(0x20f4, 0x806b) },	/* TRENDnet TEW-806UBH  */
 	{ USB_DEVICE(0x7392, 0xc711) }, /* Devolo Wifi ac Stick */
 	{ USB_DEVICE(0x0df6, 0x0079) }, /* Sitecom Europe B.V. ac  Stick */
-	{ USB_DEVICE(0x2357, 0x0123) }, /* TP-LINK T2UHP */
+	{ USB_DEVICE(0x2357, 0x0123) }, /* TP-LINK T2UHP_US_v1 */
+	{ USB_DEVICE(0x2357, 0x010b) }, /* TP-LINK T2UHP_UN_v1 */
 	/* TP-LINK Archer T1U */
 	{ USB_DEVICE(0x2357, 0x0105), .driver_info = 1, },
 	/* MT7630U */
@@ -76,13 +77,13 @@ static void mt76x0u_cleanup(struct mt76x02_dev *dev)
 	mt76u_queues_deinit(&dev->mt76);
 }
 
-static void mt76x0u_stop(struct ieee80211_hw *hw)
+static void mt76x0u_stop(struct ieee80211_hw *hw, bool suspend)
 {
 	struct mt76x02_dev *dev = hw->priv;
 
 	clear_bit(MT76_STATE_RUNNING, &dev->mphy.state);
 	cancel_delayed_work_sync(&dev->cal_work);
-	cancel_delayed_work_sync(&dev->mt76.mac_work);
+	cancel_delayed_work_sync(&dev->mphy.mac_work);
 	mt76u_stop_tx(&dev->mt76);
 	mt76x02u_exit_beacon_config(dev);
 
@@ -108,7 +109,7 @@ static int mt76x0u_start(struct ieee80211_hw *hw)
 		return ret;
 
 	mt76x0_phy_calibrate(dev, true);
-	ieee80211_queue_delayed_work(dev->mt76.hw, &dev->mt76.mac_work,
+	ieee80211_queue_delayed_work(dev->mt76.hw, &dev->mphy.mac_work,
 				     MT_MAC_WORK_INTERVAL);
 	ieee80211_queue_delayed_work(dev->mt76.hw, &dev->cal_work,
 				     MT_CALIBRATE_INTERVAL);
@@ -117,6 +118,10 @@ static int mt76x0u_start(struct ieee80211_hw *hw)
 }
 
 static const struct ieee80211_ops mt76x0u_ops = {
+	.add_chanctx = ieee80211_emulate_add_chanctx,
+	.remove_chanctx = ieee80211_emulate_remove_chanctx,
+	.change_chanctx = ieee80211_emulate_change_chanctx,
+	.switch_vif_chanctx = ieee80211_emulate_switch_vif_chanctx,
 	.tx = mt76x02_tx,
 	.start = mt76x0u_start,
 	.stop = mt76x0u_stop,
@@ -140,6 +145,7 @@ static const struct ieee80211_ops mt76x0u_ops = {
 	.set_tim = mt76_set_tim,
 	.release_buffered_frames = mt76_release_buffered_frames,
 	.get_antenna = mt76_get_antenna,
+	.set_sar_specs = mt76x0_set_sar_specs,
 };
 
 static int mt76x0u_init_hardware(struct mt76x02_dev *dev, bool reset)
@@ -211,6 +217,7 @@ static int mt76x0u_probe(struct usb_interface *usb_intf,
 		.drv_flags = MT_DRV_SW_RX_AIRTIME,
 		.survey_flags = SURVEY_INFO_TIME_TX,
 		.update_survey = mt76x02_update_channel,
+		.set_channel = mt76x0_set_channel,
 		.tx_prepare_skb = mt76x02u_tx_prepare_skb,
 		.tx_complete_skb = mt76x02u_tx_complete_skb,
 		.tx_status_data = mt76x02_tx_status_data,
@@ -243,7 +250,7 @@ static int mt76x0u_probe(struct usb_interface *usb_intf,
 	usb_set_intfdata(usb_intf, dev);
 
 	mt76x02u_init_mcu(mdev);
-	ret = mt76u_init(mdev, usb_intf, false);
+	ret = mt76u_init(mdev, usb_intf);
 	if (ret)
 		goto err;
 
@@ -277,6 +284,7 @@ static int mt76x0u_probe(struct usb_interface *usb_intf,
 err:
 	usb_set_intfdata(usb_intf, NULL);
 	usb_put_dev(interface_to_usbdev(usb_intf));
+	mt76u_queues_deinit(&dev->mt76);
 	mt76_free_device(&dev->mt76);
 
 	return ret;
@@ -333,6 +341,7 @@ err:
 MODULE_DEVICE_TABLE(usb, mt76x0_device_table);
 MODULE_FIRMWARE(MT7610E_FIRMWARE);
 MODULE_FIRMWARE(MT7610U_FIRMWARE);
+MODULE_DESCRIPTION("MediaTek MT76x0U (USB) wireless driver");
 MODULE_LICENSE("GPL");
 
 static struct usb_driver mt76x0_driver = {

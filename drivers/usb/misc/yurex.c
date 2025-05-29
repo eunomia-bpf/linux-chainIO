@@ -137,6 +137,7 @@ static void yurex_interrupt(struct urb *urb)
 		dev_err(&dev->interface->dev,
 			"%s - overflow with length %d, actual length is %d\n",
 			__func__, YUREX_BUF_SIZE, dev->urb->actual_length);
+		return;
 	case -ECONNRESET:
 	case -ENOENT:
 	case -ESHUTDOWN:
@@ -399,7 +400,7 @@ static ssize_t yurex_read(struct file *file, char __user *buffer, size_t count,
 			  loff_t *ppos)
 {
 	struct usb_yurex *dev;
-	int len = 0;
+	int len;
 	char in_buffer[20];
 	unsigned long flags;
 
@@ -440,7 +441,10 @@ static ssize_t yurex_write(struct file *file, const char __user *user_buffer,
 	if (count == 0)
 		goto error;
 
-	mutex_lock(&dev->io_mutex);
+	retval = mutex_lock_interruptible(&dev->io_mutex);
+	if (retval < 0)
+		return -EINTR;
+
 	if (dev->disconnected) {		/* already disconnected */
 		mutex_unlock(&dev->io_mutex);
 		retval = -ENODEV;
@@ -495,6 +499,9 @@ static ssize_t yurex_write(struct file *file, const char __user *user_buffer,
 		timeout = schedule_timeout(YUREX_WRITE_TIMEOUT);
 	finish_wait(&dev->waitq, &wait);
 
+	/* make sure URB is idle after timeout or (spurious) CMD_ACK */
+	usb_kill_urb(dev->cntl_urb);
+
 	mutex_unlock(&dev->io_mutex);
 
 	if (retval < 0) {
@@ -503,8 +510,11 @@ static ssize_t yurex_write(struct file *file, const char __user *user_buffer,
 			__func__, retval);
 		goto error;
 	}
-	if (set && timeout)
+	if (set && timeout) {
+		spin_lock_irq(&dev->lock);
 		dev->bbu = c2;
+		spin_unlock_irq(&dev->lock);
+	}
 	return timeout ? count : -EIO;
 
 error:
@@ -523,4 +533,5 @@ static const struct file_operations yurex_fops = {
 
 module_usb_driver(yurex_driver);
 
+MODULE_DESCRIPTION("USB YUREX driver support");
 MODULE_LICENSE("GPL");

@@ -152,7 +152,9 @@ void cpsw_set_msglevel(struct net_device *ndev, u32 value)
 	priv->msg_enable = value;
 }
 
-int cpsw_get_coalesce(struct net_device *ndev, struct ethtool_coalesce *coal)
+int cpsw_get_coalesce(struct net_device *ndev, struct ethtool_coalesce *coal,
+		      struct kernel_ethtool_coalesce *kernel_coal,
+		      struct netlink_ext_ack *extack)
 {
 	struct cpsw_common *cpsw = ndev_to_cpsw(ndev);
 
@@ -160,7 +162,9 @@ int cpsw_get_coalesce(struct net_device *ndev, struct ethtool_coalesce *coal)
 	return 0;
 }
 
-int cpsw_set_coalesce(struct net_device *ndev, struct ethtool_coalesce *coal)
+int cpsw_set_coalesce(struct net_device *ndev, struct ethtool_coalesce *coal,
+		      struct kernel_ethtool_coalesce *kernel_coal,
+		      struct netlink_ext_ack *extack)
 {
 	struct cpsw_priv *priv = netdev_priv(ndev);
 	u32 int_ctrl;
@@ -360,11 +364,9 @@ int cpsw_ethtool_op_begin(struct net_device *ndev)
 	struct cpsw_common *cpsw = priv->cpsw;
 	int ret;
 
-	ret = pm_runtime_get_sync(cpsw->dev);
-	if (ret < 0) {
+	ret = pm_runtime_resume_and_get(cpsw->dev);
+	if (ret < 0)
 		cpsw_err(priv, drv, "ethtool begin failed %d\n", ret);
-		pm_runtime_put_noidle(cpsw->dev);
-	}
 
 	return ret;
 }
@@ -420,7 +422,7 @@ int cpsw_set_link_ksettings(struct net_device *ndev,
 	return phy_ethtool_ksettings_set(cpsw->slaves[slave_no].phy, ecmd);
 }
 
-int cpsw_get_eee(struct net_device *ndev, struct ethtool_eee *edata)
+int cpsw_get_eee(struct net_device *ndev, struct ethtool_keee *edata)
 {
 	struct cpsw_priv *priv = netdev_priv(ndev);
 	struct cpsw_common *cpsw = priv->cpsw;
@@ -432,7 +434,7 @@ int cpsw_get_eee(struct net_device *ndev, struct ethtool_eee *edata)
 		return -EOPNOTSUPP;
 }
 
-int cpsw_set_eee(struct net_device *ndev, struct ethtool_eee *edata)
+int cpsw_set_eee(struct net_device *ndev, struct ethtool_keee *edata)
 {
 	struct cpsw_priv *priv = netdev_priv(ndev);
 	struct cpsw_common *cpsw = priv->cpsw;
@@ -654,7 +656,9 @@ err:
 }
 
 void cpsw_get_ringparam(struct net_device *ndev,
-			struct ethtool_ringparam *ering)
+			struct ethtool_ringparam *ering,
+			struct kernel_ethtool_ringparam *kernel_ering,
+			struct netlink_ext_ack *extack)
 {
 	struct cpsw_priv *priv = netdev_priv(ndev);
 	struct cpsw_common *cpsw = priv->cpsw;
@@ -667,7 +671,9 @@ void cpsw_get_ringparam(struct net_device *ndev,
 }
 
 int cpsw_set_ringparam(struct net_device *ndev,
-		       struct ethtool_ringparam *ering)
+		       struct ethtool_ringparam *ering,
+		       struct kernel_ethtool_ringparam *kernel_ering,
+		       struct netlink_ext_ack *extack)
 {
 	struct cpsw_common *cpsw = ndev_to_cpsw(ndev);
 	int descs_num, ret;
@@ -711,7 +717,7 @@ err:
 }
 
 #if IS_ENABLED(CONFIG_TI_CPTS)
-int cpsw_get_ts_info(struct net_device *ndev, struct ethtool_ts_info *info)
+int cpsw_get_ts_info(struct net_device *ndev, struct kernel_ethtool_ts_info *info)
 {
 	struct cpsw_common *cpsw = ndev_to_cpsw(ndev);
 
@@ -719,8 +725,6 @@ int cpsw_get_ts_info(struct net_device *ndev, struct ethtool_ts_info *info)
 		SOF_TIMESTAMPING_TX_HARDWARE |
 		SOF_TIMESTAMPING_TX_SOFTWARE |
 		SOF_TIMESTAMPING_RX_HARDWARE |
-		SOF_TIMESTAMPING_RX_SOFTWARE |
-		SOF_TIMESTAMPING_SOFTWARE |
 		SOF_TIMESTAMPING_RAW_HARDWARE;
 	info->phc_index = cpsw->cpts->phc_index;
 	info->tx_types =
@@ -728,18 +732,14 @@ int cpsw_get_ts_info(struct net_device *ndev, struct ethtool_ts_info *info)
 		(1 << HWTSTAMP_TX_ON);
 	info->rx_filters =
 		(1 << HWTSTAMP_FILTER_NONE) |
-		(1 << HWTSTAMP_FILTER_PTP_V1_L4_EVENT) |
 		(1 << HWTSTAMP_FILTER_PTP_V2_EVENT);
 	return 0;
 }
 #else
-int cpsw_get_ts_info(struct net_device *ndev, struct ethtool_ts_info *info)
+int cpsw_get_ts_info(struct net_device *ndev, struct kernel_ethtool_ts_info *info)
 {
 	info->so_timestamping =
-		SOF_TIMESTAMPING_TX_SOFTWARE |
-		SOF_TIMESTAMPING_RX_SOFTWARE |
-		SOF_TIMESTAMPING_SOFTWARE;
-	info->phc_index = -1;
+		SOF_TIMESTAMPING_TX_SOFTWARE;
 	info->tx_types = 0;
 	info->rx_filters = 0;
 	return 0;

@@ -14,85 +14,108 @@
 #include "vchiq_core.h"
 #include "vchiq_debugfs.h"
 
+/* Some per-instance constants */
+#define MAX_COMPLETIONS 128
+#define MAX_SERVICES 64
+#define MAX_ELEMENTS 8
+#define MSG_QUEUE_SIZE 128
+
+#define VCHIQ_DRV_MAX_CALLBACKS 10
+
+struct rpi_firmware;
+struct vchiq_device;
+
 enum USE_TYPE_E {
 	USE_TYPE_SERVICE,
 	USE_TYPE_VCHIQ
 };
 
-struct vchiq_arm_state {
-	/* Keepalive-related data */
-	struct task_struct *ka_thread;
-	struct completion ka_evt;
-	atomic_t ka_use_count;
-	atomic_t ka_use_ack_count;
-	atomic_t ka_release_count;
-
-	rwlock_t susp_res_lock;
-
-	struct vchiq_state *state;
-
-	/* Global use count for videocore.
-	** This is equal to the sum of the use counts for all services.  When
-	** this hits zero the videocore suspend procedure will be initiated.
-	*/
-	int videocore_use_count;
-
-	/* Use count to track requests from videocore peer.
-	** This use count is not associated with a service, so needs to be
-	** tracked separately with the state.
-	*/
-	int peer_use_count;
-
-	/* Flag to indicate that the first vchiq connect has made it through.
-	** This means that both sides should be fully ready, and we should
-	** be able to suspend after this point.
-	*/
-	int first_connect;
+struct vchiq_platform_info {
+	unsigned int cache_line_size;
 };
 
-struct vchiq_drvdata {
-	const unsigned int cache_line_size;
+struct vchiq_drv_mgmt {
 	struct rpi_firmware *fw;
+	const struct vchiq_platform_info *info;
+
+	bool connected;
+	int num_deferred_callbacks;
+	/* Protects connected and num_deferred_callbacks */
+	struct mutex connected_mutex;
+
+	void (*deferred_callback[VCHIQ_DRV_MAX_CALLBACKS])(void);
+
+	struct semaphore free_fragments_sema;
+	struct semaphore free_fragments_mutex;
+	char *fragments_base;
+	char *free_fragments;
+	unsigned int fragments_size;
+
+	void __iomem *regs;
+
+	struct vchiq_state state;
 };
 
-extern int vchiq_arm_log_level;
-extern int vchiq_susp_log_level;
+struct user_service {
+	struct vchiq_service *service;
+	void __user *userdata;
+	struct vchiq_instance *instance;
+	char is_vchi;
+	char dequeue_pending;
+	char close_pending;
+	int message_available_pos;
+	int msg_insert;
+	int msg_remove;
+	struct completion insert_event;
+	struct completion remove_event;
+	struct completion close_event;
+	struct vchiq_header *msg_queue[MSG_QUEUE_SIZE];
+};
 
-int vchiq_platform_init(struct platform_device *pdev,
-			struct vchiq_state *state);
+struct bulk_waiter_node {
+	struct bulk_waiter bulk_waiter;
+	int pid;
+	struct list_head list;
+};
 
-extern struct vchiq_state *
-vchiq_get_state(void);
+struct vchiq_instance {
+	struct vchiq_state *state;
+	struct vchiq_completion_data_kernel completions[MAX_COMPLETIONS];
+	int completion_insert;
+	int completion_remove;
+	struct completion insert_event;
+	struct completion remove_event;
+	struct mutex completion_mutex;
 
-extern enum vchiq_status
-vchiq_arm_init_state(struct vchiq_state *state,
-		     struct vchiq_arm_state *arm_state);
+	int connected;
+	int closing;
+	int pid;
+	int mark;
+	int use_close_delivered;
+	int trace;
 
-extern void
-vchiq_check_suspend(struct vchiq_state *state);
-enum vchiq_status
-vchiq_use_service(unsigned int handle);
+	struct list_head bulk_waiter_list;
+	struct mutex bulk_waiter_list_mutex;
 
-extern enum vchiq_status
-vchiq_release_service(unsigned int handle);
+	struct vchiq_debugfs_node debugfs_node;
+};
 
-extern enum vchiq_status
+int
+vchiq_use_service(struct vchiq_instance *instance, unsigned int handle);
+
+extern int
+vchiq_release_service(struct vchiq_instance *instance, unsigned int handle);
+
+extern int
 vchiq_check_service(struct vchiq_service *service);
-
-extern void
-vchiq_dump_platform_use_state(struct vchiq_state *state);
 
 extern void
 vchiq_dump_service_use_state(struct vchiq_state *state);
 
-extern struct vchiq_arm_state*
-vchiq_platform_get_arm_state(struct vchiq_state *state);
-
-
-extern enum vchiq_status
+extern int
 vchiq_use_internal(struct vchiq_state *state, struct vchiq_service *service,
 		   enum USE_TYPE_E use_type);
-extern enum vchiq_status
+extern int
 vchiq_release_internal(struct vchiq_state *state,
 		       struct vchiq_service *service);
 
@@ -110,5 +133,32 @@ vchiq_instance_get_trace(struct vchiq_instance *instance);
 
 extern void
 vchiq_instance_set_trace(struct vchiq_instance *instance, int trace);
+
+extern void
+vchiq_add_connected_callback(struct vchiq_device *device,
+			     void (*callback)(void));
+
+#if IS_ENABLED(CONFIG_VCHIQ_CDEV)
+
+extern void
+vchiq_deregister_chrdev(void);
+
+extern int
+vchiq_register_chrdev(struct device *parent);
+
+#else
+
+static inline void vchiq_deregister_chrdev(void) { }
+static inline int vchiq_register_chrdev(struct device *parent) { return 0; }
+
+#endif /* IS_ENABLED(CONFIG_VCHIQ_CDEV) */
+
+extern int
+service_callback(struct vchiq_instance *vchiq_instance, enum vchiq_reason reason,
+		 struct vchiq_header *header, unsigned int handle,
+		 void *cb_data, void __user *cb_userdata);
+
+extern void
+free_bulk_waiter(struct vchiq_instance *instance);
 
 #endif /* VCHIQ_ARM_H */

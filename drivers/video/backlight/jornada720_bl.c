@@ -7,7 +7,6 @@
 
 #include <linux/backlight.h>
 #include <linux/device.h>
-#include <linux/fb.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
@@ -66,30 +65,30 @@ static int jornada_bl_update_status(struct backlight_device *bd)
 	} else  /* turn on backlight */
 		PPSR |= PPC_LDD1;
 
-		/* send command to our mcu */
-		if (jornada_ssp_byte(SETBRIGHTNESS) != TXDUMMY) {
-			dev_info(&bd->dev, "failed to set brightness\n");
-			ret = -ETIMEDOUT;
-			goto out;
-		}
+	/* send command to our mcu */
+	if (jornada_ssp_byte(SETBRIGHTNESS) != TXDUMMY) {
+		dev_info(&bd->dev, "failed to set brightness\n");
+		ret = -ETIMEDOUT;
+		goto out;
+	}
 
-		/*
-		 * at this point we expect that the mcu has accepted
-		 * our command and is waiting for our new value
-		 * please note that maximum brightness is 255,
-		 * but due to physical layout it is equal to 0, so we simply
-		 * invert the value (MAX VALUE - NEW VALUE).
-		 */
-		if (jornada_ssp_byte(BL_MAX_BRIGHT - bd->props.brightness)
-			!= TXDUMMY) {
-			dev_err(&bd->dev, "set brightness failed\n");
-			ret = -ETIMEDOUT;
-		}
+	/*
+	 * at this point we expect that the mcu has accepted
+	 * our command and is waiting for our new value
+	 * please note that maximum brightness is 255,
+	 * but due to physical layout it is equal to 0, so we simply
+	 * invert the value (MAX VALUE - NEW VALUE).
+	 */
+	if (jornada_ssp_byte(BL_MAX_BRIGHT - bd->props.brightness)
+		!= TXDUMMY) {
+		dev_err(&bd->dev, "set brightness failed\n");
+		ret = -ETIMEDOUT;
+	}
 
-		/*
-		 * If infact we get an TXDUMMY as output we are happy and dont
-		 * make any further comments about it
-		 */
+	/*
+	 * If infact we get an TXDUMMY as output we are happy and dont
+	 * make any further comments about it
+	 */
 out:
 	jornada_ssp_end();
 
@@ -121,7 +120,7 @@ static int jornada_bl_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	bd->props.power = FB_BLANK_UNBLANK;
+	bd->props.power = BACKLIGHT_POWER_ON;
 	bd->props.brightness = BL_DEF_BRIGHT;
 	/*
 	 * note. make sure max brightness is set otherwise

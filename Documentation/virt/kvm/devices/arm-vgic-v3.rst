@@ -59,6 +59,13 @@ Groups:
   It is invalid to mix calls with KVM_VGIC_V3_ADDR_TYPE_REDIST and
   KVM_VGIC_V3_ADDR_TYPE_REDIST_REGION attributes.
 
+  Note that to obtain reproducible results (the same VCPU being associated
+  with the same redistributor across a save/restore operation), VCPU creation
+  order, redistributor region creation order as well as the respective
+  interleaves of VCPU and region creation MUST be preserved.  Any change in
+  either ordering may result in a different vcpu_id/redistributor association,
+  resulting in a VM that will fail to run at restore time.
+
   Errors:
 
     =======  =============================================================
@@ -228,7 +235,7 @@ Groups:
 
     KVM_DEV_ARM_VGIC_CTRL_INIT
       request the initialization of the VGIC, no additional parameter in
-      kvm_device_attr.addr.
+      kvm_device_attr.addr. Must be called after all VCPUs have been created.
     KVM_DEV_ARM_VGIC_SAVE_PENDING_TABLES
       save all LPI pending bits into guest RAM pending tables.
 

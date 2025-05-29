@@ -73,8 +73,9 @@ static void snd_mpu401_uart_clear_rx(struct snd_mpu401 *mpu)
 		mpu->read(mpu, MPU401D(mpu));
 #ifdef CONFIG_SND_DEBUG
 	if (timeout <= 0)
-		snd_printk(KERN_ERR "cmd: clear rx timeout (status = 0x%x)\n",
-			   mpu->read(mpu, MPU401C(mpu)));
+		dev_err(mpu->rmidi->dev,
+			"cmd: clear rx timeout (status = 0x%x)\n",
+			mpu->read(mpu, MPU401C(mpu)));
 #endif
 }
 
@@ -224,8 +225,9 @@ static int snd_mpu401_uart_cmd(struct snd_mpu401 * mpu, unsigned char cmd,
 			udelay(10);
 #ifdef CONFIG_SND_DEBUG
 		if (!timeout)
-			snd_printk(KERN_ERR "cmd: tx timeout (status = 0x%x)\n",
-				   mpu->read(mpu, MPU401C(mpu)));
+			dev_err(mpu->rmidi->dev,
+				"cmd: tx timeout (status = 0x%x)\n",
+				mpu->read(mpu, MPU401C(mpu)));
 #endif
 	}
 	mpu->write(mpu, cmd, MPU401C(mpu));
@@ -244,10 +246,11 @@ static int snd_mpu401_uart_cmd(struct snd_mpu401 * mpu, unsigned char cmd,
 		ok = 1;
 	spin_unlock_irqrestore(&mpu->input_lock, flags);
 	if (!ok) {
-		snd_printk(KERN_ERR "cmd: 0x%x failed at 0x%lx "
-			   "(status = 0x%x, data = 0x%x)\n", cmd, mpu->port,
-			   mpu->read(mpu, MPU401C(mpu)),
-			   mpu->read(mpu, MPU401D(mpu)));
+		dev_err(mpu->rmidi->dev,
+			"cmd: 0x%x failed at 0x%lx (status = 0x%x, data = 0x%x)\n",
+			cmd, mpu->port,
+			mpu->read(mpu, MPU401C(mpu)),
+			mpu->read(mpu, MPU401D(mpu)));
 		return 1;
 	}
 	return 0;
@@ -271,8 +274,11 @@ static int snd_mpu401_uart_input_open(struct snd_rawmidi_substream *substream)
 	int err;
 
 	mpu = substream->rmidi->private_data;
-	if (mpu->open_input && (err = mpu->open_input(mpu)) < 0)
-		return err;
+	if (mpu->open_input) {
+		err = mpu->open_input(mpu);
+		if (err < 0)
+			return err;
+	}
 	if (! test_bit(MPU401_MODE_BIT_OUTPUT, &mpu->mode)) {
 		if (snd_mpu401_do_reset(mpu) < 0)
 			goto error_out;
@@ -293,8 +299,11 @@ static int snd_mpu401_uart_output_open(struct snd_rawmidi_substream *substream)
 	int err;
 
 	mpu = substream->rmidi->private_data;
-	if (mpu->open_output && (err = mpu->open_output(mpu)) < 0)
-		return err;
+	if (mpu->open_output) {
+		err = mpu->open_output(mpu);
+		if (err < 0)
+			return err;
+	}
 	if (! test_bit(MPU401_MODE_BIT_INPUT, &mpu->mode)) {
 		if (snd_mpu401_do_reset(mpu) < 0)
 			goto error_out;
@@ -524,8 +533,9 @@ int snd_mpu401_uart_new(struct snd_card *card, int device,
 		info_flags |= MPU401_INFO_INPUT | MPU401_INFO_OUTPUT;
 	in_enable = (info_flags & MPU401_INFO_INPUT) ? 1 : 0;
 	out_enable = (info_flags & MPU401_INFO_OUTPUT) ? 1 : 0;
-	if ((err = snd_rawmidi_new(card, "MPU-401U", device,
-				   out_enable, in_enable, &rmidi)) < 0)
+	err = snd_rawmidi_new(card, "MPU-401U", device,
+			      out_enable, in_enable, &rmidi);
+	if (err < 0)
 		return err;
 	mpu = kzalloc(sizeof(*mpu), GFP_KERNEL);
 	if (!mpu) {
@@ -539,13 +549,14 @@ int snd_mpu401_uart_new(struct snd_card *card, int device,
 	spin_lock_init(&mpu->timer_lock);
 	mpu->hardware = hardware;
 	mpu->irq = -1;
+	mpu->rmidi = rmidi;
 	if (! (info_flags & MPU401_INFO_INTEGRATED)) {
 		int res_size = hardware == MPU401_HW_PC98II ? 4 : 2;
 		mpu->res = request_region(port, res_size, "MPU401 UART");
 		if (!mpu->res) {
-			snd_printk(KERN_ERR "mpu401_uart: "
-				   "unable to grab port 0x%lx size %d\n",
-				   port, res_size);
+			dev_err(rmidi->dev,
+				"mpu401_uart: unable to grab port 0x%lx size %d\n",
+				port, res_size);
 			err = -EBUSY;
 			goto free_device;
 		}
@@ -565,8 +576,8 @@ int snd_mpu401_uart_new(struct snd_card *card, int device,
 	if (irq >= 0) {
 		if (request_irq(irq, snd_mpu401_uart_interrupt, 0,
 				"MPU401 UART", (void *) mpu)) {
-			snd_printk(KERN_ERR "mpu401_uart: "
-				   "unable to grab IRQ %d\n", irq);
+			dev_err(rmidi->dev,
+				"mpu401_uart: unable to grab IRQ %d\n", irq);
 			err = -EBUSY;
 			goto free_device;
 		}
@@ -592,7 +603,6 @@ int snd_mpu401_uart_new(struct snd_card *card, int device,
 		if (out_enable)
 			rmidi->info_flags |= SNDRV_RAWMIDI_INFO_DUPLEX;
 	}
-	mpu->rmidi = rmidi;
 	if (rrawmidi)
 		*rrawmidi = rmidi;
 	return 0;

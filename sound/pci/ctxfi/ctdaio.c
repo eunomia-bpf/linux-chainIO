@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/**
+/*
  * Copyright (C) 2008, Creative Technology Ltd. All Rights Reserved.
  *
  * @File	ctdaio.c
@@ -51,12 +51,12 @@ static const struct daio_rsc_idx idx_20k2[NUM_DAIOTYP] = {
 	[SPDIFIO] = {.left = 0x05, .right = 0x85},
 };
 
-static int daio_master(struct rsc *rsc)
+static void daio_master(struct rsc *rsc)
 {
 	/* Actually, this is not the resource index of DAIO.
 	 * For DAO, it is the input mapper index. And, for DAI,
 	 * it is the output time-slot index. */
-	return rsc->conj = rsc->idx;
+	rsc->conj = rsc->idx;
 }
 
 static int daio_index(const struct rsc *rsc)
@@ -64,19 +64,19 @@ static int daio_index(const struct rsc *rsc)
 	return rsc->conj;
 }
 
-static int daio_out_next_conj(struct rsc *rsc)
+static void daio_out_next_conj(struct rsc *rsc)
 {
-	return rsc->conj += 2;
+	rsc->conj += 2;
 }
 
-static int daio_in_next_conj_20k1(struct rsc *rsc)
+static void daio_in_next_conj_20k1(struct rsc *rsc)
 {
-	return rsc->conj += 0x200;
+	rsc->conj += 0x200;
 }
 
-static int daio_in_next_conj_20k2(struct rsc *rsc)
+static void daio_in_next_conj_20k2(struct rsc *rsc)
 {
-	return rsc->conj += 0x100;
+	rsc->conj += 0x100;
 }
 
 static const struct rsc_ops daio_out_rsc_ops = {
@@ -684,7 +684,7 @@ static int daio_mgr_commit_write(struct daio_mgr *mgr)
 	return 0;
 }
 
-int daio_mgr_create(struct hw *hw, struct daio_mgr **rdaio_mgr)
+int daio_mgr_create(struct hw *hw, void **rdaio_mgr)
 {
 	int err, i;
 	struct daio_mgr *daio_mgr;
@@ -738,8 +738,9 @@ error1:
 	return err;
 }
 
-int daio_mgr_destroy(struct daio_mgr *daio_mgr)
+int daio_mgr_destroy(void *ptr)
 {
+	struct daio_mgr *daio_mgr = ptr;
 	unsigned long flags;
 
 	/* free daio input mapper list */

@@ -79,7 +79,7 @@ drop:
  *	Put a SNAP header on a frame and pass to 802.2
  */
 static int snap_request(struct datalink_proto *dl,
-			struct sk_buff *skb, u8 *dest)
+			struct sk_buff *skb, const u8 *dest)
 {
 	memcpy(skb_push(skb, 5), dl->type, 5);
 	llc_build_and_send_ui_pkt(snap_sap, skb, dest, snap_sap->laddr.lsap);
@@ -160,4 +160,5 @@ void unregister_snap_client(struct datalink_proto *proto)
 	kfree(proto);
 }
 
+MODULE_DESCRIPTION("SNAP data link layer. Derived from 802.2");
 MODULE_LICENSE("GPL");

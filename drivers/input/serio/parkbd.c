@@ -165,11 +165,11 @@ static struct serio *parkbd_allocate_serio(void)
 {
 	struct serio *serio;
 
-	serio = kzalloc(sizeof(struct serio), GFP_KERNEL);
+	serio = kzalloc(sizeof(*serio), GFP_KERNEL);
 	if (serio) {
 		serio->id.type = parkbd_mode;
-		serio->write = parkbd_write,
-		strlcpy(serio->name, "PARKBD AT/XT keyboard adapter", sizeof(serio->name));
+		serio->write = parkbd_write;
+		strscpy(serio->name, "PARKBD AT/XT keyboard adapter", sizeof(serio->name));
 		snprintf(serio->phys, sizeof(serio->phys), "%s/serio0", parkbd_dev->port->name);
 	}
 
@@ -218,18 +218,5 @@ static struct parport_driver parkbd_parport_driver = {
 	.name = "parkbd",
 	.match_port = parkbd_attach,
 	.detach = parkbd_detach,
-	.devmodel = true,
 };
-
-static int __init parkbd_init(void)
-{
-	return parport_register_driver(&parkbd_parport_driver);
-}
-
-static void __exit parkbd_exit(void)
-{
-	parport_unregister_driver(&parkbd_parport_driver);
-}
-
-module_init(parkbd_init);
-module_exit(parkbd_exit);
+module_parport_driver(parkbd_parport_driver);

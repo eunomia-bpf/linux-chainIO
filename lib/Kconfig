@@ -24,6 +24,7 @@ config LINEAR_RANGES
 
 config PACKING
 	bool "Generic bitfield packing and unpacking"
+	select BITREVERSE
 	default n
 	help
 	  This option provides the packing() helper function, which permits
@@ -39,35 +40,46 @@ config PACKING
 
 	  When in doubt, say N.
 
+config PACKING_KUNIT_TEST
+	tristate "KUnit tests for packing library" if !KUNIT_ALL_TESTS
+	depends on PACKING && KUNIT
+	default KUNIT_ALL_TESTS
+	help
+	  This builds KUnit tests for the packing library.
+
+	  For more information on KUnit and unit tests in general,
+	  please refer to the KUnit documentation in Documentation/dev-tools/kunit/.
+
+	  When in doubt, say N.
+
 config BITREVERSE
 	tristate
 
 config HAVE_ARCH_BITREVERSE
 	bool
 	default n
-	depends on BITREVERSE
 	help
 	  This option enables the use of hardware bit-reversal instructions on
 	  architectures which support such operations.
 
-config GENERIC_STRNCPY_FROM_USER
+config ARCH_HAS_STRNCPY_FROM_USER
 	bool
+
+config ARCH_HAS_STRNLEN_USER
+	bool
+
+config GENERIC_STRNCPY_FROM_USER
+	def_bool !ARCH_HAS_STRNCPY_FROM_USER
 
 config GENERIC_STRNLEN_USER
-	bool
+	def_bool !ARCH_HAS_STRNLEN_USER
 
 config GENERIC_NET_UTILS
-	bool
-
-config GENERIC_FIND_FIRST_BIT
 	bool
 
 source "lib/math/Kconfig"
 
 config NO_GENERIC_PCI_IOPORT_MAP
-	bool
-
-config GENERIC_PCI_IOMAP
 	bool
 
 config GENERIC_IOMAP
@@ -89,6 +101,7 @@ config ARCH_USE_SYM_ANNOTATIONS
 config INDIRECT_PIO
 	bool "Access I/O in non-MMIO mode"
 	depends on ARM64
+	depends on HAS_IOPORT
 	help
 	  On some platforms where no separate I/O space exists, there are I/O
 	  hosts which can not be accessed in MMIO mode. Using the logical PIO
@@ -101,6 +114,29 @@ config INDIRECT_PIO
 	  sure your devices really need this configure item enabled.
 
 	  When in doubt, say N.
+
+config INDIRECT_IOMEM
+	bool
+	help
+	  This is selected by other options/architectures to provide the
+	  emulated iomem accessors.
+
+config INDIRECT_IOMEM_FALLBACK
+	bool
+	depends on INDIRECT_IOMEM
+	help
+	  If INDIRECT_IOMEM is selected, this enables falling back to plain
+	  mmio accesses when the IO memory address is not a registered
+	  emulated region.
+
+config TRACE_MMIO_ACCESS
+	bool "Register read/write tracing"
+	depends on TRACING && ARCH_HAVE_TRACE_MMIO_ACCESS
+	help
+	  Create tracepoints for MMIO read/write operations. These trace events
+	  can be used for logging all MMIO read/write operations.
+
+source "lib/crypto/Kconfig"
 
 config CRC_CCITT
 	tristate "CRC-CCITT functions"
@@ -126,6 +162,15 @@ config CRC_T10DIF
 	  This option is only needed if a module that's not in the
 	  kernel tree needs to calculate CRC checks for use with the
 	  SCSI data integrity subsystem.
+
+config CRC64_ROCKSOFT
+	tristate "CRC calculation for the Rocksoft model CRC64"
+	select CRC64
+	select CRYPTO
+	select CRYPTO_CRC64_ROCKSOFT
+	help
+	  This option provides a CRC64 API to a registered crypto driver.
+	  This is used with the block layer's data integrity subsystem.
 
 config CRC_ITU_T
 	tristate "CRC ITU-T V.41 functions"
@@ -306,12 +351,16 @@ config LZ4HC_COMPRESS
 config LZ4_DECOMPRESS
 	tristate
 
-config ZSTD_COMPRESS
+config ZSTD_COMMON
 	select XXHASH
 	tristate
 
+config ZSTD_COMPRESS
+	select ZSTD_COMMON
+	tristate
+
 config ZSTD_DECOMPRESS
-	select XXHASH
+	select ZSTD_COMMON
 	tristate
 
 source "lib/xz/Kconfig"
@@ -375,6 +424,7 @@ config REED_SOLOMON_DEC16
 #
 config BCH
 	tristate
+	select BITREVERSE
 
 config BCH_CONST_PARAMS
 	bool
@@ -441,6 +491,10 @@ config INTERVAL_TREE
 
 	  for more information.
 
+config INTERVAL_TREE_SPAN_ITER
+	bool
+	depends on INTERVAL_TREE
+
 config XARRAY_MULTI
 	bool
 	help
@@ -461,10 +515,16 @@ config ASSOCIATIVE_ARRAY
 
 	  for more information.
 
+config CLOSURES
+	bool
+
 config HAS_IOMEM
 	bool
 	depends on !NO_IOMEM
 	default y
+
+config HAS_IOPORT
+	bool
 
 config HAS_IOPORT_MAP
 	bool
@@ -489,6 +549,9 @@ config CPUMASK_OFFSTACK
 	  Use dynamic allocation for cpumask_var_t, instead of putting
 	  them on the stack.  This is a bit more expensive, but avoids
 	  stack overflow.
+
+config FORCE_NR_CPUS
+	def_bool !SMP
 
 config CPU_RMAP
 	bool
@@ -571,7 +634,8 @@ config SIGNATURE
 	  Implementation is done using GnuPG MPI library
 
 config DIMLIB
-	bool
+	tristate
+	depends on NET
 	help
 	  Dynamic Interrupt Moderation library.
 	  Implements an algorithm for dynamically changing CQ moderation values
@@ -625,6 +689,9 @@ config ARCH_HAS_PMEM_API
 config MEMREGION
 	bool
 
+config ARCH_HAS_CPU_CACHE_INVALIDATE_MEMREGION
+	bool
+
 config ARCH_HAS_MEMREMAP_COMPAT_ALIGN
 	bool
 
@@ -650,6 +717,25 @@ config ARCH_STACKWALK
 config STACKDEPOT
 	bool
 	select STACKTRACE
+	help
+	  Stack depot: stack trace storage that avoids duplication
+
+config STACKDEPOT_ALWAYS_INIT
+	bool
+	select STACKDEPOT
+	help
+	  Always initialize stack depot during early boot
+
+config STACKDEPOT_MAX_FRAMES
+	int "Maximum number of frames in trace saved in stack depot"
+	range 1 256
+	default 64
+	depends on STACKDEPOT
+
+config REF_TRACKER
+	bool
+	depends on STACKTRACE_SUPPORT
+	select STACKDEPOT
 
 config SBITMAP
 	bool
@@ -660,8 +746,10 @@ config PARMAN
 config OBJAGG
 	tristate "objagg" if COMPILE_TEST
 
-config STRING_SELFTEST
-	tristate "Test string functions"
+config LWQ_TEST
+	bool "Boot-time test for lwq queuing"
+	help
+          Run boot-time test of light-weight queuing.
 
 endmenu
 
@@ -686,6 +774,24 @@ config GENERIC_LIB_CMPDI2
 config GENERIC_LIB_UCMPDI2
 	bool
 
+config GENERIC_LIB_DEVMEM_IS_ALLOWED
+	bool
+
 config PLDMFW
 	bool
 	default n
+
+config ASN1_ENCODER
+       tristate
+
+config POLYNOMIAL
+       tristate
+
+config FIRMWARE_TABLE
+	bool
+
+config UNION_FIND
+	bool
+
+config MIN_HEAP
+	bool

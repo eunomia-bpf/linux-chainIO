@@ -117,6 +117,30 @@
 
 #define SO_DETACH_REUSEPORT_BPF  0x0047
 
+#define SO_PREFER_BUSY_POLL	 0x0048
+#define SO_BUSY_POLL_BUDGET	 0x0049
+
+#define SO_NETNS_COOKIE          0x0050
+
+#define SO_BUF_LOCK              0x0051
+
+#define SO_RESERVE_MEM           0x0052
+
+#define SO_TXREHASH              0x0053
+
+#define SO_RCVMARK               0x0054
+
+#define SO_PASSPIDFD             0x0055
+#define SO_PEERPIDFD             0x0056
+
+#define SO_DEVMEM_LINEAR         0x0057
+#define SCM_DEVMEM_LINEAR        SO_DEVMEM_LINEAR
+#define SO_DEVMEM_DMABUF         0x0058
+#define SCM_DEVMEM_DMABUF        SO_DEVMEM_DMABUF
+#define SO_DEVMEM_DONTNEED       0x0059
+
+#define SCM_TS_OPT_ID            0x005a
+
 #if !defined(__KERNEL__)
 
 

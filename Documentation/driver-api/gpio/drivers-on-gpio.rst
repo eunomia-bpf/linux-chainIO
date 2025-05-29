@@ -27,7 +27,12 @@ hardware descriptions such as device tree or ACPI:
   to the lines for a more permanent solution of this type.
 
 - gpio-beeper: drivers/input/misc/gpio-beeper.c is used to provide a beep from
-  an external speaker connected to a GPIO line.
+  an external speaker connected to a GPIO line. (If the beep is controlled by
+  off/on, for an actual PWM waveform, see pwm-gpio below.)
+
+- pwm-gpio: drivers/pwm/pwm-gpio.c is used to toggle a GPIO with a high
+  resolution timer producing a PWM waveform on the GPIO line, as well as
+  Linux high resolution timers can do.
 
 - extcon-gpio: drivers/extcon/extcon-gpio.c is used when you need to read an
   external connector status, such as a headset line for an audio driver or an
@@ -95,6 +100,12 @@ hardware descriptions such as device tree or ACPI:
   nothing but GPIO lines, this driver provides that and also a clearly defined
   way to pass the charging parameters from hardware descriptions such as the
   device tree.
+
+- gpio-mux: drivers/mux/gpio.c is used for controlling a multiplexer using
+  n GPIO lines such that you can mux in 2^n different devices by activating
+  different GPIO lines. Often the GPIOs are on a SoC and the devices are
+  some SoC-external entities, such as different components on a PCB that
+  can be selectively enabled.
 
 Apart from this there are special GPIO drivers in subsystems like MMC/SD to
 read card detect and write protect GPIO lines, and in the TTY serial subsystem

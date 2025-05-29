@@ -70,7 +70,6 @@ struct frame_buffer {
 struct isi_graph_entity {
 	struct device_node *node;
 
-	struct v4l2_async_subdev asd;
 	struct v4l2_subdev *subdev;
 };
 
@@ -243,7 +242,7 @@ static irqreturn_t isi_interrupt(int irq, void *dev_id)
 #define	WAIT_ISI_DISABLE	0
 static int atmel_isi_wait_status(struct atmel_isi *isi, int wait_reset)
 {
-	unsigned long timeout;
+	unsigned long time_left;
 	/*
 	 * The reset or disable will only succeed if we have a
 	 * pixel clock from the camera.
@@ -258,9 +257,9 @@ static int atmel_isi_wait_status(struct atmel_isi *isi, int wait_reset)
 		isi_writel(isi, ISI_CTRL, ISI_CTRL_DIS);
 	}
 
-	timeout = wait_for_completion_timeout(&isi->complete,
-			msecs_to_jiffies(500));
-	if (timeout == 0)
+	time_left = wait_for_completion_timeout(&isi->complete,
+						msecs_to_jiffies(500));
+	if (time_left == 0)
 		return -ETIMEDOUT;
 
 	return 0;
@@ -423,7 +422,9 @@ static int start_streaming(struct vb2_queue *vq, unsigned int count)
 	struct frame_buffer *buf, *node;
 	int ret;
 
-	pm_runtime_get_sync(isi->dev);
+	ret = pm_runtime_resume_and_get(isi->dev);
+	if (ret < 0)
+		return ret;
 
 	/* Enable stream on the sub device */
 	ret = v4l2_subdev_call(isi->entity.subdev, video, s_stream, 1);
@@ -525,8 +526,6 @@ static const struct vb2_ops isi_video_qops = {
 	.buf_queue		= buffer_queue,
 	.start_streaming	= start_streaming,
 	.stop_streaming		= stop_streaming,
-	.wait_prepare		= vb2_ops_wait_prepare,
-	.wait_finish		= vb2_ops_wait_finish,
 };
 
 static int isi_g_fmt_vid_cap(struct file *file, void *priv,
@@ -556,26 +555,28 @@ static const struct isi_format *find_format_by_fourcc(struct atmel_isi *isi,
 }
 
 static void isi_try_fse(struct atmel_isi *isi, const struct isi_format *isi_fmt,
-			struct v4l2_subdev_pad_config *pad_cfg)
+			struct v4l2_subdev_state *sd_state)
 {
-	int ret;
+	struct v4l2_rect *try_crop =
+		v4l2_subdev_state_get_crop(sd_state, 0);
 	struct v4l2_subdev_frame_size_enum fse = {
 		.code = isi_fmt->mbus_code,
 		.which = V4L2_SUBDEV_FORMAT_TRY,
 	};
+	int ret;
 
 	ret = v4l2_subdev_call(isi->entity.subdev, pad, enum_frame_size,
-			       pad_cfg, &fse);
+			       sd_state, &fse);
 	/*
 	 * Attempt to obtain format size from subdev. If not available,
 	 * just use the maximum ISI can receive.
 	 */
 	if (ret) {
-		pad_cfg->try_crop.width = MAX_SUPPORT_WIDTH;
-		pad_cfg->try_crop.height = MAX_SUPPORT_HEIGHT;
+		try_crop->width = MAX_SUPPORT_WIDTH;
+		try_crop->height = MAX_SUPPORT_HEIGHT;
 	} else {
-		pad_cfg->try_crop.width = fse.max_width;
-		pad_cfg->try_crop.height = fse.max_height;
+		try_crop->width = fse.max_width;
+		try_crop->height = fse.max_height;
 	}
 }
 
@@ -585,6 +586,10 @@ static int isi_try_fmt(struct atmel_isi *isi, struct v4l2_format *f,
 	const struct isi_format *isi_fmt;
 	struct v4l2_pix_format *pixfmt = &f->fmt.pix;
 	struct v4l2_subdev_pad_config pad_cfg = {};
+	struct v4l2_subdev_state pad_state = {
+		.sd = isi->entity.subdev,
+		.pads = &pad_cfg,
+	};
 	struct v4l2_subdev_format format = {
 		.which = V4L2_SUBDEV_FORMAT_TRY,
 	};
@@ -602,10 +607,10 @@ static int isi_try_fmt(struct atmel_isi *isi, struct v4l2_format *f,
 
 	v4l2_fill_mbus_format(&format.format, pixfmt, isi_fmt->mbus_code);
 
-	isi_try_fse(isi, isi_fmt, &pad_cfg);
+	isi_try_fse(isi, isi_fmt, &pad_state);
 
 	ret = v4l2_subdev_call(isi->entity.subdev, pad, set_fmt,
-			       &pad_cfg, &format);
+			       &pad_state, &format);
 	if (ret < 0)
 		return ret;
 
@@ -783,9 +788,10 @@ static int isi_enum_frameintervals(struct file *file, void *fh,
 	return 0;
 }
 
-static void isi_camera_set_bus_param(struct atmel_isi *isi)
+static int isi_camera_set_bus_param(struct atmel_isi *isi)
 {
 	u32 cfg1 = 0;
+	int ret;
 
 	/* set bus param for ISI */
 	if (isi->pdata.hsync_act_low)
@@ -802,12 +808,16 @@ static void isi_camera_set_bus_param(struct atmel_isi *isi)
 	cfg1 |= ISI_CFG1_THMASK_BEATS_16;
 
 	/* Enable PM and peripheral clock before operate isi registers */
-	pm_runtime_get_sync(isi->dev);
+	ret = pm_runtime_resume_and_get(isi->dev);
+	if (ret < 0)
+		return ret;
 
 	isi_writel(isi, ISI_CTRL, ISI_CTRL_DIS);
 	isi_writel(isi, ISI_CFG1, cfg1);
 
 	pm_runtime_put(isi->dev);
+
+	return 0;
 }
 
 /* -----------------------------------------------------------------------*/
@@ -822,7 +832,7 @@ static int atmel_isi_parse_dt(struct atmel_isi *isi,
 	isi->pdata.full_mode = 1;
 	isi->pdata.frate = ISI_CFG1_FRATE_CAPTURE_ALL;
 
-	np = of_graph_get_next_endpoint(np, NULL);
+	np = of_graph_get_endpoint_by_regs(np, 0, -1);
 	if (!np) {
 		dev_err(&pdev->dev, "Could not find the endpoint\n");
 		return -EINVAL;
@@ -1086,7 +1096,11 @@ static int isi_graph_notify_complete(struct v4l2_async_notifier *notifier)
 		dev_err(isi->dev, "No supported mediabus format found\n");
 		return ret;
 	}
-	isi_camera_set_bus_param(isi);
+	ret = isi_camera_set_bus_param(isi);
+	if (ret) {
+		dev_err(isi->dev, "Can't wake up device\n");
+		return ret;
+	}
 
 	ret = isi_set_default_fmt(isi);
 	if (ret) {
@@ -1107,7 +1121,7 @@ static int isi_graph_notify_complete(struct v4l2_async_notifier *notifier)
 
 static void isi_graph_notify_unbind(struct v4l2_async_notifier *notifier,
 				     struct v4l2_subdev *sd,
-				     struct v4l2_async_subdev *asd)
+				     struct v4l2_async_connection *asd)
 {
 	struct atmel_isi *isi = notifier_to_isi(notifier);
 
@@ -1119,7 +1133,7 @@ static void isi_graph_notify_unbind(struct v4l2_async_notifier *notifier,
 
 static int isi_graph_notify_bound(struct v4l2_async_notifier *notifier,
 				   struct v4l2_subdev *subdev,
-				   struct v4l2_async_subdev *asd)
+				   struct v4l2_async_connection *asd)
 {
 	struct atmel_isi *isi = notifier_to_isi(notifier);
 
@@ -1136,52 +1150,32 @@ static const struct v4l2_async_notifier_operations isi_graph_notify_ops = {
 	.complete = isi_graph_notify_complete,
 };
 
-static int isi_graph_parse(struct atmel_isi *isi, struct device_node *node)
+static int isi_graph_init(struct atmel_isi *isi)
 {
-	struct device_node *ep = NULL;
-	struct device_node *remote;
+	struct v4l2_async_connection *asd;
+	struct device_node *ep;
+	int ret;
 
-	ep = of_graph_get_next_endpoint(node, ep);
+	ep = of_graph_get_endpoint_by_regs(isi->dev->of_node, 0, -1);
 	if (!ep)
 		return -EINVAL;
 
-	remote = of_graph_get_remote_port_parent(ep);
+	v4l2_async_nf_init(&isi->notifier, &isi->v4l2_dev);
+
+	asd = v4l2_async_nf_add_fwnode_remote(&isi->notifier,
+					      of_fwnode_handle(ep),
+					      struct v4l2_async_connection);
 	of_node_put(ep);
-	if (!remote)
-		return -EINVAL;
 
-	/* Remote node to connect */
-	isi->entity.node = remote;
-	isi->entity.asd.match_type = V4L2_ASYNC_MATCH_FWNODE;
-	isi->entity.asd.match.fwnode = of_fwnode_handle(remote);
-	return 0;
-}
-
-static int isi_graph_init(struct atmel_isi *isi)
-{
-	int ret;
-
-	/* Parse the graph to extract a list of subdevice DT nodes. */
-	ret = isi_graph_parse(isi, isi->dev->of_node);
-	if (ret < 0) {
-		dev_err(isi->dev, "Graph parsing failed\n");
-		return ret;
-	}
-
-	v4l2_async_notifier_init(&isi->notifier);
-
-	ret = v4l2_async_notifier_add_subdev(&isi->notifier, &isi->entity.asd);
-	if (ret) {
-		of_node_put(isi->entity.node);
-		return ret;
-	}
+	if (IS_ERR(asd))
+		return PTR_ERR(asd);
 
 	isi->notifier.ops = &isi_graph_notify_ops;
 
-	ret = v4l2_async_notifier_register(&isi->v4l2_dev, &isi->notifier);
+	ret = v4l2_async_nf_register(&isi->notifier);
 	if (ret < 0) {
 		dev_err(isi->dev, "Notifier registration failed\n");
-		v4l2_async_notifier_cleanup(&isi->notifier);
+		v4l2_async_nf_cleanup(&isi->notifier);
 		return ret;
 	}
 
@@ -1194,7 +1188,6 @@ static int atmel_isi_probe(struct platform_device *pdev)
 	int irq;
 	struct atmel_isi *isi;
 	struct vb2_queue *q;
-	struct resource *regs;
 	int ret, i;
 
 	isi = devm_kzalloc(&pdev->dev, sizeof(struct atmel_isi), GFP_KERNEL);
@@ -1250,7 +1243,7 @@ static int atmel_isi_probe(struct platform_device *pdev)
 	q->ops = &isi_video_qops;
 	q->mem_ops = &vb2_dma_contig_memops;
 	q->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
-	q->min_buffers_needed = 2;
+	q->min_queued_buffers = 2;
 	q->dev = &pdev->dev;
 
 	ret = vb2_queue_init(q);
@@ -1275,8 +1268,7 @@ static int atmel_isi_probe(struct platform_device *pdev)
 		list_add(&isi->dma_desc[i].list, &isi->dma_desc_head);
 	}
 
-	regs = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	isi->regs = devm_ioremap_resource(&pdev->dev, regs);
+	isi->regs = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(isi->regs)) {
 		ret = PTR_ERR(isi->regs);
 		goto err_ioremap;
@@ -1324,7 +1316,7 @@ err_vdev_alloc:
 	return ret;
 }
 
-static int atmel_isi_remove(struct platform_device *pdev)
+static void atmel_isi_remove(struct platform_device *pdev)
 {
 	struct atmel_isi *isi = platform_get_drvdata(pdev);
 
@@ -1333,11 +1325,9 @@ static int atmel_isi_remove(struct platform_device *pdev)
 			isi->p_fb_descriptors,
 			isi->fb_descriptors_phys);
 	pm_runtime_disable(&pdev->dev);
-	v4l2_async_notifier_unregister(&isi->notifier);
-	v4l2_async_notifier_cleanup(&isi->notifier);
+	v4l2_async_nf_unregister(&isi->notifier);
+	v4l2_async_nf_cleanup(&isi->notifier);
 	v4l2_device_unregister(&isi->v4l2_dev);
-
-	return 0;
 }
 
 #ifdef CONFIG_PM
@@ -1383,4 +1373,3 @@ module_platform_driver(atmel_isi_driver);
 MODULE_AUTHOR("Josh Wu <josh.wu@atmel.com>");
 MODULE_DESCRIPTION("The V4L2 driver for Atmel Linux");
 MODULE_LICENSE("GPL");
-MODULE_SUPPORTED_DEVICE("video");

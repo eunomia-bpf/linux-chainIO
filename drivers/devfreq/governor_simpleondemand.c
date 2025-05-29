@@ -117,6 +117,8 @@ static int devfreq_simple_ondemand_handler(struct devfreq *devfreq,
 
 static struct devfreq_governor devfreq_simple_ondemand = {
 	.name = DEVFREQ_GOV_SIMPLE_ONDEMAND,
+	.attrs = DEVFREQ_GOV_ATTR_POLLING_INTERVAL
+		| DEVFREQ_GOV_ATTR_TIMER,
 	.get_target_freq = devfreq_simple_ondemand_func,
 	.event_handler = devfreq_simple_ondemand_handler,
 };
@@ -138,4 +140,5 @@ static void __exit devfreq_simple_ondemand_exit(void)
 	return;
 }
 module_exit(devfreq_simple_ondemand_exit);
+MODULE_DESCRIPTION("DEVFREQ Simple On-demand governor");
 MODULE_LICENSE("GPL");

@@ -63,6 +63,10 @@
 #define EINT_CON_MASK		0xF
 #define EINT_CON_LEN		4
 
+#define S3C_PIN_PULL_DISABLE	0
+#define S3C_PIN_PULL_DOWN	1
+#define S3C_PIN_PULL_UP		2
+
 static const struct samsung_pin_bank_type bank_type_4bit_off = {
 	.fld_width = { 4, 1, 2, 0, 2, 2, },
 	.reg_offset = { 0x00, 0x04, 0x08, 0, 0x0c, 0x10, },
@@ -255,6 +259,15 @@ static int s3c64xx_irq_get_trigger(unsigned int type)
 	return trigger;
 }
 
+static void s3c64xx_pud_value_init(struct samsung_pinctrl_drv_data *drvdata)
+{
+	unsigned int  *pud_val = drvdata->pud_val;
+
+	pud_val[PUD_PULL_DISABLE] = S3C_PIN_PULL_DISABLE;
+	pud_val[PUD_PULL_DOWN] = S3C_PIN_PULL_DOWN;
+	pud_val[PUD_PULL_UP] = S3C_PIN_PULL_UP;
+}
+
 static void s3c64xx_irq_set_handler(struct irq_data *d, unsigned int type)
 {
 	/* Edge- and level-triggered interrupts need different handlers */
@@ -286,14 +299,14 @@ static void s3c64xx_irq_set_function(struct samsung_pinctrl_drv_data *d,
 	shift = shift * bank_type->fld_width[PINCFG_TYPE_FUNC];
 	mask = (1 << bank_type->fld_width[PINCFG_TYPE_FUNC]) - 1;
 
-	spin_lock_irqsave(&bank->slock, flags);
+	raw_spin_lock_irqsave(&bank->slock, flags);
 
 	val = readl(reg);
 	val &= ~(mask << shift);
 	val |= bank->eint_func << shift;
 	writel(val, reg);
 
-	spin_unlock_irqrestore(&bank->slock, flags);
+	raw_spin_unlock_irqrestore(&bank->slock, flags);
 }
 
 /*
@@ -414,7 +427,7 @@ static void s3c64xx_eint_gpio_irq(struct irq_desc *desc)
 		unsigned int svc;
 		unsigned int group;
 		unsigned int pin;
-		unsigned int virq;
+		int ret;
 
 		svc = readl(drvdata->virt_base + SERVICE_REG);
 		group = SVC_GROUP(svc);
@@ -431,14 +444,12 @@ static void s3c64xx_eint_gpio_irq(struct irq_desc *desc)
 				pin -= 8;
 		}
 
-		virq = irq_linear_revmap(data->domains[group], pin);
+		ret = generic_handle_domain_irq(data->domains[group], pin);
 		/*
 		 * Something must be really wrong if an unmapped EINT
 		 * was unmasked...
 		 */
-		BUG_ON(!virq);
-
-		generic_handle_irq(virq);
+		BUG_ON(ret);
 	} while (1);
 
 	chained_irq_exit(chip, desc);
@@ -473,7 +484,7 @@ static int s3c64xx_eint_gpio_init(struct samsung_pinctrl_drv_data *d)
 		mask = bank->eint_mask;
 		nr_eints = fls(mask);
 
-		bank->irq_domain = irq_domain_add_linear(bank->of_node,
+		bank->irq_domain = irq_domain_create_linear(bank->fwnode,
 					nr_eints, &s3c64xx_gpio_irqd_ops, bank);
 		if (!bank->irq_domain) {
 			dev_err(dev, "gpio irq domain add failed\n");
@@ -607,18 +618,17 @@ static inline void s3c64xx_irq_demux_eint(struct irq_desc *desc, u32 range)
 	pend &= range;
 
 	while (pend) {
-		unsigned int virq, irq;
+		unsigned int irq;
+		int ret;
 
 		irq = fls(pend) - 1;
 		pend &= ~(1 << irq);
-		virq = irq_linear_revmap(data->domains[irq], data->pins[irq]);
+		ret = generic_handle_domain_irq(data->domains[irq], data->pins[irq]);
 		/*
 		 * Something must be really wrong if an unmapped EINT
 		 * was unmasked...
 		 */
-		BUG_ON(!virq);
-
-		generic_handle_irq(virq);
+		BUG_ON(ret);
 	}
 
 	chained_irq_exit(chip, desc);
@@ -746,7 +756,7 @@ static int s3c64xx_eint_eint0_init(struct samsung_pinctrl_drv_data *d)
 			return -ENOMEM;
 		ddata->bank = bank;
 
-		bank->irq_domain = irq_domain_add_linear(bank->of_node,
+		bank->irq_domain = irq_domain_create_linear(bank->fwnode,
 				nr_eints, &s3c64xx_eint0_irqd_ops, ddata);
 		if (!bank->irq_domain) {
 			dev_err(dev, "wkup irq domain add failed\n");
@@ -800,6 +810,7 @@ static const struct samsung_pin_ctrl s3c64xx_pin_ctrl[] __initconst = {
 		.nr_banks	= ARRAY_SIZE(s3c64xx_pin_banks0),
 		.eint_gpio_init = s3c64xx_eint_gpio_init,
 		.eint_wkup_init = s3c64xx_eint_eint0_init,
+		.pud_value_init	= s3c64xx_pud_value_init,
 	},
 };
 

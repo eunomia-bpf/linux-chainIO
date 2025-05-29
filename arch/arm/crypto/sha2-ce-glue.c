@@ -7,7 +7,7 @@
 
 #include <crypto/internal/hash.h>
 #include <crypto/internal/simd.h>
-#include <crypto/sha.h>
+#include <crypto/sha2.h>
 #include <crypto/sha256_base.h>
 #include <linux/cpufeature.h>
 #include <linux/crypto.h>
@@ -16,7 +16,7 @@
 #include <asm/hwcap.h>
 #include <asm/simd.h>
 #include <asm/neon.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #include "sha256_glue.h"
 

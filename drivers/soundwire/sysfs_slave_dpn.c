@@ -37,6 +37,7 @@ static int field##_attribute_alloc(struct device *dev,			\
 		return -ENOMEM;						\
 	dpn_attr->N = N;						\
 	dpn_attr->dir = dir;						\
+	sysfs_attr_init(&dpn_attr->dev_attr.attr);			\
 	dpn_attr->format_string = format_string;			\
 	dpn_attr->dev_attr.attr.name = __stringify(field);		\
 	dpn_attr->dev_attr.attr.mode = 0444;				\
@@ -281,6 +282,9 @@ int sdw_slave_sysfs_dpn_init(struct sdw_slave *slave)
 	unsigned long mask;
 	int ret;
 	int i;
+
+	if (!slave->prop.source_ports && !slave->prop.sink_ports)
+		return 0;
 
 	mask = slave->prop.source_ports;
 	for_each_set_bit(i, &mask, 32) {

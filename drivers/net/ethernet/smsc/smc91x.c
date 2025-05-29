@@ -57,6 +57,7 @@ static const char version[] =
 #include <linux/kernel.h>
 #include <linux/sched.h>
 #include <linux/delay.h>
+#include <linux/gpio/consumer.h>
 #include <linux/interrupt.h>
 #include <linux/irq.h>
 #include <linux/errno.h>
@@ -69,7 +70,6 @@ static const char version[] =
 #include <linux/workqueue.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
-#include <linux/of_gpio.h>
 
 #include <linux/netdevice.h>
 #include <linux/etherdevice.h>
@@ -98,6 +98,7 @@ static int watchdog = 1000;
 module_param(watchdog, int, 0400);
 MODULE_PARM_DESC(watchdog, "transmit timeout in milliseconds");
 
+MODULE_DESCRIPTION("SMC 91C9x/91C1xxx Ethernet driver");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS("platform:smc91x");
 
@@ -671,19 +672,19 @@ smc_hard_start_xmit(struct sk_buff *skb, struct net_device *dev)
 		status = SMC_GET_INT(lp);
 		if (status & IM_ALLOC_INT) {
 			SMC_ACK_INT(lp, IM_ALLOC_INT);
-  			break;
+			break;
 		}
-   	} while (--poll_count);
+	} while (--poll_count);
 
 	smc_special_unlock(&lp->lock, flags);
 
 	lp->pending_tx_skb = skb;
-   	if (!poll_count) {
+	if (!poll_count) {
 		/* oh well, wait until the chip finds memory later */
 		netif_stop_queue(dev);
 		DBG(2, dev, "TX memory allocation deferred.\n");
 		SMC_ENABLE_INT(lp, IM_ALLOC_INT);
-   	} else {
+	} else {
 		/*
 		 * Allocation succeeded: push packet to the chip's own memory
 		 * immediately.
@@ -703,7 +704,8 @@ static void smc_tx(struct net_device *dev)
 {
 	struct smc_local *lp = netdev_priv(dev);
 	void __iomem *ioaddr = lp->base;
-	unsigned int saved_packet, packet_no, tx_status, pkt_len;
+	unsigned int saved_packet, packet_no, tx_status;
+	unsigned int pkt_len __always_unused;
 
 	DBG(3, dev, "%s\n", __func__);
 
@@ -1572,11 +1574,7 @@ smc_ethtool_set_link_ksettings(struct net_device *dev,
 		    (cmd->base.port != PORT_TP && cmd->base.port != PORT_AUI))
 			return -EINVAL;
 
-//		lp->port = cmd->base.port;
 		lp->ctl_rfduplx = cmd->base.duplex == DUPLEX_FULL;
-
-//		if (netif_running(dev))
-//			smc_set_port(dev);
 
 		ret = 0;
 	}
@@ -1587,9 +1585,9 @@ smc_ethtool_set_link_ksettings(struct net_device *dev,
 static void
 smc_ethtool_getdrvinfo(struct net_device *dev, struct ethtool_drvinfo *info)
 {
-	strlcpy(info->driver, CARDNAME, sizeof(info->driver));
-	strlcpy(info->version, version, sizeof(info->version));
-	strlcpy(info->bus_info, dev_name(dev->dev.parent),
+	strscpy(info->driver, CARDNAME, sizeof(info->driver));
+	strscpy(info->version, version, sizeof(info->version));
+	strscpy(info->bus_info, dev_name(dev->dev.parent),
 		sizeof(info->bus_info));
 }
 
@@ -1789,7 +1787,7 @@ static int smc_findirq(struct smc_local *lp)
 	SMC_SET_INT_MASK(lp, IM_ALLOC_INT);
 
 	/*
- 	 * Allocate 512 bytes of memory.  Note that the chip was just
+	 * Allocate 512 bytes of memory.  Note that the chip was just
 	 * reset so all the memory is available
 	 */
 	SMC_SET_MMU_CMD(lp, MC_ALLOC | 1);
@@ -1850,6 +1848,7 @@ static int smc_probe(struct net_device *dev, void __iomem *ioaddr,
 	int retval;
 	unsigned int val, revision_register;
 	const char *version_string;
+	u8 addr[ETH_ALEN];
 
 	DBG(2, dev, "%s: %s\n", CARDNAME, __func__);
 
@@ -1921,7 +1920,8 @@ static int smc_probe(struct net_device *dev, void __iomem *ioaddr,
 
 	/* Get the MAC address */
 	SMC_SELECT_BANK(lp, 1);
-	SMC_GET_MAC_ADDR(lp, dev->dev_addr);
+	SMC_GET_MAC_ADDR(lp, addr);
+	eth_hw_addr_set(dev, addr);
 
 	/* now, reset the chip, and put it into a known state */
 	smc_reset(dev);
@@ -1997,8 +1997,8 @@ static int smc_probe(struct net_device *dev, void __iomem *ioaddr,
 
 	/* Grab the IRQ */
 	retval = request_irq(dev->irq, smc_interrupt, irq_flags, dev->name, dev);
-      	if (retval)
-      		goto err_out;
+	if (retval)
+		goto err_out;
 
 #ifdef CONFIG_ARCH_PXA
 #  ifdef SMC_USE_PXA_DMA
@@ -2190,14 +2190,20 @@ static const struct of_device_id smc91x_match[] = {
 MODULE_DEVICE_TABLE(of, smc91x_match);
 
 /**
- * of_try_set_control_gpio - configure a gpio if it exists
+ * try_toggle_control_gpio - configure a gpio if it exists
+ * @dev: net device
+ * @desc: where to store the GPIO descriptor, if it exists
+ * @name: name of the GPIO in DT
+ * @index: index of the GPIO in DT
+ * @value: set the GPIO to this value
+ * @nsdelay: delay before setting the GPIO
  */
 static int try_toggle_control_gpio(struct device *dev,
 				   struct gpio_desc **desc,
 				   const char *name, int index,
 				   int value, unsigned int nsdelay)
 {
-	struct gpio_desc *gpio = *desc;
+	struct gpio_desc *gpio;
 	enum gpiod_flags flags = value ? GPIOD_OUT_LOW : GPIOD_OUT_HIGH;
 
 	gpio = devm_gpiod_get_index_optional(dev, name, index, flags);
@@ -2349,7 +2355,7 @@ static int smc_drv_probe(struct platform_device *pdev)
 	 * the resource supplies a trigger, override the irqflags with
 	 * the trigger flags from the resource.
 	 */
-	irq_resflags = irqd_get_trigger_type(irq_get_irq_data(ndev->irq));
+	irq_resflags = irq_get_trigger_type(ndev->irq);
 	if (irq_flags == -1 || irq_resflags & IRQF_TRIGGER_MASK)
 		irq_flags = irq_resflags & IRQF_TRIGGER_MASK;
 
@@ -2402,7 +2408,7 @@ static int smc_drv_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static int smc_drv_remove(struct platform_device *pdev)
+static void smc_drv_remove(struct platform_device *pdev)
 {
 	struct net_device *ndev = platform_get_drvdata(pdev);
 	struct smc_local *lp = netdev_priv(ndev);
@@ -2427,8 +2433,6 @@ static int smc_drv_remove(struct platform_device *pdev)
 	release_mem_region(res->start, SMC_IO_EXTENT);
 
 	free_netdev(ndev);
-
-	return 0;
 }
 
 static int smc_drv_suspend(struct device *dev)

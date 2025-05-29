@@ -325,8 +325,7 @@ static int __init omap_init_irq(u32 base, struct device_node *node)
 	return ret;
 }
 
-static asmlinkage void __exception_irq_entry
-omap_intc_handle_irq(struct pt_regs *regs)
+static void __exception_irq_entry omap_intc_handle_irq(struct pt_regs *regs)
 {
 	extern unsigned long irq_err_count;
 	u32 irqnr;
@@ -357,7 +356,7 @@ omap_intc_handle_irq(struct pt_regs *regs)
 	}
 
 	irqnr &= ACTIVEIRQ_MASK;
-	handle_domain_irq(domain, irqnr, regs);
+	generic_handle_domain_irq(domain, irqnr);
 }
 
 static int __init intc_of_init(struct device_node *node,

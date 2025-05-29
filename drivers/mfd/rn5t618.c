@@ -13,7 +13,7 @@
 #include <linux/mfd/core.h>
 #include <linux/mfd/rn5t618.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/reboot.h>
 #include <linux/regmap.h>
@@ -45,8 +45,11 @@ static bool rn5t618_volatile_reg(struct device *dev, unsigned int reg)
 	case RN5T618_INTMON:
 	case RN5T618_RTC_CTRL1 ... RN5T618_RTC_CTRL2:
 	case RN5T618_RTC_SECONDS ... RN5T618_RTC_YEAR:
+	case RN5T618_CHGCTL1:
+	case RN5T618_REGISET1 ... RN5T618_REGISET2:
 	case RN5T618_CHGSTATE:
 	case RN5T618_CHGCTRL_IRR ... RN5T618_CHGERR_MONI:
+	case RN5T618_GCHGDET:
 	case RN5T618_CONTROL ... RN5T618_CC_AVEREG0:
 		return true;
 	default:
@@ -59,7 +62,7 @@ static const struct regmap_config rn5t618_regmap_config = {
 	.val_bits	= 8,
 	.volatile_reg	= rn5t618_volatile_reg,
 	.max_register	= RN5T618_MAX_REG,
-	.cache_type	= REGCACHE_RBTREE,
+	.cache_type	= REGCACHE_MAPLE,
 };
 
 static const struct regmap_irq rc5t619_irqs[] = {
@@ -77,8 +80,7 @@ static const struct regmap_irq_chip rc5t619_irq_chip = {
 	.num_irqs = ARRAY_SIZE(rc5t619_irqs),
 	.num_regs = 1,
 	.status_base = RN5T618_INTMON,
-	.mask_base = RN5T618_INTEN,
-	.mask_invert = true,
+	.unmask_base = RN5T618_INTEN,
 };
 
 static struct i2c_client *rn5t618_pm_power_off;
@@ -104,7 +106,7 @@ static int rn5t618_irq_init(struct rn5t618 *rn5t618)
 
 	ret = devm_regmap_add_irq_chip(rn5t618->dev, rn5t618->regmap,
 				       rn5t618->irq,
-				       IRQF_TRIGGER_FALLING | IRQF_ONESHOT,
+				       IRQF_TRIGGER_LOW | IRQF_ONESHOT,
 				       0, irq_chip, &rn5t618->irq_data);
 	if (ret)
 		dev_err(rn5t618->dev, "Failed to register IRQ chip\n");
@@ -177,22 +179,15 @@ MODULE_DEVICE_TABLE(of, rn5t618_of_match);
 
 static int rn5t618_i2c_probe(struct i2c_client *i2c)
 {
-	const struct of_device_id *of_id;
 	struct rn5t618 *priv;
 	int ret;
-
-	of_id = of_match_device(rn5t618_of_match, &i2c->dev);
-	if (!of_id) {
-		dev_err(&i2c->dev, "Failed to find matching DT ID\n");
-		return -EINVAL;
-	}
 
 	priv = devm_kzalloc(&i2c->dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 
 	i2c_set_clientdata(i2c, priv);
-	priv->variant = (long)of_id->data;
+	priv->variant = (long)i2c_get_match_data(i2c);
 	priv->irq = i2c->irq;
 	priv->dev = &i2c->dev;
 
@@ -238,7 +233,7 @@ static int rn5t618_i2c_probe(struct i2c_client *i2c)
 	return rn5t618_irq_init(priv);
 }
 
-static int rn5t618_i2c_remove(struct i2c_client *i2c)
+static void rn5t618_i2c_remove(struct i2c_client *i2c)
 {
 	if (i2c == rn5t618_pm_power_off) {
 		rn5t618_pm_power_off = NULL;
@@ -246,8 +241,6 @@ static int rn5t618_i2c_remove(struct i2c_client *i2c)
 	}
 
 	unregister_restart_handler(&rn5t618_restart_handler);
-
-	return 0;
 }
 
 static int __maybe_unused rn5t618_i2c_suspend(struct device *dev)
@@ -277,10 +270,10 @@ static SIMPLE_DEV_PM_OPS(rn5t618_i2c_dev_pm_ops,
 static struct i2c_driver rn5t618_i2c_driver = {
 	.driver = {
 		.name = "rn5t618",
-		.of_match_table = of_match_ptr(rn5t618_of_match),
+		.of_match_table = rn5t618_of_match,
 		.pm = &rn5t618_i2c_dev_pm_ops,
 	},
-	.probe_new = rn5t618_i2c_probe,
+	.probe = rn5t618_i2c_probe,
 	.remove = rn5t618_i2c_remove,
 };
 

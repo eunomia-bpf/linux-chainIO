@@ -9,7 +9,8 @@
 
 #ifndef __AARCH64EB__
 
-#include <linux/kernel.h>
+#include <linux/bitops.h>
+#include <linux/wordpart.h>
 
 struct word_at_a_time {
 	const unsigned long one_bits, high_bits;
@@ -26,19 +27,14 @@ static inline unsigned long has_zero(unsigned long a, unsigned long *bits,
 }
 
 #define prep_zero_mask(a, bits, c) (bits)
+#define create_zero_mask(bits) (bits)
+#define find_zero(bits) (__ffs(bits) >> 3)
 
-static inline unsigned long create_zero_mask(unsigned long bits)
+static inline unsigned long zero_bytemask(unsigned long bits)
 {
 	bits = (bits - 1) & ~bits;
 	return bits >> 7;
 }
-
-static inline unsigned long find_zero(unsigned long mask)
-{
-	return fls64(mask) >> 3;
-}
-
-#define zero_bytemask(mask) (mask)
 
 #else	/* __AARCH64EB__ */
 #include <asm-generic/word-at-a-time.h>
@@ -53,28 +49,19 @@ static inline unsigned long find_zero(unsigned long mask)
  */
 static inline unsigned long load_unaligned_zeropad(const void *addr)
 {
-	unsigned long ret, offset;
+	unsigned long ret;
+
+	__mte_enable_tco_async();
 
 	/* Load word from unaligned pointer addr */
 	asm(
-	"1:	ldr	%0, %3\n"
+	"1:	ldr	%0, %2\n"
 	"2:\n"
-	"	.pushsection .fixup,\"ax\"\n"
-	"	.align 2\n"
-	"3:	and	%1, %2, #0x7\n"
-	"	bic	%2, %2, #0x7\n"
-	"	ldr	%0, [%2]\n"
-	"	lsl	%1, %1, #0x3\n"
-#ifndef __AARCH64EB__
-	"	lsr	%0, %0, %1\n"
-#else
-	"	lsl	%0, %0, %1\n"
-#endif
-	"	b	2b\n"
-	"	.popsection\n"
-	_ASM_EXTABLE(1b, 3b)
-	: "=&r" (ret), "=&r" (offset)
+	_ASM_EXTABLE_LOAD_UNALIGNED_ZEROPAD(1b, 2b, %0, %1)
+	: "=&r" (ret)
 	: "r" (addr), "Q" (*(unsigned long *)addr));
+
+	__mte_disable_tco_async();
 
 	return ret;
 }

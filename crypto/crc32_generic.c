@@ -1,26 +1,4 @@
-/* GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see http://www.gnu.org/licenses
- *
- * Please  visit http://www.xyratex.com/contact if you need additional
- * information or have any questions.
- *
- * GPL HEADER END
- */
-
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright 2012 Xyratex Technology Limited
  */
@@ -29,7 +7,7 @@
  * This is crypto api shash wrappers to crc32_le.
  */
 
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include <linux/crc32.h>
 #include <crypto/internal/hash.h>
 #include <linux/init.h>
@@ -81,6 +59,15 @@ static int crc32_update(struct shash_desc *desc, const u8 *data,
 {
 	u32 *crcp = shash_desc_ctx(desc);
 
+	*crcp = crc32_le_base(*crcp, data, len);
+	return 0;
+}
+
+static int crc32_update_arch(struct shash_desc *desc, const u8 *data,
+			     unsigned int len)
+{
+	u32 *crcp = shash_desc_ctx(desc);
+
 	*crcp = crc32_le(*crcp, data, len);
 	return 0;
 }
@@ -88,6 +75,13 @@ static int crc32_update(struct shash_desc *desc, const u8 *data,
 /* No final XOR 0xFFFFFFFF, like crc32_le */
 static int __crc32_finup(u32 *crcp, const u8 *data, unsigned int len,
 			 u8 *out)
+{
+	put_unaligned_le32(crc32_le_base(*crcp, data, len), out);
+	return 0;
+}
+
+static int __crc32_finup_arch(u32 *crcp, const u8 *data, unsigned int len,
+			      u8 *out)
 {
 	put_unaligned_le32(crc32_le(*crcp, data, len), out);
 	return 0;
@@ -97,6 +91,12 @@ static int crc32_finup(struct shash_desc *desc, const u8 *data,
 		       unsigned int len, u8 *out)
 {
 	return __crc32_finup(shash_desc_ctx(desc), data, len, out);
+}
+
+static int crc32_finup_arch(struct shash_desc *desc, const u8 *data,
+		       unsigned int len, u8 *out)
+{
+	return __crc32_finup_arch(shash_desc_ctx(desc), data, len, out);
 }
 
 static int crc32_final(struct shash_desc *desc, u8 *out)
@@ -110,38 +110,62 @@ static int crc32_final(struct shash_desc *desc, u8 *out)
 static int crc32_digest(struct shash_desc *desc, const u8 *data,
 			unsigned int len, u8 *out)
 {
-	return __crc32_finup(crypto_shash_ctx(desc->tfm), data, len,
-			     out);
+	return __crc32_finup(crypto_shash_ctx(desc->tfm), data, len, out);
 }
-static struct shash_alg alg = {
-	.setkey		= crc32_setkey,
-	.init		= crc32_init,
-	.update		= crc32_update,
-	.final		= crc32_final,
-	.finup		= crc32_finup,
-	.digest		= crc32_digest,
-	.descsize	= sizeof(u32),
-	.digestsize	= CHKSUM_DIGEST_SIZE,
-	.base		= {
-		.cra_name		= "crc32",
-		.cra_driver_name	= "crc32-generic",
-		.cra_priority		= 100,
-		.cra_flags		= CRYPTO_ALG_OPTIONAL_KEY,
-		.cra_blocksize		= CHKSUM_BLOCK_SIZE,
-		.cra_ctxsize		= sizeof(u32),
-		.cra_module		= THIS_MODULE,
-		.cra_init		= crc32_cra_init,
-	}
-};
+
+static int crc32_digest_arch(struct shash_desc *desc, const u8 *data,
+			     unsigned int len, u8 *out)
+{
+	return __crc32_finup_arch(crypto_shash_ctx(desc->tfm), data, len, out);
+}
+
+static struct shash_alg algs[] = {{
+	.setkey			= crc32_setkey,
+	.init			= crc32_init,
+	.update			= crc32_update,
+	.final			= crc32_final,
+	.finup			= crc32_finup,
+	.digest			= crc32_digest,
+	.descsize		= sizeof(u32),
+	.digestsize		= CHKSUM_DIGEST_SIZE,
+
+	.base.cra_name		= "crc32",
+	.base.cra_driver_name	= "crc32-generic",
+	.base.cra_priority	= 100,
+	.base.cra_flags		= CRYPTO_ALG_OPTIONAL_KEY,
+	.base.cra_blocksize	= CHKSUM_BLOCK_SIZE,
+	.base.cra_ctxsize	= sizeof(u32),
+	.base.cra_module	= THIS_MODULE,
+	.base.cra_init		= crc32_cra_init,
+}, {
+	.setkey			= crc32_setkey,
+	.init			= crc32_init,
+	.update			= crc32_update_arch,
+	.final			= crc32_final,
+	.finup			= crc32_finup_arch,
+	.digest			= crc32_digest_arch,
+	.descsize		= sizeof(u32),
+	.digestsize		= CHKSUM_DIGEST_SIZE,
+
+	.base.cra_name		= "crc32",
+	.base.cra_driver_name	= "crc32-" __stringify(ARCH),
+	.base.cra_priority	= 150,
+	.base.cra_flags		= CRYPTO_ALG_OPTIONAL_KEY,
+	.base.cra_blocksize	= CHKSUM_BLOCK_SIZE,
+	.base.cra_ctxsize	= sizeof(u32),
+	.base.cra_module	= THIS_MODULE,
+	.base.cra_init		= crc32_cra_init,
+}};
 
 static int __init crc32_mod_init(void)
 {
-	return crypto_register_shash(&alg);
+	/* register the arch flavor only if it differs from the generic one */
+	return crypto_register_shashes(algs, 1 + (&crc32_le != &crc32_le_base));
 }
 
 static void __exit crc32_mod_fini(void)
 {
-	crypto_unregister_shash(&alg);
+	crypto_unregister_shashes(algs, 1 + (&crc32_le != &crc32_le_base));
 }
 
 subsys_initcall(crc32_mod_init);

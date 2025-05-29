@@ -3,11 +3,6 @@
  *
  * Copyright(c) 2003 - 2014 Intel Corporation. All rights reserved.
  * Copyright (C) 2019 Intel Corporation
- *
- * Contact Information:
- *  Intel Linux Wireless <linuxwifi@intel.com>
- * Intel Corporation, 5200 N.E. Elam Young Parkway, Hillsboro, OR 97124-6497
- *
  *****************************************************************************/
 
 
@@ -18,7 +13,7 @@
 #include <linux/netdevice.h>
 #include <net/mac80211.h>
 #include <linux/etherdevice.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include "iwl-io.h"
 #include "iwl-trans.h"
 #include "iwl-modparams.h"

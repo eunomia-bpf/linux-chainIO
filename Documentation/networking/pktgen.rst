@@ -178,6 +178,7 @@ Examples::
 			      IPSEC # IPsec encapsulation (needs CONFIG_XFRM)
 			      NODE_ALLOC # node specific memory allocation
 			      NO_TIMESTAMP # disable timestamping
+			      SHARED # enable shared SKB
  pgset 'flag ![name]'    Clear a flag to determine behaviour.
 			 Note that you might need to use single quote in
 			 interactive mode, so that your shell wouldn't expand
@@ -248,25 +249,23 @@ Usage:::
 
   -i : ($DEV)       output interface/device (required)
   -s : ($PKT_SIZE)  packet size
-  -d : ($DEST_IP)   destination IP
+  -d : ($DEST_IP)   destination IP. CIDR (e.g. 198.18.0.0/15) is also allowed
   -m : ($DST_MAC)   destination MAC-addr
+  -p : ($DST_PORT)  destination PORT range (e.g. 433-444) is also allowed
   -t : ($THREADS)   threads to start
+  -f : ($F_THREAD)  index of first thread (zero indexed CPU number)
   -c : ($SKB_CLONE) SKB clones send before alloc new SKB
+  -n : ($COUNT)     num messages to send per thread, 0 means indefinitely
   -b : ($BURST)     HW level bursting of SKBs
   -v : ($VERBOSE)   verbose
   -x : ($DEBUG)     debug
+  -6 : ($IP6)       IPv6
+  -w : ($DELAY)     Tx Delay value (ns)
+  -a : ($APPEND)    Script will not reset generator's state, but will append its config
 
 The global variables being set are also listed.  E.g. the required
 interface/device parameter "-i" sets variable $DEV.  Copy the
 pktgen_sampleXX scripts and modify them to fit your own needs.
-
-The old scripts::
-
-    pktgen.conf-1-2                  # 1 CPU 2 dev
-    pktgen.conf-1-1-rdos             # 1 CPU 1 dev w. route DoS
-    pktgen.conf-1-1-ip6              # 1 CPU 1 dev ipv6
-    pktgen.conf-1-1-ip6-rdos         # 1 CPU 1 dev ipv6  w. route DoS
-    pktgen.conf-1-1-flows            # 1 CPU 1 dev multiple flows.
 
 
 Interrupt affinity
@@ -290,6 +289,16 @@ To avoid breaking existing testbed scripts for using AH type and tunnel mode,
 you can use "pgset spi SPI_VALUE" to specify which transformation mode
 to employ.
 
+Disable shared SKB
+==================
+By default, SKBs sent by pktgen are shared (user count > 1).
+To test with non-shared SKBs, remove the "SHARED" flag by simply setting::
+
+	pg_set "flag !SHARED"
+
+However, if the "clone_skb" or "burst" parameters are configured, the skb
+still needs to be held by pktgen for further access. Hence the skb must be
+shared.
 
 Current commands and configuration options
 ==========================================
@@ -359,6 +368,7 @@ Current commands and configuration options
     IPSEC
     NODE_ALLOC
     NO_TIMESTAMP
+    SHARED
 
     spi (ipsec)
 
@@ -398,7 +408,7 @@ Current commands and configuration options
 References:
 
 - ftp://robur.slu.se/pub/Linux/net-development/pktgen-testing/
-- tp://robur.slu.se/pub/Linux/net-development/pktgen-testing/examples/
+- ftp://robur.slu.se/pub/Linux/net-development/pktgen-testing/examples/
 
 Paper from Linux-Kongress in Erlangen 2004.
 - ftp://robur.slu.se/pub/Linux/net-development/pktgen-testing/pktgen_paper.pdf

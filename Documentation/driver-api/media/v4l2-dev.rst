@@ -157,14 +157,6 @@ changing the e.g. exposure of the webcam.
 Of course, you can always do all the locking yourself by leaving both lock
 pointers at ``NULL``.
 
-If you use the old :ref:`videobuf framework <vb_framework>` then you must
-pass the :c:type:`video_device`->lock to the videobuf queue initialize
-function: if videobuf has to wait for a frame to arrive, then it will
-temporarily unlock the lock and relock it afterwards. If your driver also
-waits in the code, then you should do the same to allow other
-processes to access the device node while the first process is waiting for
-something.
-
 In the case of :ref:`videobuf2 <vb2_framework>` you will need to implement the
 ``wait_prepare()`` and ``wait_finish()`` callbacks to unlock/lock if applicable.
 If you use the ``queue->lock`` pointer, then you can use the helper functions
@@ -212,7 +204,7 @@ types exist:
 ========================== ====================	 ==============================
 
 The last argument gives you a certain amount of control over the device
-device node number used (i.e. the X in ``videoX``). Normally you will pass -1
+node number used (i.e. the X in ``videoX``). Normally you will pass -1
 to let the v4l2 framework pick the first free number. But sometimes users
 want to select a specific node number. It is common that drivers allow
 the user to select a specific device node number through a driver module

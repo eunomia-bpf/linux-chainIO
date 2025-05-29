@@ -37,8 +37,6 @@
 #include <linux/semaphore.h>
 #include <linux/refcount.h>
 
-#define SIXPACK_VERSION    "Revision: 0.3.0"
-
 /* sixpack priority commands */
 #define SIXP_SEOF		0x40	/* start and end of a 6pack frame */
 #define SIXP_TX_URUN		0x48	/* transmit overrun */
@@ -68,9 +66,9 @@
 #define SIXP_DAMA_OFF		0
 
 /* default level 2 parameters */
-#define SIXP_TXDELAY			(HZ/4)	/* in 1 s */
+#define SIXP_TXDELAY			25	/* 250 ms */
 #define SIXP_PERSIST			50	/* in 256ths */
-#define SIXP_SLOTTIME			(HZ/10)	/* in 1 s */
+#define SIXP_SLOTTIME			10	/* 100 ms */
 #define SIXP_INIT_RESYNC_TIMEOUT	(3*HZ/2) /* in 1 s */
 #define SIXP_RESYNC_TIMEOUT		5*HZ	/* in 1 s */
 
@@ -88,20 +86,17 @@ struct sixpack {
 	struct net_device	*dev;		/* easy for intr handling  */
 
 	/* These are pointers to the malloc()ed frame buffers. */
-	unsigned char		*rbuff;		/* receiver buffer	*/
 	int			rcount;         /* received chars counter  */
 	unsigned char		*xbuff;		/* transmitter buffer	*/
 	unsigned char		*xhead;         /* next byte to XMIT */
 	int			xleft;          /* bytes left in XMIT queue  */
 
-	unsigned char		raw_buf[4];
-	unsigned char		cooked_buf[400];
+	u8			raw_buf[4];
+	u8			cooked_buf[400];
 
 	unsigned int		rx_count;
 	unsigned int		rx_count_cooked;
-
-	int			mtu;		/* Our mtu (to spot changes!) */
-	int			buffsize;       /* Max buffers sizes */
+	spinlock_t		rxlock;
 
 	unsigned long		flags;		/* Flag values/ mode etc */
 	unsigned char		mode;		/* 6pack mode */
@@ -112,8 +107,8 @@ struct sixpack {
 	unsigned char		slottime;
 	unsigned char		duplex;
 	unsigned char		led_state;
-	unsigned char		status;
-	unsigned char		status1;
+	u8			status;
+	u8			status1;
 	unsigned char		status2;
 	unsigned char		tx_enable;
 	unsigned char		tnc_state;
@@ -127,7 +122,7 @@ struct sixpack {
 
 #define AX25_6PACK_HEADER_LEN 0
 
-static void sixpack_decode(struct sixpack *, const unsigned char[], int);
+static void sixpack_decode(struct sixpack *, const u8 *, size_t);
 static int encode_sixpack(unsigned char *, unsigned char *, int, unsigned char);
 
 /*
@@ -166,12 +161,7 @@ static void sp_encaps(struct sixpack *sp, unsigned char *icp, int len)
 	unsigned char *msg, *p = icp;
 	int actual, count;
 
-	if (len > sp->mtu) {	/* sp->mtu = AX25_MTU = max. PACLEN = 256 */
-		msg = "oversized transmit packet!";
-		goto out_drop;
-	}
-
-	if (len > sp->mtu) {	/* sp->mtu = AX25_MTU = max. PACLEN = 256 */
+	if (len > AX25_MTU + 73) {
 		msg = "oversized transmit packet!";
 		goto out_drop;
 	}
@@ -293,7 +283,7 @@ static int sp_set_mac_address(struct net_device *dev, void *addr)
 
 	netif_tx_lock_bh(dev);
 	netif_addr_lock(dev);
-	memcpy(dev->dev_addr, &sa->sax25_call, AX25_ADDR_LEN);
+	__dev_addr_set(dev, &sa->sax25_call, AX25_ADDR_LEN);
 	netif_addr_unlock(dev);
 	netif_tx_unlock_bh(dev);
 
@@ -311,7 +301,6 @@ static void sp_setup(struct net_device *dev)
 {
 	/* Finish setting up the DEVICE info. */
 	dev->netdev_ops		= &sp_netdev_ops;
-	dev->needs_free_netdev	= true;
 	dev->mtu		= SIXP_MTU;
 	dev->hard_header_len	= AX25_MAX_HEADER_LEN;
 	dev->header_ops 	= &ax25_header_ops;
@@ -322,7 +311,7 @@ static void sp_setup(struct net_device *dev)
 
 	/* Only activated in AX.25 mode */
 	memcpy(dev->broadcast, &ax25_bcast, AX25_ADDR_LEN);
-	memcpy(dev->dev_addr, &ax25_defaddr, AX25_ADDR_LEN);
+	dev_addr_set(dev, (u8 *)&ax25_defaddr);
 
 	dev->flags		= 0;
 }
@@ -338,7 +327,7 @@ static void sp_bump(struct sixpack *sp, char cmd)
 {
 	struct sk_buff *skb;
 	int count;
-	unsigned char *ptr;
+	u8 *ptr;
 
 	count = sp->rcount + 1;
 
@@ -432,11 +421,11 @@ out:
  * a block of 6pack data has been received, which can now be decapsulated
  * and sent on to some IP layer for further processing.
  */
-static void sixpack_receive_buf(struct tty_struct *tty,
-	const unsigned char *cp, char *fp, int count)
+static void sixpack_receive_buf(struct tty_struct *tty, const u8 *cp,
+				const u8 *fp, size_t count)
 {
 	struct sixpack *sp;
-	int count1;
+	size_t count1;
 
 	if (!count)
 		return;
@@ -549,7 +538,7 @@ static inline int tnc_init(struct sixpack *sp)
  */
 static int sixpack_open(struct tty_struct *tty)
 {
-	char *rbuff = NULL, *xbuff = NULL;
+	char *xbuff = NULL;
 	struct net_device *dev;
 	struct sixpack *sp;
 	unsigned long len;
@@ -571,6 +560,7 @@ static int sixpack_open(struct tty_struct *tty)
 	sp->dev = dev;
 
 	spin_lock_init(&sp->lock);
+	spin_lock_init(&sp->rxlock);
 	refcount_set(&sp->refcnt, 1);
 	init_completion(&sp->dead);
 
@@ -578,10 +568,8 @@ static int sixpack_open(struct tty_struct *tty)
 
 	len = dev->mtu * 2;
 
-	rbuff = kmalloc(len + 4, GFP_KERNEL);
 	xbuff = kmalloc(len + 4, GFP_KERNEL);
-
-	if (rbuff == NULL || xbuff == NULL) {
+	if (xbuff == NULL) {
 		err = -ENOBUFS;
 		goto out_free;
 	}
@@ -590,11 +578,8 @@ static int sixpack_open(struct tty_struct *tty)
 
 	sp->tty = tty;
 
-	sp->rbuff	= rbuff;
 	sp->xbuff	= xbuff;
 
-	sp->mtu		= AX25_MTU + 73;
-	sp->buffsize	= len;
 	sp->rcount	= 0;
 	sp->rx_count	= 0;
 	sp->rx_count_cooked = 0;
@@ -635,7 +620,6 @@ static int sixpack_open(struct tty_struct *tty)
 
 out_free:
 	kfree(xbuff);
-	kfree(rbuff);
 
 	free_netdev(dev);
 
@@ -674,19 +658,20 @@ static void sixpack_close(struct tty_struct *tty)
 	 */
 	netif_stop_queue(sp->dev);
 
+	unregister_netdev(sp->dev);
+
 	del_timer_sync(&sp->tx_t);
 	del_timer_sync(&sp->resync_t);
 
-	/* Free all 6pack frame buffers. */
-	kfree(sp->rbuff);
+	/* Free all 6pack frame buffers after unreg. */
 	kfree(sp->xbuff);
 
-	unregister_netdev(sp->dev);
+	free_netdev(sp->dev);
 }
 
 /* Perform I/O control on an active 6pack channel. */
-static int sixpack_ioctl(struct tty_struct *tty, struct file *file,
-	unsigned int cmd, unsigned long arg)
+static int sixpack_ioctl(struct tty_struct *tty, unsigned int cmd,
+		unsigned long arg)
 {
 	struct sixpack *sp = sp_get(tty);
 	struct net_device *dev;
@@ -721,25 +706,23 @@ static int sixpack_ioctl(struct tty_struct *tty, struct file *file,
 		err = 0;
 		break;
 
-	 case SIOCSIFHWADDR: {
-		char addr[AX25_ADDR_LEN];
+	case SIOCSIFHWADDR: {
+			char addr[AX25_ADDR_LEN];
 
-		if (copy_from_user(&addr,
-		                   (void __user *) arg, AX25_ADDR_LEN)) {
+			if (copy_from_user(&addr,
+					   (void __user *)arg, AX25_ADDR_LEN)) {
 				err = -EFAULT;
 				break;
 			}
 
 			netif_tx_lock_bh(dev);
-			memcpy(dev->dev_addr, &addr, AX25_ADDR_LEN);
+			__dev_addr_set(dev, &addr, AX25_ADDR_LEN);
 			netif_tx_unlock_bh(dev);
-
 			err = 0;
 			break;
 		}
-
 	default:
-		err = tty_mode_ioctl(tty, file, cmd, arg);
+		err = tty_mode_ioctl(tty, cmd, arg);
 	}
 
 	sp_put(sp);
@@ -749,7 +732,7 @@ static int sixpack_ioctl(struct tty_struct *tty, struct file *file,
 
 static struct tty_ldisc_ops sp_ldisc = {
 	.owner		= THIS_MODULE,
-	.magic		= TTY_LDISC_MAGIC,
+	.num		= N_6PACK,
 	.name		= "6pack",
 	.open		= sixpack_open,
 	.close		= sixpack_close,
@@ -760,33 +743,21 @@ static struct tty_ldisc_ops sp_ldisc = {
 
 /* Initialize 6pack control device -- register 6pack line discipline */
 
-static const char msg_banner[]  __initconst = KERN_INFO \
-	"AX.25: 6pack driver, " SIXPACK_VERSION "\n";
-static const char msg_regfail[] __initconst = KERN_ERR  \
-	"6pack: can't register line discipline (err = %d)\n";
-
 static int __init sixpack_init_driver(void)
 {
 	int status;
 
-	printk(msg_banner);
-
 	/* Register the provided line protocol discipline */
-	if ((status = tty_register_ldisc(N_6PACK, &sp_ldisc)) != 0)
-		printk(msg_regfail, status);
+	status = tty_register_ldisc(&sp_ldisc);
+	if (status)
+		pr_err("6pack: can't register line discipline (err = %d)\n", status);
 
 	return status;
 }
 
-static const char msg_unregfail[] = KERN_ERR \
-	"6pack: can't unregister line discipline (err = %d)\n";
-
 static void __exit sixpack_exit_driver(void)
 {
-	int ret;
-
-	if ((ret = tty_unregister_ldisc(N_6PACK)))
-		printk(msg_unregfail, ret);
+	tty_unregister_ldisc(&sp_ldisc);
 }
 
 /* encode an AX.25 packet into 6pack */
@@ -829,13 +800,19 @@ static int encode_sixpack(unsigned char *tx_buf, unsigned char *tx_buf_raw,
 
 /* decode 4 sixpack-encoded bytes into 3 data bytes */
 
-static void decode_data(struct sixpack *sp, unsigned char inbyte)
+static void decode_data(struct sixpack *sp, u8 inbyte)
 {
-	unsigned char *buf;
+	u8 *buf;
 
 	if (sp->rx_count != 3) {
 		sp->raw_buf[sp->rx_count++] = inbyte;
 
+		return;
+	}
+
+	if (sp->rx_count_cooked + 2 >= sizeof(sp->cooked_buf)) {
+		pr_err("6pack: cooked buffer overrun, data loss\n");
+		sp->rx_count = 0;
 		return;
 	}
 
@@ -851,9 +828,9 @@ static void decode_data(struct sixpack *sp, unsigned char inbyte)
 
 /* identify and execute a 6pack priority command byte */
 
-static void decode_prio_command(struct sixpack *sp, unsigned char cmd)
+static void decode_prio_command(struct sixpack *sp, u8 cmd)
 {
-	int actual;
+	ssize_t actual;
 
 	if ((cmd & SIXP_PRIO_DATA_MASK) != 0) {     /* idle ? */
 
@@ -901,9 +878,9 @@ static void decode_prio_command(struct sixpack *sp, unsigned char cmd)
 
 /* identify and execute a standard 6pack command byte */
 
-static void decode_std_command(struct sixpack *sp, unsigned char cmd)
+static void decode_std_command(struct sixpack *sp, u8 cmd)
 {
-	unsigned char checksum = 0, rest = 0;
+	u8 checksum = 0, rest = 0;
 	short i;
 
 	switch (cmd & SIXP_CMD_MASK) {     /* normal command */
@@ -918,6 +895,7 @@ static void decode_std_command(struct sixpack *sp, unsigned char cmd)
 			sp->led_state = 0x60;
 			/* fill trailing bytes with zeroes */
 			sp->tty->ops->write(sp->tty, &sp->led_state, 1);
+			spin_lock_bh(&sp->rxlock);
 			rest = sp->rx_count;
 			if (rest != 0)
 				 for (i = rest; i <= 3; i++)
@@ -935,6 +913,7 @@ static void decode_std_command(struct sixpack *sp, unsigned char cmd)
 				sp_bump(sp, 0);
 			}
 			sp->rx_count_cooked = 0;
+			spin_unlock_bh(&sp->rxlock);
 		}
 		break;
 	case SIXP_TX_URUN: printk(KERN_DEBUG "6pack: TX underrun\n");
@@ -949,10 +928,10 @@ static void decode_std_command(struct sixpack *sp, unsigned char cmd)
 /* decode a 6pack packet */
 
 static void
-sixpack_decode(struct sixpack *sp, const unsigned char *pre_rbuff, int count)
+sixpack_decode(struct sixpack *sp, const u8 *pre_rbuff, size_t count)
 {
-	unsigned char inbyte;
-	int count1;
+	size_t count1;
+	u8 inbyte;
 
 	for (count1 = 0; count1 < count; count1++) {
 		inbyte = pre_rbuff[count1];
@@ -964,8 +943,11 @@ sixpack_decode(struct sixpack *sp, const unsigned char *pre_rbuff, int count)
 			decode_prio_command(sp, inbyte);
 		else if ((inbyte & SIXP_STD_CMD_MASK) != 0)
 			decode_std_command(sp, inbyte);
-		else if ((sp->status & SIXP_RX_DCD_MASK) == SIXP_RX_DCD_MASK)
+		else if ((sp->status & SIXP_RX_DCD_MASK) == SIXP_RX_DCD_MASK) {
+			spin_lock_bh(&sp->rxlock);
 			decode_data(sp, inbyte);
+			spin_unlock_bh(&sp->rxlock);
+		}
 	}
 }
 

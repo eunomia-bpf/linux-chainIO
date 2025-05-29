@@ -8,6 +8,7 @@
 
 #include <linux/init.h>
 #include <linux/device.h>
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_data/cros_ec_commands.h>
 #include <linux/platform_data/cros_ec_proto.h>
@@ -224,8 +225,7 @@ static int cros_ec_sensorhub_probe(struct platform_device *pdev)
  */
 static int cros_ec_sensorhub_suspend(struct device *dev)
 {
-	struct platform_device *pdev = to_platform_device(dev);
-	struct cros_ec_sensorhub *sensorhub = platform_get_drvdata(pdev);
+	struct cros_ec_sensorhub *sensorhub = dev_get_drvdata(dev);
 	struct cros_ec_dev *ec = sensorhub->ec;
 
 	if (cros_ec_check_features(ec, EC_FEATURE_MOTION_SENSE_FIFO))
@@ -235,8 +235,7 @@ static int cros_ec_sensorhub_suspend(struct device *dev)
 
 static int cros_ec_sensorhub_resume(struct device *dev)
 {
-	struct platform_device *pdev = to_platform_device(dev);
-	struct cros_ec_sensorhub *sensorhub = platform_get_drvdata(pdev);
+	struct cros_ec_sensorhub *sensorhub = dev_get_drvdata(dev);
 	struct cros_ec_dev *ec = sensorhub->ec;
 
 	if (cros_ec_check_features(ec, EC_FEATURE_MOTION_SENSE_FIFO))
@@ -249,17 +248,23 @@ static SIMPLE_DEV_PM_OPS(cros_ec_sensorhub_pm_ops,
 		cros_ec_sensorhub_suspend,
 		cros_ec_sensorhub_resume);
 
+static const struct platform_device_id cros_ec_sensorhub_id[] = {
+	{ DRV_NAME, 0 },
+	{}
+};
+MODULE_DEVICE_TABLE(platform, cros_ec_sensorhub_id);
+
 static struct platform_driver cros_ec_sensorhub_driver = {
 	.driver = {
 		.name = DRV_NAME,
 		.pm = &cros_ec_sensorhub_pm_ops,
 	},
 	.probe = cros_ec_sensorhub_probe,
+	.id_table = cros_ec_sensorhub_id,
 };
 
 module_platform_driver(cros_ec_sensorhub_driver);
 
-MODULE_ALIAS("platform:" DRV_NAME);
 MODULE_AUTHOR("Gwendal Grignou <gwendal@chromium.org>");
 MODULE_DESCRIPTION("ChromeOS EC MEMS Sensor Hub Driver");
 MODULE_LICENSE("GPL");

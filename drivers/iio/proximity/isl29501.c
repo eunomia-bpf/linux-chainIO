@@ -12,7 +12,7 @@
 #include <linux/module.h>
 #include <linux/i2c.h>
 #include <linux/err.h>
-#include <linux/of_device.h>
+#include <linux/mod_devicetable.h>
 #include <linux/iio/iio.h>
 #include <linux/iio/sysfs.h>
 
@@ -938,7 +938,7 @@ static irqreturn_t isl29501_trigger_handler(int irq, void *p)
 	struct iio_dev *indio_dev = pf->indio_dev;
 	struct isl29501_private *isl29501 = iio_priv(indio_dev);
 	const unsigned long *active_mask = indio_dev->active_scan_mask;
-	u32 buffer[4] = {}; /* 1x16-bit + ts */
+	u32 buffer[4] __aligned(8) = {}; /* 1x16-bit + naturally aligned ts */
 
 	if (test_bit(ISL29501_DISTANCE_SCAN_INDEX, active_mask))
 		isl29501_register_read(isl29501, REG_DISTANCE, buffer);
@@ -949,8 +949,7 @@ static irqreturn_t isl29501_trigger_handler(int irq, void *p)
 	return IRQ_HANDLED;
 }
 
-static int isl29501_probe(struct i2c_client *client,
-			  const struct i2c_device_id *id)
+static int isl29501_probe(struct i2c_client *client)
 {
 	struct iio_dev *indio_dev;
 	struct isl29501_private *isl29501;
@@ -990,23 +989,22 @@ static int isl29501_probe(struct i2c_client *client,
 }
 
 static const struct i2c_device_id isl29501_id[] = {
-	{"isl29501", 0},
+	{ "isl29501" },
 	{}
 };
 
 MODULE_DEVICE_TABLE(i2c, isl29501_id);
 
-#if defined(CONFIG_OF)
 static const struct of_device_id isl29501_i2c_matches[] = {
 	{ .compatible = "renesas,isl29501" },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, isl29501_i2c_matches);
-#endif
 
 static struct i2c_driver isl29501_driver = {
 	.driver = {
 		.name	= "isl29501",
+		.of_match_table = isl29501_i2c_matches,
 	},
 	.id_table	= isl29501_id,
 	.probe		= isl29501_probe,

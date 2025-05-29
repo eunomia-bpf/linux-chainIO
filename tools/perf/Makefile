@@ -25,7 +25,7 @@ unexport MAKEFLAGS
 # (To override it, run 'make JOBS=1' and similar.)
 #
 ifeq ($(JOBS),)
-  JOBS := $(shell (getconf _NPROCESSORS_ONLN || egrep -c '^processor|^CPU[0-9]' /proc/cpuinfo) 2>/dev/null)
+  JOBS := $(shell (getconf _NPROCESSORS_ONLN || grep -E -c '^processor|^CPU[0-9]' /proc/cpuinfo) 2>/dev/null)
   ifeq ($(JOBS),0)
     JOBS := 1
   endif
@@ -51,8 +51,14 @@ else
   override DEBUG = 0
 endif
 
+ifeq ($(JOBS),1)
+  BUILD_TYPE := sequential
+else
+  BUILD_TYPE := parallel
+endif
+
 define print_msg
-  @printf '  BUILD:   Doing '\''make \033[33m-j'$(JOBS)'\033[m'\'' parallel build\n'
+  @printf '  BUILD:   Doing '\''make \033[33m-j'$(JOBS)'\033[m'\'' $(BUILD_TYPE) build\n'
 endef
 
 define make
@@ -100,7 +106,10 @@ clean:
 # make -C tools/perf -f tests/make
 #
 build-test:
-	@$(MAKE) SHUF=1 -f tests/make REUSE_FEATURES_DUMP=1 MK=Makefile SET_PARALLEL=1 --no-print-directory tarpkg out
+	@$(MAKE) SHUF=1 -f tests/make REUSE_FEATURES_DUMP=1 MK=Makefile SET_PARALLEL=1 --no-print-directory tarpkg make_static make_with_gtk2 out
+
+build-test-tarball:
+	@$(MAKE) -f tests/make REUSE_FEATURES_DUMP=1 MK=Makefile SET_PARALLEL=1 --no-print-directory out
 
 #
 # All other targets get passed through:

@@ -3,13 +3,13 @@
  * Copyright (C) 2009-2015 Cavium, Inc.
  */
 
-#include <linux/platform_device.h>
+#include <linux/gfp.h>
+#include <linux/io.h>
+#include <linux/module.h>
 #include <linux/of_address.h>
 #include <linux/of_mdio.h>
-#include <linux/module.h>
-#include <linux/gfp.h>
 #include <linux/phy.h>
-#include <linux/io.h>
+#include <linux/platform_device.h>
 
 #include "mdio-cavium.h"
 
@@ -58,8 +58,10 @@ static int octeon_mdiobus_probe(struct platform_device *pdev)
 	snprintf(bus->mii_bus->id, MII_BUS_ID_SIZE, "%px", bus->register_base);
 	bus->mii_bus->parent = &pdev->dev;
 
-	bus->mii_bus->read = cavium_mdiobus_read;
-	bus->mii_bus->write = cavium_mdiobus_write;
+	bus->mii_bus->read = cavium_mdiobus_read_c22;
+	bus->mii_bus->write = cavium_mdiobus_write_c22;
+	bus->mii_bus->read_c45 = cavium_mdiobus_read_c45;
+	bus->mii_bus->write_c45 = cavium_mdiobus_write_c45;
 
 	platform_set_drvdata(pdev, bus);
 
@@ -71,13 +73,12 @@ static int octeon_mdiobus_probe(struct platform_device *pdev)
 
 	return 0;
 fail_register:
-	mdiobus_free(bus->mii_bus);
 	smi_en.u64 = 0;
 	oct_mdio_writeq(smi_en.u64, bus->register_base + SMI_EN);
 	return err;
 }
 
-static int octeon_mdiobus_remove(struct platform_device *pdev)
+static void octeon_mdiobus_remove(struct platform_device *pdev)
 {
 	struct cavium_mdiobus *bus;
 	union cvmx_smix_en smi_en;
@@ -85,10 +86,8 @@ static int octeon_mdiobus_remove(struct platform_device *pdev)
 	bus = platform_get_drvdata(pdev);
 
 	mdiobus_unregister(bus->mii_bus);
-	mdiobus_free(bus->mii_bus);
 	smi_en.u64 = 0;
 	oct_mdio_writeq(smi_en.u64, bus->register_base + SMI_EN);
-	return 0;
 }
 
 static const struct of_device_id octeon_mdiobus_match[] = {

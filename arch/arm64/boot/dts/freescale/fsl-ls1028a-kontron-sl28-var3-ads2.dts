@@ -8,7 +8,9 @@
  */
 
 /dts-v1/;
-#include "fsl-ls1028a-kontron-sl28.dts"
+
+#include <dt-bindings/clock/fsl,qoriq-clockgen.h>
+#include "fsl-ls1028a-kontron-sl28-var3.dts"
 
 / {
 	model = "Kontron SMARC-sAL28 (Single PHY) on SMARC Eval 2.0 carrier";
@@ -17,11 +19,16 @@
 
 	pwm-fan {
 		compatible = "pwm-fan";
-		cooling-min-state = <0>;
-		cooling-max-state = <3>;
 		#cooling-cells = <2>;
 		pwms = <&sl28cpld_pwm0 0 4000000>;
 		cooling-levels = <1 128 192 255>;
+	};
+
+	reg_3p3v: regulator-3p3v {
+		compatible = "regulator-fixed";
+		regulator-name = "3P3V";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
 	};
 
 	sound {
@@ -105,6 +112,11 @@
 		clock-names = "mclk";
 		assigned-clocks = <&mclk>;
 		assigned-clock-rates = <1250000>;
+		AVDD-supply = <&reg_3p3v>;
+		CPVDD-supply = <&reg_3p3v>;
+		DBVDD-supply = <&reg_3p3v>;
+		DCVDD-supply = <&reg_3p3v>;
+		MICVDD-supply = <&reg_3p3v>;
 	};
 };
 
@@ -120,7 +132,8 @@
 	mclk: clock-mclk@f130080 {
 		compatible = "fsl,vf610-sai-clock";
 		reg = <0x0 0xf130080 0x0 0x80>;
-		clocks = <&clockgen 4 1>;
+		clocks = <&clockgen QORIQ_CLK_PLATFORM_PLL
+				    QORIQ_CLK_PLL_DIV(2)>;
 		#clock-cells = <0>;
 	};
 };

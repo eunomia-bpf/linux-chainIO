@@ -53,12 +53,8 @@ const struct sun4i_csi_format *sun4i_csi_find_format(const u32 *fourcc,
 static int sun4i_csi_querycap(struct file *file, void *priv,
 			      struct v4l2_capability *cap)
 {
-	struct sun4i_csi *csi = video_drvdata(file);
-
 	strscpy(cap->driver, KBUILD_MODNAME, sizeof(cap->driver));
 	strscpy(cap->card, "sun4i-csi", sizeof(cap->card));
-	snprintf(cap->bus_info, sizeof(cap->bus_info), "platform:%s",
-		 dev_name(csi->dev));
 
 	return 0;
 }
@@ -113,8 +109,6 @@ static void _sun4i_csi_try_fmt(struct sun4i_csi *csi,
 	pix->num_planes = _fmt->num_planes;
 	pix->pixelformat = _fmt->fourcc;
 
-	memset(pix->reserved, 0, sizeof(pix->reserved));
-
 	/* Align the width and height on the subsampling */
 	width = ALIGN(pix->width, _fmt->hsub);
 	height = ALIGN(pix->height, _fmt->vsub);
@@ -131,8 +125,6 @@ static void _sun4i_csi_try_fmt(struct sun4i_csi *csi,
 		bpl = pix->width / hsub * _fmt->bpp[i] / 8;
 		pix->plane_fmt[i].bytesperline = bpl;
 		pix->plane_fmt[i].sizeimage = bpl * pix->height / vsub;
-		memset(pix->plane_fmt[i].reserved, 0,
-		       sizeof(pix->plane_fmt[i].reserved));
 	}
 }
 
@@ -210,9 +202,9 @@ static int sun4i_csi_open(struct file *file)
 	if (ret)
 		return ret;
 
-	ret = pm_runtime_get_sync(csi->dev);
+	ret = pm_runtime_resume_and_get(csi->dev);
 	if (ret < 0)
-		goto err_pm_put;
+		goto err_unlock;
 
 	ret = v4l2_pipeline_pm_get(&csi->vdev.entity);
 	if (ret)
@@ -231,6 +223,8 @@ err_pipeline_pm_put:
 
 err_pm_put:
 	pm_runtime_put(csi->dev);
+
+err_unlock:
 	mutex_unlock(&csi->lock);
 
 	return ret;
@@ -272,26 +266,26 @@ static const struct v4l2_mbus_framefmt sun4i_csi_pad_fmt_default = {
 	.xfer_func = V4L2_XFER_FUNC_DEFAULT,
 };
 
-static int sun4i_csi_subdev_init_cfg(struct v4l2_subdev *subdev,
-				     struct v4l2_subdev_pad_config *cfg)
+static int sun4i_csi_subdev_init_state(struct v4l2_subdev *subdev,
+				       struct v4l2_subdev_state *sd_state)
 {
 	struct v4l2_mbus_framefmt *fmt;
 
-	fmt = v4l2_subdev_get_try_format(subdev, cfg, CSI_SUBDEV_SINK);
+	fmt = v4l2_subdev_state_get_format(sd_state, CSI_SUBDEV_SINK);
 	*fmt = sun4i_csi_pad_fmt_default;
 
 	return 0;
 }
 
 static int sun4i_csi_subdev_get_fmt(struct v4l2_subdev *subdev,
-				    struct v4l2_subdev_pad_config *cfg,
+				    struct v4l2_subdev_state *sd_state,
 				    struct v4l2_subdev_format *fmt)
 {
 	struct sun4i_csi *csi = container_of(subdev, struct sun4i_csi, subdev);
 	struct v4l2_mbus_framefmt *subdev_fmt;
 
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY)
-		subdev_fmt = v4l2_subdev_get_try_format(subdev, cfg, fmt->pad);
+		subdev_fmt = v4l2_subdev_state_get_format(sd_state, fmt->pad);
 	else
 		subdev_fmt = &csi->subdev_fmt;
 
@@ -301,14 +295,14 @@ static int sun4i_csi_subdev_get_fmt(struct v4l2_subdev *subdev,
 }
 
 static int sun4i_csi_subdev_set_fmt(struct v4l2_subdev *subdev,
-				    struct v4l2_subdev_pad_config *cfg,
+				    struct v4l2_subdev_state *sd_state,
 				    struct v4l2_subdev_format *fmt)
 {
 	struct sun4i_csi *csi = container_of(subdev, struct sun4i_csi, subdev);
 	struct v4l2_mbus_framefmt *subdev_fmt;
 
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY)
-		subdev_fmt = v4l2_subdev_get_try_format(subdev, cfg, fmt->pad);
+		subdev_fmt = v4l2_subdev_state_get_format(sd_state, fmt->pad);
 	else
 		subdev_fmt = &csi->subdev_fmt;
 
@@ -327,7 +321,7 @@ static int sun4i_csi_subdev_set_fmt(struct v4l2_subdev *subdev,
 
 static int
 sun4i_csi_subdev_enum_mbus_code(struct v4l2_subdev *subdev,
-				struct v4l2_subdev_pad_config *cfg,
+				struct v4l2_subdev_state *sd_state,
 				struct v4l2_subdev_mbus_code_enum *mbus)
 {
 	if (mbus->index >= ARRAY_SIZE(sun4i_csi_formats))
@@ -340,7 +334,6 @@ sun4i_csi_subdev_enum_mbus_code(struct v4l2_subdev *subdev,
 
 static const struct v4l2_subdev_pad_ops sun4i_csi_subdev_pad_ops = {
 	.link_validate	= v4l2_subdev_link_validate_default,
-	.init_cfg	= sun4i_csi_subdev_init_cfg,
 	.get_fmt	= sun4i_csi_subdev_get_fmt,
 	.set_fmt	= sun4i_csi_subdev_set_fmt,
 	.enum_mbus_code	= sun4i_csi_subdev_enum_mbus_code,
@@ -348,6 +341,10 @@ static const struct v4l2_subdev_pad_ops sun4i_csi_subdev_pad_ops = {
 
 const struct v4l2_subdev_ops sun4i_csi_subdev_ops = {
 	.pad = &sun4i_csi_subdev_pad_ops,
+};
+
+const struct v4l2_subdev_internal_ops sun4i_csi_subdev_internal_ops = {
+	.init_state	= sun4i_csi_subdev_init_state,
 };
 
 int sun4i_csi_v4l2_register(struct sun4i_csi *csi)
@@ -363,7 +360,7 @@ int sun4i_csi_v4l2_register(struct sun4i_csi *csi)
 	vdev->lock = &csi->lock;
 
 	/* Set a default format */
-	csi->fmt.pixelformat = sun4i_csi_formats[0].fourcc,
+	csi->fmt.pixelformat = sun4i_csi_formats[0].fourcc;
 	csi->fmt.width = CSI_DEFAULT_WIDTH;
 	csi->fmt.height = CSI_DEFAULT_HEIGHT;
 	_sun4i_csi_try_fmt(csi, &csi->fmt);

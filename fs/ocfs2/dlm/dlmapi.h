@@ -1,7 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/* -*- mode: c; c-basic-offset: 8; -*-
- * vim: noexpandtab sw=8 ts=8 sts=0:
- *
+/*
  * dlmapi.h
  *
  * externally exported dlm interfaces
@@ -64,8 +62,6 @@ enum dlm_status {
 	DLM_MAXSTATS,             /* 41: upper limit for return code validation */
 };
 
-/* for pretty-printing dlm_status error messages */
-const char *dlm_errmsg(enum dlm_status err);
 /* for pretty-printing dlm_status error names */
 const char *dlm_errname(enum dlm_status err);
 

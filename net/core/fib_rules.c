@@ -11,6 +11,7 @@
 #include <linux/list.h>
 #include <linux/module.h>
 #include <net/net_namespace.h>
+#include <net/inet_dscp.h>
 #include <net/sock.h>
 #include <net/fib_rules.h>
 #include <net/ip_tunnels.h>
@@ -53,11 +54,11 @@ bool fib_rule_matchall(const struct fib_rule *rule)
 EXPORT_SYMBOL_GPL(fib_rule_matchall);
 
 int fib_default_rule_add(struct fib_rules_ops *ops,
-			 u32 pref, u32 table, u32 flags)
+			 u32 pref, u32 table)
 {
 	struct fib_rule *r;
 
-	r = kzalloc(ops->rule_size, GFP_KERNEL);
+	r = kzalloc(ops->rule_size, GFP_KERNEL_ACCOUNT);
 	if (r == NULL)
 		return -ENOMEM;
 
@@ -65,7 +66,6 @@ int fib_default_rule_add(struct fib_rules_ops *ops,
 	r->action = FR_ACT_TO_TBL;
 	r->pref = pref;
 	r->table = table;
-	r->flags = flags;
 	r->proto = RTPROT_KERNEL;
 	r->fr_net = ops->fro_net;
 	r->uid_range = fib_kuid_range_unset;
@@ -73,7 +73,7 @@ int fib_default_rule_add(struct fib_rules_ops *ops,
 	r->suppress_prefixlen = -1;
 	r->suppress_ifgroup = -1;
 
-	/* The lock is not required here, the list in unreacheable
+	/* The lock is not required here, the list in unreachable
 	 * at the moment this function is called */
 	list_add_tail(&r->list, &ops->rules_list);
 	return 0;
@@ -101,7 +101,8 @@ static void notify_rule_change(int event, struct fib_rule *rule,
 			       struct fib_rules_ops *ops, struct nlmsghdr *nlh,
 			       u32 pid);
 
-static struct fib_rules_ops *lookup_rules_ops(struct net *net, int family)
+static struct fib_rules_ops *lookup_rules_ops(const struct net *net,
+					      int family)
 {
 	struct fib_rules_ops *ops;
 
@@ -323,7 +324,7 @@ jumped:
 		if (!err && ops->suppress && INDIRECT_CALL_MT(ops->suppress,
 							      fib6_rule_suppress,
 							      fib4_rule_suppress,
-							      rule, arg))
+							      rule, flags, arg))
 			continue;
 
 		if (err != -EAGAIN) {
@@ -370,7 +371,9 @@ static int call_fib_rule_notifiers(struct net *net,
 		.rule = rule,
 	};
 
-	ops->fib_rules_seq++;
+	ASSERT_RTNL();
+	/* Paired with READ_ONCE() in fib_rules_seq() */
+	WRITE_ONCE(ops->fib_rules_seq, ops->fib_rules_seq + 1);
 	return call_fib_notifiers(net, event_type, &info.info);
 }
 
@@ -397,17 +400,16 @@ int fib_rules_dump(struct net *net, struct notifier_block *nb, int family,
 }
 EXPORT_SYMBOL_GPL(fib_rules_dump);
 
-unsigned int fib_rules_seq_read(struct net *net, int family)
+unsigned int fib_rules_seq_read(const struct net *net, int family)
 {
 	unsigned int fib_rules_seq;
 	struct fib_rules_ops *ops;
 
-	ASSERT_RTNL();
-
 	ops = lookup_rules_ops(net, family);
 	if (!ops)
 		return 0;
-	fib_rules_seq = ops->fib_rules_seq;
+	/* Paired with WRITE_ONCE() in call_fib_rule_notifiers() */
+	fib_rules_seq = READ_ONCE(ops->fib_rules_seq);
 	rules_ops_put(ops);
 
 	return fib_rules_seq;
@@ -541,7 +543,7 @@ static int fib_nl2rule(struct sk_buff *skb, struct nlmsghdr *nlh,
 			goto errout;
 	}
 
-	nlrule = kzalloc(ops->rule_size, GFP_KERNEL);
+	nlrule = kzalloc(ops->rule_size, GFP_KERNEL_ACCOUNT);
 	if (!nlrule) {
 		err = -ENOMEM;
 		goto errout;
@@ -556,14 +558,13 @@ static int fib_nl2rule(struct sk_buff *skb, struct nlmsghdr *nlh,
 		nlrule->pref = fib_default_rule_pref(ops);
 	}
 
-	nlrule->proto = tb[FRA_PROTOCOL] ?
-		nla_get_u8(tb[FRA_PROTOCOL]) : RTPROT_UNSPEC;
+	nlrule->proto = nla_get_u8_default(tb[FRA_PROTOCOL], RTPROT_UNSPEC);
 
 	if (tb[FRA_IIFNAME]) {
 		struct net_device *dev;
 
 		nlrule->iifindex = -1;
-		nla_strlcpy(nlrule->iifname, tb[FRA_IIFNAME], IFNAMSIZ);
+		nla_strscpy(nlrule->iifname, tb[FRA_IIFNAME], IFNAMSIZ);
 		dev = __dev_get_by_name(net, nlrule->iifname);
 		if (dev)
 			nlrule->iifindex = dev->ifindex;
@@ -573,7 +574,7 @@ static int fib_nl2rule(struct sk_buff *skb, struct nlmsghdr *nlh,
 		struct net_device *dev;
 
 		nlrule->oifindex = -1;
-		nla_strlcpy(nlrule->oifname, tb[FRA_OIFNAME], IFNAMSIZ);
+		nla_strscpy(nlrule->oifname, tb[FRA_OIFNAME], IFNAMSIZ);
 		dev = __dev_get_by_name(net, nlrule->oifname);
 		if (dev)
 			nlrule->oifindex = dev->ifindex;
@@ -594,7 +595,6 @@ static int fib_nl2rule(struct sk_buff *skb, struct nlmsghdr *nlh,
 	if (tb[FRA_TUN_ID])
 		nlrule->tun_id = nla_get_be64(tb[FRA_TUN_ID]);
 
-	err = -EINVAL;
 	if (tb[FRA_L3MDEV] &&
 	    fib_nl2rule_l3mdev(tb[FRA_L3MDEV], nlrule, extack) < 0)
 		goto errout_free;
@@ -750,6 +750,28 @@ static int rule_exists(struct fib_rules_ops *ops, struct fib_rule_hdr *frh,
 	return 0;
 }
 
+static const struct nla_policy fib_rule_policy[FRA_MAX + 1] = {
+	[FRA_UNSPEC]	= { .strict_start_type = FRA_DPORT_RANGE + 1 },
+	[FRA_IIFNAME]	= { .type = NLA_STRING, .len = IFNAMSIZ - 1 },
+	[FRA_OIFNAME]	= { .type = NLA_STRING, .len = IFNAMSIZ - 1 },
+	[FRA_PRIORITY]	= { .type = NLA_U32 },
+	[FRA_FWMARK]	= { .type = NLA_U32 },
+	[FRA_FLOW]	= { .type = NLA_U32 },
+	[FRA_TUN_ID]	= { .type = NLA_U64 },
+	[FRA_FWMASK]	= { .type = NLA_U32 },
+	[FRA_TABLE]     = { .type = NLA_U32 },
+	[FRA_SUPPRESS_PREFIXLEN] = { .type = NLA_U32 },
+	[FRA_SUPPRESS_IFGROUP] = { .type = NLA_U32 },
+	[FRA_GOTO]	= { .type = NLA_U32 },
+	[FRA_L3MDEV]	= { .type = NLA_U8 },
+	[FRA_UID_RANGE]	= { .len = sizeof(struct fib_rule_uid_range) },
+	[FRA_PROTOCOL]  = { .type = NLA_U8 },
+	[FRA_IP_PROTO]  = { .type = NLA_U8 },
+	[FRA_SPORT_RANGE] = { .len = sizeof(struct fib_rule_port_range) },
+	[FRA_DPORT_RANGE] = { .len = sizeof(struct fib_rule_port_range) },
+	[FRA_DSCP]	= NLA_POLICY_MAX(NLA_U8, INET_DSCP_MASK >> 2),
+};
+
 int fib_nl_newrule(struct sk_buff *skb, struct nlmsghdr *nlh,
 		   struct netlink_ext_ack *extack)
 {
@@ -774,7 +796,7 @@ int fib_nl_newrule(struct sk_buff *skb, struct nlmsghdr *nlh,
 	}
 
 	err = nlmsg_parse_deprecated(nlh, sizeof(*frh), tb, FRA_MAX,
-				     ops->policy, extack);
+				     fib_rule_policy, extack);
 	if (err < 0) {
 		NL_SET_ERR_MSG(extack, "Error parsing msg");
 		goto errout;
@@ -882,7 +904,7 @@ int fib_nl_delrule(struct sk_buff *skb, struct nlmsghdr *nlh,
 	}
 
 	err = nlmsg_parse_deprecated(nlh, sizeof(*frh), tb, FRA_MAX,
-				     ops->policy, extack);
+				     fib_rule_policy, extack);
 	if (err < 0) {
 		NL_SET_ERR_MSG(extack, "Error parsing msg");
 		goto errout;
@@ -1123,10 +1145,10 @@ static int fib_nl_dumprule(struct sk_buff *skb, struct netlink_callback *cb)
 	const struct nlmsghdr *nlh = cb->nlh;
 	struct net *net = sock_net(skb->sk);
 	struct fib_rules_ops *ops;
-	int idx = 0, family;
+	int err, idx = 0, family;
 
 	if (cb->strict_check) {
-		int err = fib_valid_dumprule_req(nlh, cb->extack);
+		err = fib_valid_dumprule_req(nlh, cb->extack);
 
 		if (err < 0)
 			return err;
@@ -1139,17 +1161,17 @@ static int fib_nl_dumprule(struct sk_buff *skb, struct netlink_callback *cb)
 		if (ops == NULL)
 			return -EAFNOSUPPORT;
 
-		dump_rules(skb, cb, ops);
-
-		return skb->len;
+		return dump_rules(skb, cb, ops);
 	}
 
+	err = 0;
 	rcu_read_lock();
 	list_for_each_entry_rcu(ops, &net->rules_ops, list) {
 		if (idx < cb->args[0] || !try_module_get(ops->owner))
 			goto skip;
 
-		if (dump_rules(skb, cb, ops) < 0)
+		err = dump_rules(skb, cb, ops);
+		if (err < 0)
 			break;
 
 		cb->args[1] = 0;
@@ -1159,7 +1181,7 @@ skip:
 	rcu_read_unlock();
 	cb->args[0] = idx;
 
-	return skb->len;
+	return err;
 }
 
 static void notify_rule_change(int event, struct fib_rule *rule,
@@ -1168,7 +1190,7 @@ static void notify_rule_change(int event, struct fib_rule *rule,
 {
 	struct net *net;
 	struct sk_buff *skb;
-	int err = -ENOBUFS;
+	int err = -ENOMEM;
 
 	net = ops->fro_net;
 	skb = nlmsg_new(fib_rule_nlmsg_size(ops, rule), GFP_KERNEL);
@@ -1186,8 +1208,7 @@ static void notify_rule_change(int event, struct fib_rule *rule,
 	rtnl_notify(skb, net, pid, ops->nlgroup, nlh, GFP_KERNEL);
 	return;
 errout:
-	if (err < 0)
-		rtnl_set_sk_err(net, ops->nlgroup, err);
+	rtnl_set_sk_err(net, ops->nlgroup, err);
 }
 
 static void attach_rules(struct list_head *rules, struct net_device *dev)
@@ -1269,12 +1290,18 @@ static struct pernet_operations fib_rules_net_ops = {
 	.exit = fib_rules_net_exit,
 };
 
+static const struct rtnl_msg_handler fib_rules_rtnl_msg_handlers[] __initconst = {
+	{.msgtype = RTM_NEWRULE, .doit = fib_nl_newrule},
+	{.msgtype = RTM_DELRULE, .doit = fib_nl_delrule},
+	{.msgtype = RTM_GETRULE, .dumpit = fib_nl_dumprule,
+	 .flags = RTNL_FLAG_DUMP_UNLOCKED},
+};
+
 static int __init fib_rules_init(void)
 {
 	int err;
-	rtnl_register(PF_UNSPEC, RTM_NEWRULE, fib_nl_newrule, NULL, 0);
-	rtnl_register(PF_UNSPEC, RTM_DELRULE, fib_nl_delrule, NULL, 0);
-	rtnl_register(PF_UNSPEC, RTM_GETRULE, NULL, fib_nl_dumprule, 0);
+
+	rtnl_register_many(fib_rules_rtnl_msg_handlers);
 
 	err = register_pernet_subsys(&fib_rules_net_ops);
 	if (err < 0)
@@ -1289,9 +1316,7 @@ static int __init fib_rules_init(void)
 fail_unregister:
 	unregister_pernet_subsys(&fib_rules_net_ops);
 fail:
-	rtnl_unregister(PF_UNSPEC, RTM_NEWRULE);
-	rtnl_unregister(PF_UNSPEC, RTM_DELRULE);
-	rtnl_unregister(PF_UNSPEC, RTM_GETRULE);
+	rtnl_unregister_many(fib_rules_rtnl_msg_handlers);
 	return err;
 }
 

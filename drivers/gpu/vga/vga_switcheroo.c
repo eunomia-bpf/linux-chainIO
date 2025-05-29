@@ -926,8 +926,7 @@ static void vga_switcheroo_debugfs_init(struct vgasr_priv *priv)
 /**
  * vga_switcheroo_process_delayed_switch() - helper for delayed switching
  *
- * Process a delayed switch if one is pending. DRM drivers should call this
- * from their ->lastclose callback.
+ * Process a delayed switch if one is pending.
  *
  * Return: 0 on success. -EINVAL if no delayed switch is pending, if the client
  * has unregistered in the meantime or if there are other clients blocking the
@@ -1034,17 +1033,12 @@ static int vga_switcheroo_runtime_suspend(struct device *dev)
 static int vga_switcheroo_runtime_resume(struct device *dev)
 {
 	struct pci_dev *pdev = to_pci_dev(dev);
-	int ret;
 
 	mutex_lock(&vgasr_mutex);
 	vga_switcheroo_power_switch(pdev, VGA_SWITCHEROO_ON);
 	mutex_unlock(&vgasr_mutex);
-	pci_wakeup_bus(pdev->bus);
-	ret = dev->bus->pm->runtime_resume(dev);
-	if (ret)
-		return ret;
-
-	return 0;
+	pci_resume_bus(pdev->bus);
+	return dev->bus->pm->runtime_resume(dev);
 }
 
 /**

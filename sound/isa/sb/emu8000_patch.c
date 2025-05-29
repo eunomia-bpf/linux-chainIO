@@ -148,13 +148,6 @@ snd_emu8000_sample_new(struct snd_emux *rec, struct snd_sf_sample *sp,
 	if (snd_BUG_ON(!sp))
 		return -EINVAL;
 
-	if (sp->v.size == 0)
-		return 0;
-
-	/* be sure loop points start < end */
-	if (sp->v.loopstart > sp->v.loopend)
-		swap(sp->v.loopstart, sp->v.loopend);
-
 	/* compute true data size to be loaded */
 	truesize = sp->v.size;
 	if (sp->v.mode_flags & (SNDRV_SFNT_SAMPLE_BIDIR_LOOP|SNDRV_SFNT_SAMPLE_REVERSE_LOOP))
@@ -164,7 +157,6 @@ snd_emu8000_sample_new(struct snd_emux *rec, struct snd_sf_sample *sp,
 
 	sp->block = snd_util_mem_alloc(hdr, truesize * 2);
 	if (sp->block == NULL) {
-		/*snd_printd("EMU8000: out of memory\n");*/
 		/* not ENOMEM (for compatibility) */
 		return -ENOSPC;
 	}
@@ -177,12 +169,6 @@ snd_emu8000_sample_new(struct snd_emux *rec, struct snd_sf_sample *sp,
 			return -EFAULT;
 	}
 
-	/* recalculate address offset */
-	sp->v.end -= sp->v.start;
-	sp->v.loopstart -= sp->v.start;
-	sp->v.loopend -= sp->v.start;
-	sp->v.start = 0;
-
 	/* dram position (in word) -- mem_offset is byte */
 	dram_offset = EMU8000_DRAM_OFFSET + (sp->block->offset >> 1);
 	dram_start = dram_offset;
@@ -191,7 +177,8 @@ snd_emu8000_sample_new(struct snd_emux *rec, struct snd_sf_sample *sp,
 	sp->v.truesize = truesize * 2; /* in bytes */
 
 	snd_emux_terminate_all(emu->emu);
-	if ((rc = snd_emu8000_open_dma(emu, EMU8000_RAM_WRITE)) != 0)
+	rc = snd_emu8000_open_dma(emu, EMU8000_RAM_WRITE);
+	if (rc)
 		return rc;
 
 	/* Set the address to start writing at */

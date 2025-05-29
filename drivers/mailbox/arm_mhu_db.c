@@ -15,7 +15,6 @@
 #include <linux/mailbox_controller.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 
 #define INTR_STAT_OFS	0x0
 #define INTR_SET_OFS	0x8
@@ -44,7 +43,7 @@ struct arm_mhu {
 };
 
 /**
- * ARM MHU Mailbox allocated channel information
+ * struct mhu_db_channel - ARM MHU Mailbox allocated channel information
  *
  * @mhu: Pointer to parent mailbox device
  * @pchan: Physical channel within which this doorbell resides in
@@ -180,7 +179,7 @@ static void mhu_db_shutdown(struct mbox_chan *chan)
 
 	/* Reset channel */
 	mhu_db_mbox_clear_irq(chan);
-	kfree(chan->con_priv);
+	devm_kfree(mbox->dev, chan->con_priv);
 	chan->con_priv = NULL;
 }
 
@@ -278,10 +277,8 @@ static int mhu_db_probe(struct amba_device *adev, const struct amba_id *id)
 		return -ENOMEM;
 
 	mhu->base = devm_ioremap_resource(dev, &adev->res);
-	if (IS_ERR(mhu->base)) {
-		dev_err(dev, "ioremap failed\n");
+	if (IS_ERR(mhu->base))
 		return PTR_ERR(mhu->base);
-	}
 
 	chans = devm_kcalloc(dev, max_chans, sizeof(*chans), GFP_KERNEL);
 	if (!chans)

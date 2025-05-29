@@ -11,11 +11,17 @@ maintainers:
   - Andy Shevchenko <andriy.shevchenko@linux.intel.com>
 
 allOf:
-  - $ref: "dma-controller.yaml#"
+  - $ref: dma-controller.yaml#
 
 properties:
   compatible:
-    const: snps,dma-spear1340
+    oneOf:
+      - const: snps,dma-spear1340
+      - items:
+          - enum:
+              - renesas,r9a06g032-dma
+          - const: renesas,rzn1-dma
+
 
   "#dma-cells":
     minimum: 3
@@ -54,7 +60,7 @@ properties:
     maximum: 16
 
   dma-masters:
-    $ref: /schemas/types.yaml#definitions/uint32
+    $ref: /schemas/types.yaml#/definitions/uint32
     description: |
       Number of DMA masters supported by the controller. In case if
       not specified the driver will try to auto-detect this and
@@ -63,7 +69,7 @@ properties:
     maximum: 4
 
   chan_allocation_order:
-    $ref: /schemas/types.yaml#definitions/uint32
+    $ref: /schemas/types.yaml#/definitions/uint32
     description: |
       DMA channels allocation order specifier. Zero means ascending order
       (first free allocated), while one - descending (last free allocated).
@@ -71,7 +77,7 @@ properties:
     enum: [0, 1]
 
   chan_priority:
-    $ref: /schemas/types.yaml#definitions/uint32
+    $ref: /schemas/types.yaml#/definitions/uint32
     description: |
       DMA channels priority order. Zero means ascending channels priority
       so the very first channel has the highest priority. While 1 means
@@ -80,17 +86,17 @@ properties:
     enum: [0, 1]
 
   block_size:
-    $ref: /schemas/types.yaml#definitions/uint32
+    $ref: /schemas/types.yaml#/definitions/uint32
     description: Maximum block size supported by the DMA controller.
     enum: [3, 7, 15, 31, 63, 127, 255, 511, 1023, 2047, 4095]
 
   data-width:
     $ref: /schemas/types.yaml#/definitions/uint32-array
     description: Data bus width per each DMA master in bytes.
+    minItems: 1
+    maxItems: 4
     items:
-      maxItems: 4
-      items:
-        enum: [4, 8, 16, 32]
+      enum: [4, 8, 16, 32]
 
   data_width:
     $ref: /schemas/types.yaml#/definitions/uint32-array
@@ -100,28 +106,28 @@ properties:
       deprecated. It' usage is discouraged in favor of data-width one. Moreover
       the property incorrectly permits to define data-bus width of 8 and 16
       bits, which is impossible in accordance with DW DMAC IP-core data book.
+    minItems: 1
+    maxItems: 4
     items:
-      maxItems: 4
-      items:
-        enum:
-          - 0 # 8 bits
-          - 1 # 16 bits
-          - 2 # 32 bits
-          - 3 # 64 bits
-          - 4 # 128 bits
-          - 5 # 256 bits
-        default: 0
+      enum:
+        - 0 # 8 bits
+        - 1 # 16 bits
+        - 2 # 32 bits
+        - 3 # 64 bits
+        - 4 # 128 bits
+        - 5 # 256 bits
+      default: 0
 
   multi-block:
     $ref: /schemas/types.yaml#/definitions/uint32-array
     description: |
       LLP-based multi-block transfer supported by hardware per
       each DMA channel.
+    minItems: 1
+    maxItems: 8
     items:
-      maxItems: 8
-      items:
-        enum: [0, 1]
-        default: 1
+      enum: [0, 1]
+      default: 1
 
   snps,max-burst-len:
     $ref: /schemas/types.yaml#/definitions/uint32-array
@@ -132,14 +138,14 @@ properties:
       will be from 1 to max-burst-len words. It's an array property with one
       cell per channel in the units determined by the value set in the
       CTLx.SRC_TR_WIDTH/CTLx.DST_TR_WIDTH fields (data width).
+    minItems: 1
+    maxItems: 8
     items:
-      maxItems: 8
-      items:
-        enum: [4, 8, 16, 32, 64, 128, 256]
-        default: 256
+      enum: [4, 8, 16, 32, 64, 128, 256]
+      default: 256
 
   snps,dma-protection-control:
-    $ref: /schemas/types.yaml#definitions/uint32
+    $ref: /schemas/types.yaml#/definitions/uint32
     description: |
       Bits one-to-one passed to the AHB HPROT[3:1] bus. Each bit setting
       indicates the following features: bit 0 - privileged mode,

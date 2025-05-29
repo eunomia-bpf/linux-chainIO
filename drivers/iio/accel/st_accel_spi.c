@@ -9,7 +9,7 @@
 
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/slab.h>
+#include <linux/mod_devicetable.h>
 #include <linux/spi/spi.h>
 #include <linux/iio/iio.h>
 
@@ -65,6 +65,10 @@ static const struct of_device_id st_accel_of_match[] = {
 		.data = LIS2DH12_ACCEL_DEV_NAME,
 	},
 	{
+		.compatible = "st,lis2ds12",
+		.data = LIS2DS12_ACCEL_DEV_NAME,
+	},
+	{
 		.compatible = "st,lis3l02dq",
 		.data = LIS3L02DQ_ACCEL_DEV_NAME,
 	},
@@ -91,6 +95,18 @@ static const struct of_device_id st_accel_of_match[] = {
 	{
 		.compatible = "st,lis3de",
 		.data = LIS3DE_ACCEL_DEV_NAME,
+	},
+	{
+		.compatible = "st,lis302dl",
+		.data = LIS302DL_ACCEL_DEV_NAME,
+	},
+	{
+		.compatible = "st,lsm303c-accel",
+		.data = LSM303C_ACCEL_DEV_NAME,
+	},
+	{
+		.compatible = "st,iis328dq",
+		.data = IIS328DQ_ACCEL_DEV_NAME,
 	},
 	{}
 };
@@ -123,18 +139,11 @@ static int st_accel_spi_probe(struct spi_device *spi)
 	if (err < 0)
 		return err;
 
-	err = st_accel_common_probe(indio_dev);
-	if (err < 0)
+	err = st_sensors_power_enable(indio_dev);
+	if (err)
 		return err;
 
-	return 0;
-}
-
-static int st_accel_spi_remove(struct spi_device *spi)
-{
-	st_accel_common_remove(spi_get_drvdata(spi));
-
-	return 0;
+	return st_accel_common_probe(indio_dev);
 }
 
 static const struct spi_device_id st_accel_id_table[] = {
@@ -146,6 +155,7 @@ static const struct spi_device_id st_accel_id_table[] = {
 	{ LSM330_ACCEL_DEV_NAME },
 	{ LSM303AGR_ACCEL_DEV_NAME },
 	{ LIS2DH12_ACCEL_DEV_NAME },
+	{ LIS2DS12_ACCEL_DEV_NAME },
 	{ LIS3L02DQ_ACCEL_DEV_NAME },
 	{ LNG2DM_ACCEL_DEV_NAME },
 	{ H3LIS331DL_ACCEL_DEV_NAME },
@@ -154,6 +164,9 @@ static const struct spi_device_id st_accel_id_table[] = {
 	{ LIS2DW12_ACCEL_DEV_NAME },
 	{ LIS3DHH_ACCEL_DEV_NAME },
 	{ LIS3DE_ACCEL_DEV_NAME },
+	{ LIS302DL_ACCEL_DEV_NAME },
+	{ LSM303C_ACCEL_DEV_NAME },
+	{ IIS328DQ_ACCEL_DEV_NAME },
 	{},
 };
 MODULE_DEVICE_TABLE(spi, st_accel_id_table);
@@ -164,7 +177,6 @@ static struct spi_driver st_accel_driver = {
 		.of_match_table = st_accel_of_match,
 	},
 	.probe = st_accel_spi_probe,
-	.remove = st_accel_spi_remove,
 	.id_table = st_accel_id_table,
 };
 module_spi_driver(st_accel_driver);
@@ -172,3 +184,4 @@ module_spi_driver(st_accel_driver);
 MODULE_AUTHOR("Denis Ciocca <denis.ciocca@st.com>");
 MODULE_DESCRIPTION("STMicroelectronics accelerometers spi driver");
 MODULE_LICENSE("GPL v2");
+MODULE_IMPORT_NS(IIO_ST_SENSORS);

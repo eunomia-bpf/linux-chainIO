@@ -131,7 +131,7 @@
 /* buf unit size is cache_line_size, which is 64, so the shift is 6 */
 #define PPE_BUF_SIZE_SHIFT		6
 #define PPE_TX_BUF_HOLD			BIT(31)
-#define CACHE_LINE_MASK			0x3F
+#define SOC_CACHE_LINE_MASK		0x3F
 #else
 #define PPE_CFG_QOS_VMID_GRP_SHIFT	8
 #define PPE_CFG_RX_CTRL_ALIGN_SHIFT	11
@@ -531,8 +531,8 @@ hip04_mac_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 #if defined(CONFIG_HI13X1_GMAC)
 	desc->cfg = (__force u32)cpu_to_be32(TX_CLEAR_WB | TX_FINISH_CACHE_INV
 		| TX_RELEASE_TO_PPE | priv->port << TX_POOL_SHIFT);
-	desc->data_offset = (__force u32)cpu_to_be32(phys & CACHE_LINE_MASK);
-	desc->send_addr =  (__force u32)cpu_to_be32(phys & ~CACHE_LINE_MASK);
+	desc->data_offset = (__force u32)cpu_to_be32(phys & SOC_CACHE_LINE_MASK);
+	desc->send_addr =  (__force u32)cpu_to_be32(phys & ~SOC_CACHE_LINE_MASK);
 #else
 	desc->cfg = (__force u32)cpu_to_be32(TX_CLEAR_WB | TX_FINISH_CACHE_INV);
 	desc->send_addr = (__force u32)cpu_to_be32(phys);
@@ -796,7 +796,9 @@ static void hip04_tx_timeout_task(struct work_struct *work)
 }
 
 static int hip04_get_coalesce(struct net_device *netdev,
-			      struct ethtool_coalesce *ec)
+			      struct ethtool_coalesce *ec,
+			      struct kernel_ethtool_coalesce *kernel_coal,
+			      struct netlink_ext_ack *extack)
 {
 	struct hip04_priv *priv = netdev_priv(netdev);
 
@@ -807,7 +809,9 @@ static int hip04_get_coalesce(struct net_device *netdev,
 }
 
 static int hip04_set_coalesce(struct net_device *netdev,
-			      struct ethtool_coalesce *ec)
+			      struct ethtool_coalesce *ec,
+			      struct kernel_ethtool_coalesce *kernel_coal,
+			      struct netlink_ext_ack *extack)
 {
 	struct hip04_priv *priv = netdev_priv(netdev);
 
@@ -826,8 +830,8 @@ static int hip04_set_coalesce(struct net_device *netdev,
 static void hip04_get_drvinfo(struct net_device *netdev,
 			      struct ethtool_drvinfo *drvinfo)
 {
-	strlcpy(drvinfo->driver, DRV_NAME, sizeof(drvinfo->driver));
-	strlcpy(drvinfo->version, DRV_VERSION, sizeof(drvinfo->version));
+	strscpy(drvinfo->driver, DRV_NAME, sizeof(drvinfo->driver));
+	strscpy(drvinfo->version, DRV_VERSION, sizeof(drvinfo->version));
 }
 
 static const struct ethtool_ops hip04_ethtool_ops = {
@@ -943,6 +947,7 @@ static int hip04_mac_probe(struct platform_device *pdev)
 	priv->tx_coalesce_timer.function = tx_done;
 
 	priv->map = syscon_node_to_regmap(arg.np);
+	of_node_put(arg.np);
 	if (IS_ERR(priv->map)) {
 		dev_warn(d, "no syscon hisilicon,hip04-ppe\n");
 		ret = PTR_ERR(priv->map);
@@ -956,8 +961,8 @@ static int hip04_mac_probe(struct platform_device *pdev)
 	}
 
 	irq = platform_get_irq(pdev, 0);
-	if (irq <= 0) {
-		ret = -EINVAL;
+	if (irq < 0) {
+		ret = irq;
 		goto init_fail;
 	}
 
@@ -986,7 +991,7 @@ static int hip04_mac_probe(struct platform_device *pdev)
 	ndev->watchdog_timeo = TX_TIMEOUT;
 	ndev->priv_flags |= IFF_UNICAST_FLT;
 	ndev->irq = irq;
-	netif_napi_add(ndev, &priv->napi, hip04_rx_poll, NAPI_POLL_WEIGHT);
+	netif_napi_add(ndev, &priv->napi, hip04_rx_poll);
 
 	hip04_reset_dreq(priv);
 	hip04_reset_ppe(priv);
@@ -994,7 +999,7 @@ static int hip04_mac_probe(struct platform_device *pdev)
 		hip04_config_port(ndev, SPEED_100, DUPLEX_FULL);
 
 	hip04_config_fifo(priv);
-	eth_random_addr(ndev->dev_addr);
+	eth_hw_addr_random(ndev);
 	hip04_update_mac_address(ndev);
 
 	ret = hip04_alloc_ring(ndev, d);
@@ -1017,7 +1022,7 @@ init_fail:
 	return ret;
 }
 
-static int hip04_remove(struct platform_device *pdev)
+static void hip04_remove(struct platform_device *pdev)
 {
 	struct net_device *ndev = platform_get_drvdata(pdev);
 	struct hip04_priv *priv = netdev_priv(ndev);
@@ -1031,8 +1036,6 @@ static int hip04_remove(struct platform_device *pdev)
 	of_node_put(priv->phy_node);
 	cancel_work_sync(&priv->tx_timeout_task);
 	free_netdev(ndev);
-
-	return 0;
 }
 
 static const struct of_device_id hip04_mac_match[] = {
@@ -1044,7 +1047,7 @@ MODULE_DEVICE_TABLE(of, hip04_mac_match);
 
 static struct platform_driver hip04_mac_driver = {
 	.probe	= hip04_mac_probe,
-	.remove	= hip04_remove,
+	.remove = hip04_remove,
 	.driver	= {
 		.name		= DRV_NAME,
 		.of_match_table	= hip04_mac_match,

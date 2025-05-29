@@ -190,6 +190,7 @@ config USB_F_MASS_STORAGE
 	tristate
 
 config USB_F_FS
+	select DMA_SHARED_BUFFER
 	tristate
 
 config USB_F_UAC1
@@ -203,8 +204,12 @@ config USB_F_UAC2
 
 config USB_F_UVC
 	tristate
+	select UVC_COMMON
 
 config USB_F_MIDI
+	tristate
+
+config USB_F_MIDI2
 	tristate
 
 config USB_F_HID
@@ -265,6 +270,7 @@ config USB_CONFIGFS_NCM
 	depends on NET
 	select USB_U_ETHER
 	select USB_F_NCM
+	select CRC32
 	help
 	  NCM is an advanced protocol for Ethernet encapsulation, allows
 	  grouping of several ethernet frames into one USB transfer and
@@ -314,6 +320,7 @@ config USB_CONFIGFS_EEM
 	depends on NET
 	select USB_U_ETHER
 	select USB_F_EEM
+	select CRC32
 	help
 	  CDC EEM is a newer USB standard that is somewhat simpler than CDC ECM
 	  and therefore can be supported by more hardware.  Technically ECM and
@@ -433,6 +440,21 @@ config USB_CONFIGFS_F_MIDI
 	  connections can then be made on the gadget system, using
 	  ALSA's aconnect utility etc.
 
+config USB_CONFIGFS_F_MIDI2
+	bool "MIDI 2.0 function"
+	depends on USB_CONFIGFS
+	depends on SND
+	select USB_LIBCOMPOSITE
+	select SND_UMP
+	select SND_UMP_LEGACY_RAWMIDI
+	select USB_F_MIDI2
+	help
+	  The MIDI 2.0 function driver provides the generic emulated
+	  USB MIDI 2.0 interface, looped back to ALSA UMP rawmidi
+	  device on the gadget host. It supports UMP 1.1 spec and
+	  responds UMP Stream messages for UMP Endpoint and Function
+	  Block information / configuration.
+
 config USB_CONFIGFS_F_HID
 	bool "HID function"
 	depends on USB_CONFIGFS
@@ -446,8 +468,9 @@ config USB_CONFIGFS_F_HID
 config USB_CONFIGFS_F_UVC
 	bool "USB Webcam function"
 	depends on USB_CONFIGFS
-	depends on VIDEO_V4L2
 	depends on VIDEO_DEV
+	depends on VIDEO_DEV
+	select VIDEOBUF2_DMA_SG
 	select VIDEOBUF2_VMALLOC
 	select USB_F_UVC
 	help

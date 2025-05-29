@@ -39,6 +39,7 @@
 
 #include <linux/bitops.h>
 #include <linux/cache.h>
+#include <linux/ethtool.h>
 #include <linux/interrupt.h>
 #include <linux/list.h>
 #include <linux/netdevice.h>
@@ -83,7 +84,6 @@ extern struct mutex uld_mutex;
 enum {
 	MAX_NPORTS	= 4,     /* max # of ports */
 	SERNUM_LEN	= 24,    /* Serial # length */
-	EC_LEN		= 16,    /* E/C length */
 	ID_LEN		= 16,    /* ID length */
 	PN_LEN		= 16,    /* Part Number length */
 	MACADDR_LEN	= 12,    /* MAC Address length */
@@ -390,7 +390,6 @@ struct tp_params {
 
 struct vpd_params {
 	unsigned int cclk;
-	u8 ec[EC_LEN + 1];
 	u8 sn[SERNUM_LEN + 1];
 	u8 id[ID_LEN + 1];
 	u8 pn[PN_LEN + 1];
@@ -413,7 +412,6 @@ struct pf_resources {
 };
 
 struct pci_params {
-	unsigned int vpd_cap_addr;
 	unsigned char speed;
 	unsigned char width;
 };
@@ -1081,8 +1079,6 @@ struct mbox_list {
 #if IS_ENABLED(CONFIG_THERMAL)
 struct ch_thermal {
 	struct thermal_zone_device *tzdev;
-	int trip_temp;
-	int trip_type;
 };
 #endif
 
@@ -1547,7 +1543,7 @@ static inline void t4_write_reg64(struct adapter *adap, u32 reg_addr, u64 val)
 static inline void t4_set_hw_addr(struct adapter *adapter, int port_idx,
 				  u8 hw_addr[])
 {
-	ether_addr_copy(adapter->port[port_idx]->dev_addr, hw_addr);
+	eth_hw_addr_set(adapter->port[port_idx], hw_addr);
 	ether_addr_copy(adapter->port[port_idx]->perm_addr, hw_addr);
 }
 
@@ -1612,7 +1608,6 @@ void t4_os_portmod_changed(struct adapter *adap, int port_id);
 void t4_os_link_changed(struct adapter *adap, int port_id, int link_stat);
 
 void t4_free_sge_resources(struct adapter *adap);
-void t4_free_ofld_rxqs(struct adapter *adap, int n, struct sge_ofld_rxq *q);
 irq_handler_t t4_intr_handler(struct adapter *adap);
 netdev_tx_t t4_start_xmit(struct sk_buff *skb, struct net_device *dev);
 int cxgb4_selftest_lb_pkt(struct net_device *netdev);
@@ -1962,11 +1957,6 @@ void t4_ulprx_read_la(struct adapter *adap, u32 *la_buf);
 void t4_get_chan_txrate(struct adapter *adap, u64 *nic_rate, u64 *ofld_rate);
 void t4_mk_filtdelwr(unsigned int ftid, struct fw_filter_wr *wr, int qid);
 
-void t4_wol_magic_enable(struct adapter *adap, unsigned int port,
-			 const u8 *addr);
-int t4_wol_pat_enable(struct adapter *adap, unsigned int port, unsigned int map,
-		      u64 mask0, u64 mask1, unsigned int crc, bool enable);
-
 int t4_fw_hello(struct adapter *adap, unsigned int mbox, unsigned int evt_mbox,
 		enum dev_master master, enum dev_state *state);
 int t4_fw_bye(struct adapter *adap, unsigned int mbox);
@@ -2124,6 +2114,9 @@ void cxgb4_inline_tx_skb(const struct sk_buff *skb, const struct sge_txq *q,
 void cxgb4_write_sgl(const struct sk_buff *skb, struct sge_txq *q,
 		     struct ulptx_sgl *sgl, u64 *end, unsigned int start,
 		     const dma_addr_t *addr);
+void cxgb4_write_partial_sgl(const struct sk_buff *skb, struct sge_txq *q,
+			     struct ulptx_sgl *sgl, u64 *end,
+			     const dma_addr_t *addr, u32 start, u32 send_len);
 void cxgb4_ring_tx_db(struct adapter *adap, struct sge_txq *q, int n);
 int t4_set_vlan_acl(struct adapter *adap, unsigned int mbox, unsigned int vf,
 		    u16 vlan);
@@ -2147,35 +2140,11 @@ int cxgb4_free_mac_filt(struct adapter *adap, unsigned int viid,
 			unsigned int naddr, const u8 **addr, bool sleep_ok);
 int cxgb4_init_mps_ref_entries(struct adapter *adap);
 void cxgb4_free_mps_ref_entries(struct adapter *adap);
-int cxgb4_alloc_encap_mac_filt(struct adapter *adap, unsigned int viid,
-			       const u8 *addr, const u8 *mask,
-			       unsigned int vni, unsigned int vni_mask,
-			       u8 dip_hit, u8 lookup_type, bool sleep_ok);
-int cxgb4_free_encap_mac_filt(struct adapter *adap, unsigned int viid,
-			      int idx, bool sleep_ok);
-int cxgb4_free_raw_mac_filt(struct adapter *adap,
-			    unsigned int viid,
-			    const u8 *addr,
-			    const u8 *mask,
-			    unsigned int idx,
-			    u8 lookup_type,
-			    u8 port_id,
-			    bool sleep_ok);
-int cxgb4_alloc_raw_mac_filt(struct adapter *adap,
-			     unsigned int viid,
-			     const u8 *addr,
-			     const u8 *mask,
-			     unsigned int idx,
-			     u8 lookup_type,
-			     u8 port_id,
-			     bool sleep_ok);
 int cxgb4_update_mac_filt(struct port_info *pi, unsigned int viid,
 			  int *tcam_idx, const u8 *addr,
 			  bool persistent, u8 *smt_idx);
 int cxgb4_get_msix_idx_from_bmap(struct adapter *adap);
 void cxgb4_free_msix_idx_in_bmap(struct adapter *adap, u32 msix_idx);
-int cxgb_open(struct net_device *dev);
-int cxgb_close(struct net_device *dev);
 void cxgb4_enable_rx(struct adapter *adap, struct sge_rspq *q);
 void cxgb4_quiesce_rx(struct sge_rspq *q);
 int cxgb4_port_mirror_alloc(struct net_device *dev);

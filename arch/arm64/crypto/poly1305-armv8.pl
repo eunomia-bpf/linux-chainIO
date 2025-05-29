@@ -473,7 +473,8 @@ poly1305_blocks_neon:
 	subs	$len,$len,#64
 	ldp	x9,x13,[$inp,#48]
 	add	$in2,$inp,#96
-	adr	$zeros,.Lzeros
+	adrp	$zeros,.Lzeros
+	add	$zeros,$zeros,#:lo12:.Lzeros
 
 	lsl	$padbit,$padbit,#24
 	add	x15,$ctx,#48
@@ -840,7 +841,6 @@ poly1305_blocks_neon:
 	 ldp	d14,d15,[sp,#64]
 	addp	$ACC2,$ACC2,$ACC2
 	 ldr	x30,[sp,#8]
-	 .inst	0xd50323bf		// autiasp
 
 	////////////////////////////////////////////////////////////////
 	// lazy reduction, but without narrowing
@@ -882,13 +882,17 @@ poly1305_blocks_neon:
 	str	x4,[$ctx,#8]		// set is_base2_26
 
 	ldr	x29,[sp],#80
+	 .inst	0xd50323bf		// autiasp
 	ret
 .size	poly1305_blocks_neon,.-poly1305_blocks_neon
 
+.pushsection .rodata
 .align	5
 .Lzeros:
 .long	0,0,0,0,0,0,0,0
 .asciz	"Poly1305 for ARMv8, CRYPTOGAMS by \@dot-asm"
+.popsection
+
 .align	2
 #if !defined(__KERNEL__) && !defined(_WIN64)
 .comm	OPENSSL_armcap_P,4,4

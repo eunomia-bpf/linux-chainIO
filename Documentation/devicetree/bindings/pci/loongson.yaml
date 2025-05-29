@@ -13,18 +13,17 @@ description: |+
   PCI host controller found on Loongson PCHs and SoCs.
 
 allOf:
-  - $ref: /schemas/pci/pci-bus.yaml#
+  - $ref: /schemas/pci/pci-host-bridge.yaml#
 
 properties:
   compatible:
-    oneOf:
-      - const: loongson,ls2k-pci
-      - const: loongson,ls7a-pci
-      - const: loongson,rs780e-pci
+    enum:
+      - loongson,ls2k-pci
+      - loongson,ls7a-pci
+      - loongson,rs780e-pci
 
   reg:
     minItems: 1
-    maxItems: 2
     items:
       - description: CFG0 standard config space register
       - description: CFG1 extended config space register

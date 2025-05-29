@@ -2,7 +2,6 @@
 /*
  * FXOS8700 - NXP IMU, SPI bits
  */
-#include <linux/acpi.h>
 #include <linux/module.h>
 #include <linux/mod_devicetable.h>
 #include <linux/regmap.h>
@@ -17,8 +16,7 @@ static int fxos8700_spi_probe(struct spi_device *spi)
 
 	regmap = devm_regmap_init_spi(spi, &fxos8700_regmap_config);
 	if (IS_ERR(regmap)) {
-		dev_err(&spi->dev, "Failed to register spi regmap %d\n",
-			(int)PTR_ERR(regmap));
+		dev_err(&spi->dev, "Failed to register spi regmap %ld\n", PTR_ERR(regmap));
 		return PTR_ERR(regmap);
 	}
 
@@ -47,7 +45,7 @@ static struct spi_driver fxos8700_spi_driver = {
 	.probe          = fxos8700_spi_probe,
 	.id_table       = fxos8700_spi_id,
 	.driver = {
-		.acpi_match_table       = ACPI_PTR(fxos8700_acpi_match),
+		.acpi_match_table       = fxos8700_acpi_match,
 		.of_match_table         = fxos8700_of_match,
 		.name                   = "fxos8700_spi",
 	},

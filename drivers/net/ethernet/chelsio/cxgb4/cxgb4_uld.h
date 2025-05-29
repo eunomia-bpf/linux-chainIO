@@ -46,6 +46,9 @@
 #define MAX_ULD_QSETS 16
 #define MAX_ULD_NPORTS 4
 
+/* ulp_mem_io + ulptx_idata + payload + padding */
+#define MAX_IMM_ULPTX_WR_LEN (32 + 8 + 256 + 8)
+
 /* CPL message priority levels */
 enum {
 	CPL_PRIORITY_DATA     = 0,  /* data messages */
@@ -388,6 +391,7 @@ struct ch_ktls_stats_debug {
 	atomic64_t ktls_tx_retransmit_pkts;
 	atomic64_t ktls_tx_complete_pkts;
 	atomic64_t ktls_tx_trimmed_pkts;
+	atomic64_t ktls_tx_fallback;
 };
 #endif
 
@@ -504,7 +508,6 @@ unsigned int cxgb4_dbfifo_count(const struct net_device *dev, int lpfifo);
 unsigned int cxgb4_port_chan(const struct net_device *dev);
 unsigned int cxgb4_port_e2cchan(const struct net_device *dev);
 unsigned int cxgb4_port_viid(const struct net_device *dev);
-unsigned int cxgb4_tp_smt_idx(enum chip_type chip, unsigned int viid);
 unsigned int cxgb4_port_idx(const struct net_device *dev);
 unsigned int cxgb4_best_mtu(const unsigned short *mtus, unsigned short mtu,
 			    unsigned int *idx);
@@ -515,8 +518,6 @@ unsigned int cxgb4_best_aligned_mtu(const unsigned short *mtus,
 				    unsigned int *mtu_idxp);
 void cxgb4_get_tcp_stats(struct pci_dev *pdev, struct tp_tcp_stats *v4,
 			 struct tp_tcp_stats *v6);
-void cxgb4_iscsi_init(struct net_device *dev, unsigned int tag_mask,
-		      const unsigned int *pgsz_order);
 struct sk_buff *cxgb4_pktgl_to_skb(const struct pkt_gl *gl,
 				   unsigned int skb_len, unsigned int pull_len);
 int cxgb4_sync_txq_pidx(struct net_device *dev, u16 qid, u16 pidx, u16 size);

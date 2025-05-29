@@ -13,8 +13,6 @@
 #ifndef _ASM_ARCH_SA1111
 #define _ASM_ARCH_SA1111
 
-#include <mach/bitfield.h>
-
 /*
  * Don't ask the (SAC) DMA engines to move less than this amount.
  */
@@ -403,10 +401,10 @@ struct sa1111_driver {
 	struct device_driver	drv;
 	unsigned int		devid;
 	int (*probe)(struct sa1111_dev *);
-	int (*remove)(struct sa1111_dev *);
+	void (*remove)(struct sa1111_dev *);
 };
 
-#define SA1111_DRV(_d)	container_of((_d), struct sa1111_driver, drv)
+#define SA1111_DRV(_d)	container_of_const((_d), struct sa1111_driver, drv)
 
 #define SA1111_DRIVER_NAME(_sadev) ((_sadev)->dev.driver->name)
 

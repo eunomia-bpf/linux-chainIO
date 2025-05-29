@@ -213,6 +213,9 @@ struct vif_saved_ie {
  * @list: linked list.
  * @mgmt_rx_reg: registered rx mgmt frame types.
  * @mbss: Multiple BSS type, set if not first AP (not relevant for P2P).
+ * @cqm_rssi_low: Lower RSSI limit for CQM monitoring
+ * @cqm_rssi_high: Upper RSSI limit for CQM monitoring
+ * @cqm_rssi_last: Last RSSI reading for CQM monitoring
  */
 struct brcmf_cfg80211_vif {
 	struct brcmf_if *ifp;
@@ -224,6 +227,9 @@ struct brcmf_cfg80211_vif {
 	u16 mgmt_rx_reg;
 	bool mbss;
 	int is_11d;
+	s32 cqm_rssi_low;
+	s32 cqm_rssi_high;
+	s32 cqm_rssi_last;
 };
 
 /* association inform */
@@ -377,7 +383,7 @@ struct brcmf_cfg80211_info {
 struct brcmf_tlv {
 	u8 id;
 	u8 len;
-	u8 data[1];
+	u8 data[];
 };
 
 static inline struct wiphy *cfg_to_wiphy(struct brcmf_cfg80211_info *cfg)
@@ -437,7 +443,6 @@ void brcmf_cfg80211_detach(struct brcmf_cfg80211_info *cfg);
 s32 brcmf_cfg80211_up(struct net_device *ndev);
 s32 brcmf_cfg80211_down(struct net_device *ndev);
 struct cfg80211_ops *brcmf_cfg80211_get_ops(struct brcmf_mp_device *settings);
-enum nl80211_iftype brcmf_cfg80211_get_iftype(struct brcmf_if *ifp);
 
 struct brcmf_cfg80211_vif *brcmf_alloc_vif(struct brcmf_cfg80211_info *cfg,
 					   enum nl80211_iftype type);
@@ -461,5 +466,7 @@ s32 brcmf_notify_escan_complete(struct brcmf_cfg80211_info *cfg,
 void brcmf_set_mpc(struct brcmf_if *ndev, int mpc);
 void brcmf_abort_scanning(struct brcmf_cfg80211_info *cfg);
 void brcmf_cfg80211_free_netdev(struct net_device *ndev);
+
+int brcmf_set_wsec(struct brcmf_if *ifp, const u8 *key, u16 key_len, u16 flags);
 
 #endif /* BRCMFMAC_CFG80211_H */

@@ -38,17 +38,6 @@ static inline unsigned char reg_read(struct ak4114 *ak4114, unsigned char reg)
 	return ak4114->read(ak4114->private_data, reg);
 }
 
-#if 0
-static void reg_dump(struct ak4114 *ak4114)
-{
-	int i;
-
-	printk(KERN_DEBUG "AK4114 REG DUMP:\n");
-	for (i = 0; i < 0x20; i++)
-		printk(KERN_DEBUG "reg[%02x] = %02x (%02x)\n", i, reg_read(ak4114, i), i < ARRAY_SIZE(ak4114->regmap) ? ak4114->regmap[i] : 0);
-}
-#endif
-
 static void snd_ak4114_free(struct ak4114 *chip)
 {
 	atomic_inc(&chip->wq_processing);	/* don't schedule new work */
@@ -97,7 +86,8 @@ int snd_ak4114_create(struct snd_card *card,
 	chip->rcs0 = reg_read(chip, AK4114_REG_RCS0) & ~(AK4114_QINT | AK4114_CINT);
 	chip->rcs1 = reg_read(chip, AK4114_REG_RCS1);
 
-	if ((err = snd_device_new(card, SNDRV_DEV_CODEC, chip, &ops)) < 0)
+	err = snd_device_new(card, SNDRV_DEV_CODEC, chip, &ops);
+	if (err < 0)
 		goto __fail;
 
 	if (r_ak4114)
@@ -588,7 +578,6 @@ int snd_ak4114_check_rate_and_errors(struct ak4114 *ak4114, unsigned int flags)
 	if (!(flags & AK4114_CHECK_NO_RATE) && runtime && runtime->rate != res) {
 		snd_pcm_stream_lock_irqsave(ak4114->capture_substream, _flags);
 		if (snd_pcm_running(ak4114->capture_substream)) {
-			// printk(KERN_DEBUG "rate changed (%i <- %i)\n", runtime->rate, res);
 			snd_pcm_stop(ak4114->capture_substream, SNDRV_PCM_STATE_DRAINING);
 			res = 1;
 		}

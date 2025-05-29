@@ -9,6 +9,7 @@
 
 #include <linux/interrupt.h>
 #include <linux/irq.h>
+#include <linux/irqdomain.h>
 #include <linux/ioport.h>
 #include <linux/kernel.h>
 #include <linux/bitops.h>
@@ -21,6 +22,8 @@
 #include <asm/sn/arch.h>
 #include <asm/sn/intr.h>
 #include <asm/sn/irq_alloc.h>
+
+#include "ip27-common.h"
 
 struct hub_irq_data {
 	u64	*irq_mask[2];
@@ -189,7 +192,7 @@ static void ip27_do_irq_mask0(struct irq_desc *desc)
 	unsigned long *mask = per_cpu(irq_enable_mask, cpu);
 	struct irq_domain *domain;
 	u64 pend0;
-	int irq;
+	int ret;
 
 	/* copied from Irix intpend0() */
 	pend0 = LOCAL_HUB_L(PI_INT_PEND0);
@@ -215,10 +218,8 @@ static void ip27_do_irq_mask0(struct irq_desc *desc)
 #endif
 	{
 		domain = irq_desc_get_handler_data(desc);
-		irq = irq_linear_revmap(domain, __ffs(pend0));
-		if (irq)
-			generic_handle_irq(irq);
-		else
+		ret = generic_handle_domain_irq(domain, __ffs(pend0));
+		if (ret)
 			spurious_interrupt();
 	}
 
@@ -231,7 +232,7 @@ static void ip27_do_irq_mask1(struct irq_desc *desc)
 	unsigned long *mask = per_cpu(irq_enable_mask, cpu);
 	struct irq_domain *domain;
 	u64 pend1;
-	int irq;
+	int ret;
 
 	/* copied from Irix intpend0() */
 	pend1 = LOCAL_HUB_L(PI_INT_PEND1);
@@ -241,10 +242,8 @@ static void ip27_do_irq_mask1(struct irq_desc *desc)
 		return;
 
 	domain = irq_desc_get_handler_data(desc);
-	irq = irq_linear_revmap(domain, __ffs(pend1) + 64);
-	if (irq)
-		generic_handle_irq(irq);
-	else
+	ret = generic_handle_domain_irq(domain, __ffs(pend1) + 64);
+	if (ret)
 		spurious_interrupt();
 
 	LOCAL_HUB_L(PI_INT_PEND1);
@@ -278,7 +277,6 @@ void __init arch_init_irq(void)
 {
 	struct irq_domain *domain;
 	struct fwnode_handle *fn;
-	int i;
 
 	mips_cpu_irq_init();
 
@@ -287,20 +285,16 @@ void __init arch_init_irq(void)
 	 * Mark these as reserved right away so they won't be used accidentally
 	 * later.
 	 */
-	for (i = 0; i <= CPU_CALL_B_IRQ; i++)
-		set_bit(i, hub_irq_map);
-
-	for (i = NI_BRDCAST_ERR_A; i <= MSC_PANIC_INTR; i++)
-		set_bit(i, hub_irq_map);
+	bitmap_set(hub_irq_map, 0, CPU_CALL_B_IRQ + 1);
+	bitmap_set(hub_irq_map, NI_BRDCAST_ERR_A, MSC_PANIC_INTR - NI_BRDCAST_ERR_A + 1);
 
 	fn = irq_domain_alloc_named_fwnode("HUB");
-	WARN_ON(fn == NULL);
-	if (!fn)
+	if (WARN_ON(fn == NULL))
 		return;
+
 	domain = irq_domain_create_linear(fn, IP27_HUB_IRQ_COUNT,
 					  &hub_domain_ops, NULL);
-	WARN_ON(domain == NULL);
-	if (!domain)
+	if (WARN_ON(domain == NULL))
 		return;
 
 	irq_set_default_host(domain);

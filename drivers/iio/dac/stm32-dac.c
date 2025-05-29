@@ -11,9 +11,13 @@
 #include <linux/delay.h>
 #include <linux/iio/iio.h>
 #include <linux/kernel.h>
+#include <linux/kstrtox.h>
 #include <linux/module.h>
+#include <linux/mod_devicetable.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
+#include <linux/string_choices.h>
 
 #include "stm32-dac-core.h"
 
@@ -69,9 +73,8 @@ static int stm32_dac_set_enable_state(struct iio_dev *indio_dev, int ch,
 	}
 
 	if (enable) {
-		ret = pm_runtime_get_sync(dev);
+		ret = pm_runtime_resume_and_get(dev);
 		if (ret < 0) {
-			pm_runtime_put_noidle(dev);
 			mutex_unlock(&dac->lock);
 			return ret;
 		}
@@ -80,8 +83,7 @@ static int stm32_dac_set_enable_state(struct iio_dev *indio_dev, int ch,
 	ret = regmap_update_bits(dac->common->regmap, STM32_DAC_CR, msk, en);
 	mutex_unlock(&dac->lock);
 	if (ret < 0) {
-		dev_err(&indio_dev->dev, "%s failed\n", en ?
-			"Enable" : "Disable");
+		dev_err(&indio_dev->dev, "%s failed\n", str_enable_disable(en));
 		goto err_put_pm;
 	}
 
@@ -210,7 +212,7 @@ static ssize_t stm32_dac_read_powerdown(struct iio_dev *indio_dev,
 	if (ret < 0)
 		return ret;
 
-	return sprintf(buf, "%d\n", ret ? 0 : 1);
+	return sysfs_emit(buf, "%d\n", ret ? 0 : 1);
 }
 
 static ssize_t stm32_dac_write_powerdown(struct iio_dev *indio_dev,
@@ -221,7 +223,7 @@ static ssize_t stm32_dac_write_powerdown(struct iio_dev *indio_dev,
 	bool powerdown;
 	int ret;
 
-	ret = strtobool(buf, &powerdown);
+	ret = kstrtobool(buf, &powerdown);
 	if (ret)
 		return ret;
 
@@ -247,7 +249,7 @@ static const struct iio_chan_spec_ext_info stm32_dac_ext_info[] = {
 		.shared = IIO_SEPARATE,
 	},
 	IIO_ENUM("powerdown_mode", IIO_SEPARATE, &stm32_dac_powerdown_mode_en),
-	IIO_ENUM_AVAILABLE("powerdown_mode", &stm32_dac_powerdown_mode_en),
+	IIO_ENUM_AVAILABLE("powerdown_mode", IIO_SHARED_BY_TYPE, &stm32_dac_powerdown_mode_en),
 	{},
 };
 
@@ -360,7 +362,7 @@ err_pm_put:
 	return ret;
 }
 
-static int stm32_dac_remove(struct platform_device *pdev)
+static void stm32_dac_remove(struct platform_device *pdev)
 {
 	struct iio_dev *indio_dev = platform_get_drvdata(pdev);
 
@@ -369,11 +371,9 @@ static int stm32_dac_remove(struct platform_device *pdev)
 	pm_runtime_disable(&pdev->dev);
 	pm_runtime_set_suspended(&pdev->dev);
 	pm_runtime_put_noidle(&pdev->dev);
-
-	return 0;
 }
 
-static int __maybe_unused stm32_dac_suspend(struct device *dev)
+static int stm32_dac_suspend(struct device *dev)
 {
 	struct iio_dev *indio_dev = dev_get_drvdata(dev);
 	int channel = indio_dev->channels[0].channel;
@@ -387,9 +387,8 @@ static int __maybe_unused stm32_dac_suspend(struct device *dev)
 	return pm_runtime_force_suspend(dev);
 }
 
-static const struct dev_pm_ops stm32_dac_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(stm32_dac_suspend, pm_runtime_force_resume)
-};
+static DEFINE_SIMPLE_DEV_PM_OPS(stm32_dac_pm_ops, stm32_dac_suspend,
+				pm_runtime_force_resume);
 
 static const struct of_device_id stm32_dac_of_match[] = {
 	{ .compatible = "st,stm32-dac", },
@@ -403,7 +402,7 @@ static struct platform_driver stm32_dac_driver = {
 	.driver = {
 		.name = "stm32-dac",
 		.of_match_table = stm32_dac_of_match,
-		.pm = &stm32_dac_pm_ops,
+		.pm = pm_sleep_ptr(&stm32_dac_pm_ops),
 	},
 };
 module_platform_driver(stm32_dac_driver);

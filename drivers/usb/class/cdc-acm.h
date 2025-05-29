@@ -8,45 +8,19 @@
  */
 
 /*
- * CMSPAR, some architectures can't have space and mark parity.
- */
-
-#ifndef CMSPAR
-#define CMSPAR			0
-#endif
-
-/*
  * Major and minor numbers.
  */
 
 #define ACM_TTY_MAJOR		166
 #define ACM_TTY_MINORS		256
 
+#define ACM_MINOR_INVALID	ACM_TTY_MINORS
+
 /*
  * Requests.
  */
 
 #define USB_RT_ACM		(USB_TYPE_CLASS | USB_RECIP_INTERFACE)
-
-/*
- * Output control lines.
- */
-
-#define ACM_CTRL_DTR		0x01
-#define ACM_CTRL_RTS		0x02
-
-/*
- * Input control lines and line errors.
- */
-
-#define ACM_CTRL_DCD		0x01
-#define ACM_CTRL_DSR		0x02
-#define ACM_CTRL_BRK		0x04
-#define ACM_CTRL_RI		0x08
-
-#define ACM_CTRL_FRAMING	0x10
-#define ACM_CTRL_PARITY		0x20
-#define ACM_CTRL_OVERRUN	0x40
 
 /*
  * Internal driver structures.
@@ -112,8 +86,7 @@ struct acm {
 #		define ACM_ERROR_DELAY	3
 	unsigned long urbs_in_error_delay;		/* these need to be restarted after a delay */
 	struct usb_cdc_line_coding line;		/* bits, stop, parity */
-	struct work_struct work;			/* work queue entry for various purposes*/
-	struct delayed_work dwork;			/* for cool downs needed in error recovery */
+	struct delayed_work dwork;		        /* work queue entry for various purposes */
 	unsigned int ctrlin;				/* input control lines (DCD, DSR, RI, break, overruns) */
 	unsigned int ctrlout;				/* output control lines (DTR, RTS) */
 	struct async_icount iocount;			/* counters for control line changes */

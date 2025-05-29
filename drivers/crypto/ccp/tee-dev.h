@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MIT */
 /*
- * Copyright 2019 Advanced Micro Devices, Inc.
+ * Copyright (C) 2019,2021 Advanced Micro Devices, Inc.
  *
  * Author: Rijo Thomas <Rijo-john.Thomas@amd.com>
  * Author: Devaraj Rangasamy <Devaraj.Rangasamy@amd.com>
@@ -17,20 +17,9 @@
 #include <linux/device.h>
 #include <linux/mutex.h>
 
-#define TEE_DEFAULT_TIMEOUT		10
-#define MAX_BUFFER_SIZE			992
-
-/**
- * enum tee_ring_cmd_id - TEE interface commands for ring buffer configuration
- * @TEE_RING_INIT_CMD:		Initialize ring buffer
- * @TEE_RING_DESTROY_CMD:	Destroy ring buffer
- * @TEE_RING_MAX_CMD:		Maximum command id
- */
-enum tee_ring_cmd_id {
-	TEE_RING_INIT_CMD		= 0x00010000,
-	TEE_RING_DESTROY_CMD		= 0x00020000,
-	TEE_RING_MAX_CMD		= 0x000F0000,
-};
+#define TEE_DEFAULT_CMD_TIMEOUT		(10 * MSEC_PER_SEC)
+#define TEE_DEFAULT_RING_TIMEOUT	10
+#define MAX_BUFFER_SIZE			988
 
 /**
  * struct tee_init_ring_cmd - Command to init TEE ring buffer
@@ -82,6 +71,20 @@ enum tee_cmd_state {
 };
 
 /**
+ * enum cmd_resp_state - TEE command's response status maintained by driver
+ * @CMD_RESPONSE_INVALID:      initial state when no command is written to ring
+ * @CMD_WAITING_FOR_RESPONSE:  driver waiting for response from TEE
+ * @CMD_RESPONSE_TIMEDOUT:     failed to get response from TEE
+ * @CMD_RESPONSE_COPIED:       driver has copied response from TEE
+ */
+enum cmd_resp_state {
+	CMD_RESPONSE_INVALID,
+	CMD_WAITING_FOR_RESPONSE,
+	CMD_RESPONSE_TIMEDOUT,
+	CMD_RESPONSE_COPIED,
+};
+
+/**
  * struct tee_ring_cmd - Structure of the command buffer in TEE ring
  * @cmd_id:      refers to &enum tee_cmd_id. Command id for the ring buffer
  *               interface
@@ -91,6 +94,7 @@ enum tee_cmd_state {
  * @pdata:       private data (currently unused)
  * @res1:        reserved region
  * @buf:         TEE command specific buffer
+ * @flag:	 refers to &enum cmd_resp_state
  */
 struct tee_ring_cmd {
 	u32 cmd_id;
@@ -100,6 +104,7 @@ struct tee_ring_cmd {
 	u64 pdata;
 	u32 res1[2];
 	u8 buf[MAX_BUFFER_SIZE];
+	u32 flag;
 
 	/* Total size: 1024 bytes */
 } __packed;

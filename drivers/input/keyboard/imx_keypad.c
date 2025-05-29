@@ -7,6 +7,7 @@
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/err.h>
+#include <linux/input.h>
 #include <linux/input/matrix_keypad.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
@@ -408,26 +409,17 @@ open_err:
 	return -EIO;
 }
 
-#ifdef CONFIG_OF
 static const struct of_device_id imx_keypad_of_match[] = {
 	{ .compatible = "fsl,imx21-kpp", },
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, imx_keypad_of_match);
-#endif
 
 static int imx_keypad_probe(struct platform_device *pdev)
 {
-	const struct matrix_keymap_data *keymap_data =
-			dev_get_platdata(&pdev->dev);
 	struct imx_keypad *keypad;
 	struct input_dev *input_dev;
 	int irq, error, i, row, col;
-
-	if (!keymap_data && !pdev->dev.of_node) {
-		dev_err(&pdev->dev, "no keymap defined\n");
-		return -EINVAL;
-	}
 
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0)
@@ -469,7 +461,7 @@ static int imx_keypad_probe(struct platform_device *pdev)
 	input_dev->open = imx_keypad_open;
 	input_dev->close = imx_keypad_close;
 
-	error = matrix_keypad_build_keymap(keymap_data, NULL,
+	error = matrix_keypad_build_keymap(NULL, NULL,
 					   MAX_MATRIX_KEY_ROWS,
 					   MAX_MATRIX_KEY_COLS,
 					   keypad->keycodes, input_dev);
@@ -529,13 +521,11 @@ static int __maybe_unused imx_kbd_noirq_suspend(struct device *dev)
 	struct input_dev *input_dev = kbd->input_dev;
 	unsigned short reg_val = readw(kbd->mmio_base + KPSR);
 
-	/* imx kbd can wake up system even clock is disabled */
-	mutex_lock(&input_dev->mutex);
-
-	if (input_dev->users)
-		clk_disable_unprepare(kbd->clk);
-
-	mutex_unlock(&input_dev->mutex);
+	scoped_guard(mutex, &input_dev->mutex) {
+		/* imx kbd can wake up system even clock is disabled */
+		if (input_device_enabled(input_dev))
+			clk_disable_unprepare(kbd->clk);
+	}
 
 	if (device_may_wakeup(&pdev->dev)) {
 		if (reg_val & KBD_STAT_KPKD)
@@ -555,23 +545,20 @@ static int __maybe_unused imx_kbd_noirq_resume(struct device *dev)
 	struct platform_device *pdev = to_platform_device(dev);
 	struct imx_keypad *kbd = platform_get_drvdata(pdev);
 	struct input_dev *input_dev = kbd->input_dev;
-	int ret = 0;
+	int error;
 
 	if (device_may_wakeup(&pdev->dev))
 		disable_irq_wake(kbd->irq);
 
-	mutex_lock(&input_dev->mutex);
+	guard(mutex)(&input_dev->mutex);
 
-	if (input_dev->users) {
-		ret = clk_prepare_enable(kbd->clk);
-		if (ret)
-			goto err_clk;
+	if (input_device_enabled(input_dev)) {
+		error = clk_prepare_enable(kbd->clk);
+		if (error)
+			return error;
 	}
 
-err_clk:
-	mutex_unlock(&input_dev->mutex);
-
-	return ret;
+	return 0;
 }
 
 static const struct dev_pm_ops imx_kbd_pm_ops = {
@@ -582,7 +569,7 @@ static struct platform_driver imx_keypad_driver = {
 	.driver		= {
 		.name	= "imx-keypad",
 		.pm	= &imx_kbd_pm_ops,
-		.of_match_table = of_match_ptr(imx_keypad_of_match),
+		.of_match_table = imx_keypad_of_match,
 	},
 	.probe		= imx_keypad_probe,
 };

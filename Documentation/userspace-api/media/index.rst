@@ -11,21 +11,18 @@ used by media devices.
 
 Please see:
 
-- :doc:`/admin-guide/media/index`
-    for usage information about media subsystem and supported drivers;
+Documentation/admin-guide/media/index.rst
 
-- :doc:`/driver-api/media/index`
-     for driver development information and Kernel APIs used by
-     media devices;
+  - for usage information about media subsystem and supported drivers;
 
+Documentation/driver-api/media/index.rst
 
-.. only:: html
+  - for driver development information and Kernel APIs used by
+    media devices;
 
-   .. class:: toc-title
-
-        Table of Contents
 
 .. toctree::
+    :caption: Table of Contents
     :maxdepth: 1
 
     intro

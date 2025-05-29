@@ -81,7 +81,7 @@ doesn't match the device capabilities. They must instead modify the
 format to match what the hardware can provide. The modified format
 should be as close as possible to the original request.
 
-.. tabularcolumns:: |p{4.4cm}|p{4.4cm}|p{8.7cm}|
+.. tabularcolumns:: |p{4.4cm}|p{4.4cm}|p{8.5cm}|
 
 .. c:type:: v4l2_subdev_format
 
@@ -102,12 +102,15 @@ should be as close as possible to the original request.
       - Definition of an image format, see :c:type:`v4l2_mbus_framefmt` for
 	details.
     * - __u32
-      - ``reserved``\ [8]
+      - ``stream``
+      - Stream identifier.
+    * - __u32
+      - ``reserved``\ [7]
       - Reserved for future extensions. Applications and drivers must set
 	the array to zero.
 
 
-.. tabularcolumns:: |p{6.6cm}|p{2.2cm}|p{8.7cm}|
+.. tabularcolumns:: |p{6.6cm}|p{2.2cm}|p{8.5cm}|
 
 .. _v4l2-subdev-format-whence:
 
@@ -137,9 +140,8 @@ EBUSY
     fix the problem first. Only returned by ``VIDIOC_SUBDEV_S_FMT``
 
 EINVAL
-    The struct :c:type:`v4l2_subdev_format`
-    ``pad`` references a non-existing pad, or the ``which`` field
-    references a non-existing format.
+    The struct :c:type:`v4l2_subdev_format` ``pad`` references a non-existing
+    pad, or the ``which`` field has an unsupported value.
 
 EPERM
     The ``VIDIOC_SUBDEV_S_FMT`` ioctl has been called on a read-only subdevice

@@ -13,10 +13,10 @@
  * 2006 (c) MontaVista Software, Inc.
  * Vitaly Bordug <vbordug@ru.mvista.com>
  */
+#include <linux/device.h>
 #include <linux/genalloc.h>
 #include <linux/init.h>
 #include <linux/list.h>
-#include <linux/of_device.h>
 #include <linux/spinlock.h>
 #include <linux/export.h>
 #include <linux/of.h>
@@ -26,8 +26,8 @@
 #include <soc/fsl/qe/qe.h>
 
 static struct gen_pool *muram_pool;
-static spinlock_t cpm_muram_lock;
-static u8 __iomem *muram_vbase;
+static DEFINE_SPINLOCK(cpm_muram_lock);
+static void __iomem *muram_vbase;
 static phys_addr_t muram_pbase;
 
 struct muram_block {
@@ -54,7 +54,6 @@ int cpm_muram_init(void)
 	if (muram_pbase)
 		return 0;
 
-	spin_lock_init(&cpm_muram_lock);
 	np = of_find_compatible_node(NULL, NULL, "fsl,cpm-muram-data");
 	if (!np) {
 		/* try legacy bindings */
@@ -143,7 +142,7 @@ static s32 cpm_muram_alloc_common(unsigned long size,
  *
  * This function returns a non-negative offset into the muram area, or
  * a negative errno on failure.
- * Use cpm_dpram_addr() to get the virtual address of the area.
+ * Use cpm_muram_addr() to get the virtual address of the area.
  * Use cpm_muram_free() to free the allocation.
  */
 s32 cpm_muram_alloc(unsigned long size, unsigned long align)
@@ -189,13 +188,56 @@ void cpm_muram_free(s32 offset)
 }
 EXPORT_SYMBOL(cpm_muram_free);
 
+static void devm_cpm_muram_release(struct device *dev, void *res)
+{
+	s32 *info = res;
+
+	cpm_muram_free(*info);
+}
+
+/**
+ * devm_cpm_muram_alloc - Resource-managed cpm_muram_alloc
+ * @dev: Device to allocate memory for
+ * @size: number of bytes to allocate
+ * @align: requested alignment, in bytes
+ *
+ * This function returns a non-negative offset into the muram area, or
+ * a negative errno on failure as cpm_muram_alloc() does.
+ * Use cpm_muram_addr() to get the virtual address of the area.
+ *
+ * Compare against cpm_muram_alloc(), the memory allocated by this
+ * resource-managed version is automatically freed on driver detach and so,
+ * cpm_muram_free() must not be called to release the allocated memory.
+ */
+s32 devm_cpm_muram_alloc(struct device *dev, unsigned long size,
+			 unsigned long align)
+{
+	s32 info;
+	s32 *dr;
+
+	dr = devres_alloc(devm_cpm_muram_release, sizeof(*dr), GFP_KERNEL);
+	if (!dr)
+		return -ENOMEM;
+
+	info = cpm_muram_alloc(size, align);
+	if (info >= 0) {
+		*dr = info;
+		devres_add(dev, dr);
+	} else {
+		devres_free(dr);
+	}
+
+	return info;
+}
+EXPORT_SYMBOL(devm_cpm_muram_alloc);
+
 /*
  * cpm_muram_alloc_fixed - reserve a specific region of multi-user ram
  * @offset: offset of allocation start address
  * @size: number of bytes to allocate
  * This function returns @offset if the area was available, a negative
  * errno otherwise.
- * Use cpm_dpram_addr() to get the virtual address of the area.
+ * Use cpm_muram_addr() to get the virtual address of the area.
  * Use cpm_muram_free() to free the allocation.
  */
 s32 cpm_muram_alloc_fixed(unsigned long offset, unsigned long size)
@@ -214,6 +256,42 @@ s32 cpm_muram_alloc_fixed(unsigned long offset, unsigned long size)
 EXPORT_SYMBOL(cpm_muram_alloc_fixed);
 
 /**
+ * devm_cpm_muram_alloc_fixed - Resource-managed cpm_muram_alloc_fixed
+ * @dev: Device to allocate memory for
+ * @offset: offset of allocation start address
+ * @size: number of bytes to allocate
+ *
+ * This function returns a non-negative offset into the muram area, or
+ * a negative errno on failure as cpm_muram_alloc_fixed() does.
+ * Use cpm_muram_addr() to get the virtual address of the area.
+ *
+ * Compare against cpm_muram_alloc_fixed(), the memory allocated by this
+ * resource-managed version is automatically freed on driver detach and so,
+ * cpm_muram_free() must not be called to release the allocated memory.
+ */
+s32 devm_cpm_muram_alloc_fixed(struct device *dev, unsigned long offset,
+			       unsigned long size)
+{
+	s32 info;
+	s32 *dr;
+
+	dr = devres_alloc(devm_cpm_muram_release, sizeof(*dr), GFP_KERNEL);
+	if (!dr)
+		return -ENOMEM;
+
+	info = cpm_muram_alloc_fixed(offset, size);
+	if (info >= 0) {
+		*dr = info;
+		devres_add(dev, dr);
+	} else {
+		devres_free(dr);
+	}
+
+	return info;
+}
+EXPORT_SYMBOL(devm_cpm_muram_alloc_fixed);
+
+/**
  * cpm_muram_addr - turn a muram offset into a virtual address
  * @offset: muram offset to convert
  */
@@ -223,18 +301,30 @@ void __iomem *cpm_muram_addr(unsigned long offset)
 }
 EXPORT_SYMBOL(cpm_muram_addr);
 
-unsigned long cpm_muram_offset(void __iomem *addr)
+unsigned long cpm_muram_offset(const void __iomem *addr)
 {
-	return addr - (void __iomem *)muram_vbase;
+	return addr - muram_vbase;
 }
 EXPORT_SYMBOL(cpm_muram_offset);
 
 /**
  * cpm_muram_dma - turn a muram virtual address into a DMA address
- * @offset: virtual address from cpm_muram_addr() to convert
+ * @addr: virtual address from cpm_muram_addr() to convert
  */
 dma_addr_t cpm_muram_dma(void __iomem *addr)
 {
-	return muram_pbase + ((u8 __iomem *)addr - muram_vbase);
+	return muram_pbase + (addr - muram_vbase);
 }
 EXPORT_SYMBOL(cpm_muram_dma);
+
+/*
+ * As cpm_muram_free, but takes the virtual address rather than the
+ * muram offset.
+ */
+void cpm_muram_free_addr(const void __iomem *addr)
+{
+	if (!addr)
+		return;
+	cpm_muram_free(cpm_muram_offset(addr));
+}
+EXPORT_SYMBOL(cpm_muram_free_addr);

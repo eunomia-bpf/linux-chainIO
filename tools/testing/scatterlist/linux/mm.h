@@ -33,6 +33,7 @@ typedef unsigned long dma_addr_t;
 #define __ALIGN_KERNEL(x, a)		__ALIGN_KERNEL_MASK(x, (typeof(x))(a) - 1)
 #define __ALIGN_KERNEL_MASK(x, mask)	(((x) + (mask)) & ~(mask))
 #define ALIGN(x, a)			__ALIGN_KERNEL((x), (a))
+#define ALIGN_DOWN(x, a)		__ALIGN_KERNEL((x) - ((a) - 1), (a))
 
 #define PAGE_ALIGN(addr) ALIGN(addr, PAGE_SIZE)
 
@@ -73,7 +74,7 @@ static inline unsigned long page_to_phys(struct page *page)
 	      __UNIQUE_ID(min1_), __UNIQUE_ID(min2_),   \
 	      x, y)
 
-#define preemptible() (1)
+#define pagefault_disabled() (0)
 
 static inline void *kmap(struct page *page)
 {
@@ -126,7 +127,7 @@ kmalloc_array(unsigned int n, unsigned int size, unsigned int flags)
 #define kmemleak_free(a)
 
 #define PageSlab(p) (0)
-#define flush_kernel_dcache_page(p)
+#define flush_dcache_page(p)
 
 #define MAX_ERRNO	4095
 

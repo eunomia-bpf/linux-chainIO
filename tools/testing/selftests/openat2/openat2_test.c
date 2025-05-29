@@ -5,6 +5,7 @@
  */
 
 #define _GNU_SOURCE
+#define __SANE_USERSPACE_TYPES__ // Use ll64
 #include <fcntl.h>
 #include <sched.h>
 #include <sys/stat.h>
@@ -22,7 +23,11 @@
  * XXX: This is wrong on {mips, parisc, powerpc, sparc}.
  */
 #undef	O_LARGEFILE
+#ifdef __aarch64__
+#define	O_LARGEFILE 0x20000
+#else
 #define	O_LARGEFILE 0x8000
+#endif
 
 struct open_how_ext {
 	struct open_how inner;
@@ -155,7 +160,7 @@ struct flag_test {
 	int err;
 };
 
-#define NUM_OPENAT2_FLAG_TESTS 23
+#define NUM_OPENAT2_FLAG_TESTS 25
 
 void test_openat2_flags(void)
 {
@@ -210,6 +215,12 @@ void test_openat2_flags(void)
 		  .how.flags = O_TMPFILE | O_RDWR,
 		  .how.mode = 0x0000A00000000000ULL, .err = -EINVAL },
 
+		/* ->resolve flags must not conflict. */
+		{ .name = "incompatible resolve flags (BENEATH | IN_ROOT)",
+		  .how.flags = O_RDONLY,
+		  .how.resolve = RESOLVE_BENEATH | RESOLVE_IN_ROOT,
+		  .err = -EINVAL },
+
 		/* ->resolve must only contain RESOLVE_* flags. */
 		{ .name = "invalid how.resolve and O_RDONLY",
 		  .how.flags = O_RDONLY,
@@ -223,6 +234,11 @@ void test_openat2_flags(void)
 		{ .name = "invalid how.resolve and O_PATH",
 		  .how.flags = O_PATH,
 		  .how.resolve = 0x1337, .err = -EINVAL },
+
+		/* currently unknown upper 32 bit rejected. */
+		{ .name = "currently unknown bit (1 << 63)",
+		  .how.flags = O_RDONLY | (1ULL << 63),
+		  .how.resolve = 0, .err = -EINVAL },
 	};
 
 	BUILD_BUG_ON(ARRAY_LEN(tests) != NUM_OPENAT2_FLAG_TESTS);
@@ -244,6 +260,16 @@ void test_openat2_flags(void)
 		unlink(path);
 
 		fd = sys_openat2(AT_FDCWD, path, &test->how);
+		if (fd < 0 && fd == -EOPNOTSUPP) {
+			/*
+			 * Skip the testcase if it failed because not supported
+			 * by FS. (e.g. a valid O_TMPFILE combination on NFS)
+			 */
+			ksft_test_result_skip("openat2 with %s fails with %d (%s)\n",
+					      test->name, fd, strerror(-fd));
+			goto next;
+		}
+
 		if (test->err >= 0)
 			failed = (fd < 0);
 		else
@@ -275,7 +301,7 @@ void test_openat2_flags(void)
 
 			ksft_print_msg("openat2 unexpectedly returned ");
 			if (fdpath)
-				ksft_print_msg("%d['%s'] with %X (!= %X)\n",
+				ksft_print_msg("%d['%s'] with %X (!= %llX)\n",
 					       fd, fdpath, fdflags,
 					       test->how.flags);
 			else
@@ -288,7 +314,7 @@ skip:
 		else
 			resultfn("openat2 with %s fails with %d (%s)\n",
 				 test->name, test->err, strerror(-test->err));
-
+next:
 		free(fdpath);
 		fflush(stdout);
 	}

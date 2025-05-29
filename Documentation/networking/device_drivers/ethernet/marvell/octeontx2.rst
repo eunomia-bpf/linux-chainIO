@@ -12,6 +12,9 @@ Contents
 - `Overview`_
 - `Drivers`_
 - `Basic packet flow`_
+- `Devlink health reporters`_
+- `Quality of service`_
+- `RVU representors`_
 
 Overview
 ========
@@ -126,7 +129,7 @@ Type1:
 Type2:
  - RVU PF0 ie admin function creates these VFs and maps them to loopback block's channels.
  - A set of two VFs (VF0 & VF1, VF2 & VF3 .. so on) works as a pair ie pkts sent out of
-   VF0 will be received by VF1 and viceversa.
+   VF0 will be received by VF1 and vice versa.
  - These VFs can be used by applications or virtual machines to communicate between them
    without sending traffic outside. There is no switch present in HW, hence the support
    for loopback VFs.
@@ -157,3 +160,274 @@ Egress
 3. The SQ descriptor ring is maintained in buffers allocated from SQ mapped pool of NPA block LF.
 4. NIX block transmits the pkt on the designated channel.
 5. NPC MCAM entries can be installed to divert pkt onto a different channel.
+
+Devlink health reporters
+========================
+
+NPA Reporters
+-------------
+The NPA reporters are responsible for reporting and recovering the following group of errors:
+
+1. GENERAL events
+
+   - Error due to operation of unmapped PF.
+   - Error due to disabled alloc/free for other HW blocks (NIX, SSO, TIM, DPI and AURA).
+
+2. ERROR events
+
+   - Fault due to NPA_AQ_INST_S read or NPA_AQ_RES_S write.
+   - AQ Doorbell Error.
+
+3. RAS events
+
+   - RAS Error Reporting for NPA_AQ_INST_S/NPA_AQ_RES_S.
+
+4. RVU events
+
+   - Error due to unmapped slot.
+
+Sample Output::
+
+	~# devlink health
+	pci/0002:01:00.0:
+	  reporter hw_npa_intr
+	      state healthy error 2872 recover 2872 last_dump_date 2020-12-10 last_dump_time 09:39:09 grace_period 0 auto_recover true auto_dump true
+	  reporter hw_npa_gen
+	      state healthy error 2872 recover 2872 last_dump_date 2020-12-11 last_dump_time 04:43:04 grace_period 0 auto_recover true auto_dump true
+	  reporter hw_npa_err
+	      state healthy error 2871 recover 2871 last_dump_date 2020-12-10 last_dump_time 09:39:17 grace_period 0 auto_recover true auto_dump true
+	   reporter hw_npa_ras
+	      state healthy error 0 recover 0 last_dump_date 2020-12-10 last_dump_time 09:32:40 grace_period 0 auto_recover true auto_dump true
+
+Each reporter dumps the
+
+ - Error Type
+ - Error Register value
+ - Reason in words
+
+For example::
+
+	~# devlink health dump show  pci/0002:01:00.0 reporter hw_npa_gen
+	 NPA_AF_GENERAL:
+	         NPA General Interrupt Reg : 1
+	         NIX0: free disabled RX
+	~# devlink health dump show  pci/0002:01:00.0 reporter hw_npa_intr
+	 NPA_AF_RVU:
+	         NPA RVU Interrupt Reg : 1
+	         Unmap Slot Error
+	~# devlink health dump show  pci/0002:01:00.0 reporter hw_npa_err
+	 NPA_AF_ERR:
+	        NPA Error Interrupt Reg : 4096
+	        AQ Doorbell Error
+
+
+NIX Reporters
+-------------
+The NIX reporters are responsible for reporting and recovering the following group of errors:
+
+1. GENERAL events
+
+   - Receive mirror/multicast packet drop due to insufficient buffer.
+   - SMQ Flush operation.
+
+2. ERROR events
+
+   - Memory Fault due to WQE read/write from multicast/mirror buffer.
+   - Receive multicast/mirror replication list error.
+   - Receive packet on an unmapped PF.
+   - Fault due to NIX_AQ_INST_S read or NIX_AQ_RES_S write.
+   - AQ Doorbell Error.
+
+3. RAS events
+
+   - RAS Error Reporting for NIX Receive Multicast/Mirror Entry Structure.
+   - RAS Error Reporting for WQE/Packet Data read from Multicast/Mirror Buffer..
+   - RAS Error Reporting for NIX_AQ_INST_S/NIX_AQ_RES_S.
+
+4. RVU events
+
+   - Error due to unmapped slot.
+
+Sample Output::
+
+	~# ./devlink health
+	pci/0002:01:00.0:
+	  reporter hw_npa_intr
+	    state healthy error 0 recover 0 grace_period 0 auto_recover true auto_dump true
+	  reporter hw_npa_gen
+	    state healthy error 0 recover 0 grace_period 0 auto_recover true auto_dump true
+	  reporter hw_npa_err
+	    state healthy error 0 recover 0 grace_period 0 auto_recover true auto_dump true
+	  reporter hw_npa_ras
+	    state healthy error 0 recover 0 grace_period 0 auto_recover true auto_dump true
+	  reporter hw_nix_intr
+	    state healthy error 1121 recover 1121 last_dump_date 2021-01-19 last_dump_time 05:42:26 grace_period 0 auto_recover true auto_dump true
+	  reporter hw_nix_gen
+	    state healthy error 949 recover 949 last_dump_date 2021-01-19 last_dump_time 05:42:43 grace_period 0 auto_recover true auto_dump true
+	  reporter hw_nix_err
+	    state healthy error 1147 recover 1147 last_dump_date 2021-01-19 last_dump_time 05:42:59 grace_period 0 auto_recover true auto_dump true
+	  reporter hw_nix_ras
+	    state healthy error 409 recover 409 last_dump_date 2021-01-19 last_dump_time 05:43:16 grace_period 0 auto_recover true auto_dump true
+
+Each reporter dumps the
+
+ - Error Type
+ - Error Register value
+ - Reason in words
+
+For example::
+
+	~# devlink health dump show pci/0002:01:00.0 reporter hw_nix_intr
+	 NIX_AF_RVU:
+	        NIX RVU Interrupt Reg : 1
+	        Unmap Slot Error
+	~# devlink health dump show pci/0002:01:00.0 reporter hw_nix_gen
+	 NIX_AF_GENERAL:
+	        NIX General Interrupt Reg : 1
+	        Rx multicast pkt drop
+	~# devlink health dump show pci/0002:01:00.0 reporter hw_nix_err
+	 NIX_AF_ERR:
+	        NIX Error Interrupt Reg : 64
+	        Rx on unmapped PF_FUNC
+
+
+Quality of service
+==================
+
+
+Hardware algorithms used in scheduling
+--------------------------------------
+
+octeontx2 silicon and CN10K transmit interface consists of five transmit levels
+starting from SMQ/MDQ, TL4 to TL1. Each packet will traverse MDQ, TL4 to TL1
+levels. Each level contains an array of queues to support scheduling and shaping.
+The hardware uses the below algorithms depending on the priority of scheduler queues.
+once the usercreates tc classes with different priorities, the driver configures
+schedulers allocated to the class with specified priority along with rate-limiting
+configuration.
+
+1. Strict Priority
+
+      -  Once packets are submitted to MDQ, hardware picks all active MDQs having different priority
+         using strict priority.
+
+2. Round Robin
+
+      - Active MDQs having the same priority level are chosen using round robin.
+
+
+Setup HTB offload
+-----------------
+
+1. Enable HW TC offload on the interface::
+
+        # ethtool -K <interface> hw-tc-offload on
+
+2. Crate htb root::
+
+        # tc qdisc add dev <interface> clsact
+        # tc qdisc replace dev <interface> root handle 1: htb offload
+
+3. Create tc classes with different priorities::
+
+        # tc class add dev <interface> parent 1: classid 1:1 htb rate 10Gbit prio 1
+
+        # tc class add dev <interface> parent 1: classid 1:2 htb rate 10Gbit prio 7
+
+4. Create tc classes with same priorities and different quantum::
+
+        # tc class add dev <interface> parent 1: classid 1:1 htb rate 10Gbit prio 2 quantum 409600
+
+        # tc class add dev <interface> parent 1: classid 1:2 htb rate 10Gbit prio 2 quantum 188416
+
+        # tc class add dev <interface> parent 1: classid 1:3 htb rate 10Gbit prio 2 quantum 32768
+
+
+RVU Representors
+================
+
+RVU representor driver adds support for creation of representor devices for
+RVU PFs' VFs in the system. Representor devices are created when user enables
+the switchdev mode.
+Switchdev mode can be enabled either before or after setting up SRIOV numVFs.
+All representor devices share a single NIXLF but each has a dedicated Rx/Tx
+queues. RVU PF representor driver registers a separate netdev for each
+Rx/Tx queue pair.
+
+Current HW does not support built-in switch which can do L2 learning and
+forwarding packets between representee and representor. Hence, packet path
+between representee and it's representor is achieved by setting up appropriate
+NPC MCAM filters.
+Transmit packets matching these filters will be loopbacked through hardware
+loopback channel/interface (i.e, instead of sending them out of MAC interface).
+Which will again match the installed filters and will be forwarded.
+This way representee => representor and representor => representee packet
+path is achieved. These rules get installed when representors are created
+and gets active/deactivate based on the representor/representee interface state.
+
+Usage example:
+
+ - Change device to switchdev mode::
+
+	# devlink dev eswitch set pci/0002:1c:00.0 mode switchdev
+
+ - List of representor devices on the system::
+
+	# ip link show
+	Rpf1vf0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc pfifo_fast state DOWN mode DEFAULT group default qlen 1000 link/ether f6:43:83:ee:26:21 brd ff:ff:ff:ff:ff:ff
+	Rpf1vf1: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc pfifo_fast state DOWN mode DEFAULT group default qlen 1000 link/ether 12:b2:54:0e:24:54 brd ff:ff:ff:ff:ff:ff
+	Rpf1vf2: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc pfifo_fast state DOWN mode DEFAULT group default qlen 1000 link/ether 4a:12:c4:4c:32:62 brd ff:ff:ff:ff:ff:ff
+	Rpf1vf3: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc pfifo_fast state DOWN mode DEFAULT group default qlen 1000 link/ether ca:cb:68:0e:e2:6e brd ff:ff:ff:ff:ff:ff
+	Rpf2vf0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc pfifo_fast state DOWN mode DEFAULT group default qlen 1000 link/ether 06:cc:ad:b4:f0:93 brd ff:ff:ff:ff:ff:ff
+
+
+To delete the representors devices from the system. Change the device to legacy mode.
+
+ - Change device to legacy mode::
+
+	# devlink dev eswitch set pci/0002:1c:00.0 mode legacy
+
+RVU representors can be managed using devlink ports
+(see :ref:`Documentation/networking/devlink/devlink-port.rst <devlink_port>`) interface.
+
+ - Show devlink ports of representors::
+
+	# devlink port
+	pci/0002:1c:00.0/0: type eth netdev Rpf1vf0 flavour physical port 0 splittable false
+	pci/0002:1c:00.0/1: type eth netdev Rpf1vf1 flavour pcivf controller 0 pfnum 1 vfnum 1 external false splittable false
+	pci/0002:1c:00.0/2: type eth netdev Rpf1vf2 flavour pcivf controller 0 pfnum 1 vfnum 2 external false splittable false
+	pci/0002:1c:00.0/3: type eth netdev Rpf1vf3 flavour pcivf controller 0 pfnum 1 vfnum 3 external false splittable false
+
+Function attributes
+===================
+
+The RVU representor support function attributes for representors.
+Port function configuration of the representors are supported through devlink eswitch port.
+
+MAC address setup
+-----------------
+
+RVU representor driver support devlink port function attr mechanism to setup MAC
+address. (refer to Documentation/networking/devlink/devlink-port.rst)
+
+ - To setup MAC address for port 2::
+
+	# devlink port function set pci/0002:1c:00.0/2 hw_addr 5c:a1:1b:5e:43:11
+	# devlink port show pci/0002:1c:00.0/2
+	pci/0002:1c:00.0/2: type eth netdev Rpf1vf2 flavour pcivf controller 0 pfnum 1 vfnum 2 external false splittable false
+	function:
+		hw_addr 5c:a1:1b:5e:43:11
+
+
+TC offload
+==========
+
+The rvu representor driver implements support for offloading tc rules using port representors.
+
+ - Drop packets with vlan id 3::
+
+	# tc filter add dev Rpf1vf0 protocol 802.1Q parent ffff: flower vlan_id 3 vlan_ethtype ipv4 skip_sw action drop
+
+ - Redirect packets with vlan id 5 and IPv4 packets to eth1, after stripping vlan header.::
+
+	# tc filter add dev Rpf1vf0 ingress protocol 802.1Q flower vlan_id 5 vlan_ethtype ipv4 skip_sw action vlan pop action mirred ingress redirect dev eth1

@@ -27,10 +27,6 @@
 #include "../kselftest_harness.h"
 #include "clone3_selftests.h"
 
-#ifndef MAX_PID_NS_LEVEL
-#define MAX_PID_NS_LEVEL 32
-#endif
-
 static void child_exit(int ret)
 {
 	fflush(stdout);
@@ -145,7 +141,7 @@ TEST(clone3_cap_checkpoint_restore)
 	test_clone3_supported();
 
 	EXPECT_EQ(getuid(), 0)
-		XFAIL(return, "Skipping all tests as non-root\n");
+		SKIP(return, "Skipping all tests as non-root");
 
 	memset(&set_tid, 0, sizeof(set_tid));
 

@@ -6,7 +6,7 @@
 #include <linux/module.h>
 #include <linux/pci.h>
 #include <linux/slab.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 #include "xhci.h"
 #include "xhci-trace.h"
@@ -49,6 +49,8 @@
 
 #define RENESAS_RETRY	10000
 #define RENESAS_DELAY	10
+
+#define RENESAS_FW_NAME	"renesas_usb_fw.mem"
 
 static int renesas_fw_download_image(struct pci_dev *dev,
 				     const u32 *fw, size_t step, bool rom)
@@ -120,7 +122,6 @@ static int renesas_fw_verify(const void *fw_data,
 			     size_t length)
 {
 	u16 fw_version_pointer;
-	u16 fw_version;
 
 	/*
 	 * The Firmware's Data Format is describe in
@@ -149,9 +150,6 @@ static int renesas_fw_verify(const void *fw_data,
 		pr_err("fw ver pointer is outside of the firmware image");
 		return -EINVAL;
 	}
-
-	fw_version = get_unaligned_le16(fw_data + fw_version_pointer);
-	pr_err("got firmware version: %02x.", fw_version);
 
 	return 0;
 }
@@ -197,7 +195,7 @@ static int renesas_check_rom_state(struct pci_dev *pdev)
 	if (err)
 		return pcibios_err_to_errno(err);
 
-	if (rom_state & BIT(15)) {
+	if (rom_state & RENESAS_ROM_STATUS_ROM_EXISTS) {
 		/* ROM exists */
 		dev_dbg(&pdev->dev, "ROM exists\n");
 
@@ -207,7 +205,8 @@ static int renesas_check_rom_state(struct pci_dev *pdev)
 			return 0;
 
 		case RENESAS_ROM_STATUS_NO_RESULT: /* No result yet */
-			return 0;
+			dev_dbg(&pdev->dev, "Unknown ROM status ...\n");
+			return -ENOENT;
 
 		case RENESAS_ROM_STATUS_ERROR: /* Error State */
 		default: /* All other states are marked as "Reserved states" */
@@ -223,14 +222,6 @@ static int renesas_fw_check_running(struct pci_dev *pdev)
 {
 	u8 fw_state;
 	int err;
-
-	/* Check if device has ROM and loaded, if so skip everything */
-	err = renesas_check_rom(pdev);
-	if (err) { /* we have rom */
-		err = renesas_check_rom_state(pdev);
-		if (!err)
-			return err;
-	}
 
 	/*
 	 * Test if the device is actually needing the firmware. As most
@@ -584,28 +575,44 @@ exit:
 	return err;
 }
 
-int renesas_xhci_check_request_fw(struct pci_dev *pdev,
-				  const struct pci_device_id *id)
+static int renesas_xhci_check_request_fw(struct pci_dev *pdev,
+					 const struct pci_device_id *id)
 {
-	struct xhci_driver_data *driver_data =
-			(struct xhci_driver_data *)id->driver_data;
-	const char *fw_name = driver_data->firmware;
+	const char fw_name[] = RENESAS_FW_NAME;
 	const struct firmware *fw;
+	bool has_rom;
 	int err;
+
+	/* Check if device has ROM and loaded, if so skip everything */
+	has_rom = renesas_check_rom(pdev);
+	if (has_rom) {
+		err = renesas_check_rom_state(pdev);
+		if (!err)
+			return 0;
+		else if (err != -ENOENT)
+			has_rom = false;
+	}
 
 	err = renesas_fw_check_running(pdev);
 	/* Continue ahead, if the firmware is already running. */
-	if (err == 0)
+	if (!err)
 		return 0;
 
+	/* no firmware interface available */
 	if (err != 1)
-		return err;
+		return has_rom ? 0 : err;
 
 	pci_dev_get(pdev);
-	err = request_firmware(&fw, fw_name, &pdev->dev);
+	err = firmware_request_nowarn(&fw, fw_name, &pdev->dev);
 	pci_dev_put(pdev);
 	if (err) {
-		dev_err(&pdev->dev, "request_firmware failed: %d\n", err);
+		if (has_rom) {
+			dev_info(&pdev->dev, "failed to load firmware %s, fallback to ROM\n",
+				 fw_name);
+			return 0;
+		}
+		dev_err(&pdev->dev, "failed to load firmware %s: %d\n",
+			fw_name, err);
 		return err;
 	}
 
@@ -618,11 +625,41 @@ exit:
 	release_firmware(fw);
 	return err;
 }
-EXPORT_SYMBOL_GPL(renesas_xhci_check_request_fw);
 
-void renesas_xhci_pci_exit(struct pci_dev *dev)
+static int
+xhci_pci_renesas_probe(struct pci_dev *dev, const struct pci_device_id *id)
 {
-}
-EXPORT_SYMBOL_GPL(renesas_xhci_pci_exit);
+	int retval;
 
+	retval = renesas_xhci_check_request_fw(dev, id);
+	if (retval)
+		return retval;
+
+	return xhci_pci_common_probe(dev, id);
+}
+
+static const struct pci_device_id pci_ids[] = {
+	{ PCI_DEVICE(PCI_VENDOR_ID_RENESAS, 0x0014) },
+	{ PCI_DEVICE(PCI_VENDOR_ID_RENESAS, 0x0015) },
+	{ /* end: all zeroes */ }
+};
+MODULE_DEVICE_TABLE(pci, pci_ids);
+
+static struct pci_driver xhci_renesas_pci_driver = {
+	.name =		"xhci-pci-renesas",
+	.id_table =	pci_ids,
+
+	.probe =	xhci_pci_renesas_probe,
+	.remove =	xhci_pci_remove,
+
+	.shutdown = 	usb_hcd_pci_shutdown,
+	.driver = {
+		.pm = pm_ptr(&usb_hcd_pci_pm_ops),
+	},
+};
+module_pci_driver(xhci_renesas_pci_driver);
+
+MODULE_DESCRIPTION("Renesas xHCI PCI Host Controller Driver");
+MODULE_FIRMWARE(RENESAS_FW_NAME);
+MODULE_IMPORT_NS(xhci);
 MODULE_LICENSE("GPL v2");

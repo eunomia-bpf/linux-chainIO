@@ -70,7 +70,7 @@ Selection targets and flags are documented in
 
 .. c:type:: v4l2_subdev_selection
 
-.. tabularcolumns:: |p{4.4cm}|p{4.4cm}|p{8.7cm}|
+.. tabularcolumns:: |p{4.4cm}|p{4.4cm}|p{8.5cm}|
 
 .. flat-table:: struct v4l2_subdev_selection
     :header-rows:  0
@@ -94,7 +94,10 @@ Selection targets and flags are documented in
       - ``r``
       - Selection rectangle, in pixels.
     * - __u32
-      - ``reserved``\ [8]
+      - ``stream``
+      - Stream identifier.
+    * - __u32
+      - ``reserved``\ [7]
       - Reserved for future extensions. Applications and drivers must set
 	the array to zero.
 
@@ -113,10 +116,9 @@ EBUSY
     ``VIDIOC_SUBDEV_S_SELECTION``
 
 EINVAL
-    The struct :c:type:`v4l2_subdev_selection`
-    ``pad`` references a non-existing pad, the ``which`` field
-    references a non-existing format, or the selection target is not
-    supported on the given subdev pad.
+    The struct :c:type:`v4l2_subdev_selection` ``pad`` references a
+    non-existing pad, the ``which`` field has an unsupported value, or the
+    selection target is not supported on the given subdev pad.
 
 EPERM
     The ``VIDIOC_SUBDEV_S_SELECTION`` ioctl has been called on a read-only

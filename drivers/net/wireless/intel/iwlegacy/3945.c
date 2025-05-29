@@ -20,7 +20,7 @@
 #include <linux/netdevice.h>
 #include <linux/firmware.h>
 #include <linux/etherdevice.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include <net/mac80211.h>
 
 #include "common.h"
@@ -527,7 +527,7 @@ il3945_hdl_rx(struct il_priv *il, struct il_rx_buf *rxb)
 	struct ieee80211_hdr *header;
 	struct ieee80211_rx_status rx_status = {};
 	struct il_rx_pkt *pkt = rxb_addr(rxb);
-	struct il3945_rx_frame_stats *rx_stats = IL_RX_STATS(pkt);
+	struct il3945_rx_frame_stats_hdr *rx_stats = IL_RX_STATS(pkt);
 	struct il3945_rx_frame_hdr *rx_hdr = IL_RX_HDR(pkt);
 	struct il3945_rx_frame_end *rx_end = IL_RX_END(pkt);
 	u16 rx_stats_sig_avg __maybe_unused = le16_to_cpu(rx_stats->sig_avg);
@@ -652,16 +652,16 @@ il3945_hw_txq_free_tfd(struct il_priv *il, struct il_tx_queue *txq)
 
 	/* Unmap tx_cmd */
 	if (counter)
-		pci_unmap_single(dev, dma_unmap_addr(&txq->meta[idx], mapping),
+		dma_unmap_single(&dev->dev,
+				 dma_unmap_addr(&txq->meta[idx], mapping),
 				 dma_unmap_len(&txq->meta[idx], len),
-				 PCI_DMA_TODEVICE);
+				 DMA_TO_DEVICE);
 
 	/* unmap chunks if any */
 
 	for (i = 1; i < counter; i++)
-		pci_unmap_single(dev, le32_to_cpu(tfd->tbs[i].addr),
-				 le32_to_cpu(tfd->tbs[i].len),
-				 PCI_DMA_TODEVICE);
+		dma_unmap_single(&dev->dev, le32_to_cpu(tfd->tbs[i].addr),
+				 le32_to_cpu(tfd->tbs[i].len), DMA_TO_DEVICE);
 
 	/* free SKB */
 	if (txq->skbs) {

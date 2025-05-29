@@ -51,7 +51,6 @@ static struct snd_soc_dai_driver ipq806x_lpass_cpu_dai_driver = {
 		.channels_min	= 1,
 		.channels_max	= 8,
 	},
-	.probe	= &asoc_qcom_lpass_cpu_dai_probe,
 	.ops    = &asoc_qcom_lpass_cpu_dai_ops,
 };
 
@@ -109,7 +108,7 @@ static int ipq806x_lpass_free_dma_channel(struct lpass_data *drvdata, int chan, 
 	return 0;
 }
 
-static struct lpass_variant ipq806x_data = {
+static const struct lpass_variant ipq806x_data = {
 	.i2sctrl_reg_base	= 0x0010,
 	.i2sctrl_reg_stride	= 0x04,
 	.i2s_ports		= 5,
@@ -131,7 +130,7 @@ static struct lpass_variant ipq806x_data = {
 	.micmode		= REG_FIELD_ID(0x0010, 4, 7, 5, 0x4),
 	.micmono		= REG_FIELD_ID(0x0010, 3, 3, 5, 0x4),
 	.wssrc			= REG_FIELD_ID(0x0010, 2, 2, 5, 0x4),
-	.bitwidth		= REG_FIELD_ID(0x0010, 0, 0, 5, 0x4),
+	.bitwidth		= REG_FIELD_ID(0x0010, 0, 1, 5, 0x4),
 
 	.rdma_dyncclk		= REG_FIELD_ID(0x6000, 12, 12, 4, 0x1000),
 	.rdma_bursten		= REG_FIELD_ID(0x6000, 11, 11, 4, 0x1000),
@@ -161,7 +160,7 @@ static struct lpass_variant ipq806x_data = {
 	.free_dma_channel	= ipq806x_lpass_free_dma_channel,
 };
 
-static const struct of_device_id ipq806x_lpass_cpu_device_id[] = {
+static const struct of_device_id ipq806x_lpass_cpu_device_id[] __maybe_unused = {
 	{ .compatible = "qcom,lpass-cpu", .data = &ipq806x_data },
 	{}
 };
@@ -173,9 +172,9 @@ static struct platform_driver ipq806x_lpass_cpu_platform_driver = {
 		.of_match_table	= of_match_ptr(ipq806x_lpass_cpu_device_id),
 	},
 	.probe	= asoc_qcom_lpass_cpu_platform_probe,
-	.remove	= asoc_qcom_lpass_cpu_platform_remove,
+	.remove = asoc_qcom_lpass_cpu_platform_remove,
 };
 module_platform_driver(ipq806x_lpass_cpu_platform_driver);
 
 MODULE_DESCRIPTION("QTi LPASS CPU Driver");
-MODULE_LICENSE("GPL v2");
+MODULE_LICENSE("GPL");

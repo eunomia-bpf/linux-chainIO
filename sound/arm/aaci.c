@@ -737,10 +737,8 @@ static const struct snd_pcm_ops aaci_capture_ops = {
 /*
  * Power Management.
  */
-#ifdef CONFIG_PM
 static int aaci_do_suspend(struct snd_card *card)
 {
-	struct aaci *aaci = card->private_data;
 	snd_power_change_state(card, SNDRV_CTL_POWER_D3cold);
 	return 0;
 }
@@ -763,12 +761,7 @@ static int aaci_resume(struct device *dev)
 	return card ? aaci_do_resume(card) : 0;
 }
 
-static SIMPLE_DEV_PM_OPS(aaci_dev_pm_ops, aaci_suspend, aaci_resume);
-#define AACI_DEV_PM_OPS (&aaci_dev_pm_ops)
-#else
-#define AACI_DEV_PM_OPS NULL
-#endif
-
+static DEFINE_SIMPLE_DEV_PM_OPS(aaci_dev_pm_ops, aaci_suspend, aaci_resume);
 
 static const struct ac97_pcm ac97_defs[] = {
 	[0] = {	/* Front PCM */
@@ -890,8 +883,8 @@ static struct aaci *aaci_init_card(struct amba_device *dev)
 
 	card->private_free = aaci_free_card;
 
-	strlcpy(card->driver, DRIVER_NAME, sizeof(card->driver));
-	strlcpy(card->shortname, "ARM AC'97 Interface", sizeof(card->shortname));
+	strscpy(card->driver, DRIVER_NAME, sizeof(card->driver));
+	strscpy(card->shortname, "ARM AC'97 Interface", sizeof(card->shortname));
 	snprintf(card->longname, sizeof(card->longname),
 		 "%s PL%03x rev%u at 0x%08llx, irq %d",
 		 card->shortname, amba_part(dev), amba_rev(dev),
@@ -921,7 +914,7 @@ static int aaci_init_pcm(struct aaci *aaci)
 		pcm->private_data = aaci;
 		pcm->info_flags = 0;
 
-		strlcpy(pcm->name, DRIVER_NAME, sizeof(pcm->name));
+		strscpy(pcm->name, DRIVER_NAME, sizeof(pcm->name));
 
 		snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_PLAYBACK, &aaci_playback_ops);
 		snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_CAPTURE, &aaci_capture_ops);
@@ -1055,7 +1048,7 @@ static int aaci_probe(struct amba_device *dev,
 	return ret;
 }
 
-static int aaci_remove(struct amba_device *dev)
+static void aaci_remove(struct amba_device *dev)
 {
 	struct snd_card *card = amba_get_drvdata(dev);
 
@@ -1066,8 +1059,6 @@ static int aaci_remove(struct amba_device *dev)
 		snd_card_free(card);
 		amba_release_regions(dev);
 	}
-
-	return 0;
 }
 
 static struct amba_id aaci_ids[] = {
@@ -1083,7 +1074,7 @@ MODULE_DEVICE_TABLE(amba, aaci_ids);
 static struct amba_driver aaci_driver = {
 	.drv		= {
 		.name	= DRIVER_NAME,
-		.pm	= AACI_DEV_PM_OPS,
+		.pm	= &aaci_dev_pm_ops,
 	},
 	.probe		= aaci_probe,
 	.remove		= aaci_remove,

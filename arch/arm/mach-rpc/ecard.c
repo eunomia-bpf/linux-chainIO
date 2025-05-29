@@ -253,7 +253,7 @@ static int ecard_init_mm(void)
 	current->mm = mm;
 	current->active_mm = mm;
 	activate_mm(active_mm, mm);
-	mmdrop(active_mm);
+	mmdrop_lazy_tlb(active_mm);
 	ecard_init_pgtables(mm);
 	return 0;
 }
@@ -1052,7 +1052,7 @@ static int ecard_drv_probe(struct device *dev)
 	return ret;
 }
 
-static int ecard_drv_remove(struct device *dev)
+static void ecard_drv_remove(struct device *dev)
 {
 	struct expansion_card *ec = ECARD_DEV(dev);
 	struct ecard_driver *drv = ECARD_DRV(dev->driver);
@@ -1067,8 +1067,6 @@ static int ecard_drv_remove(struct device *dev)
 	ec->ops = &ecard_default_ops;
 	barrier();
 	ec->irq_data = NULL;
-
-	return 0;
 }
 
 /*
@@ -1111,7 +1109,7 @@ void ecard_remove_driver(struct ecard_driver *drv)
 	driver_unregister(&drv->drv);
 }
 
-static int ecard_match(struct device *_dev, struct device_driver *_drv)
+static int ecard_match(struct device *_dev, const struct device_driver *_drv)
 {
 	struct expansion_card *ec = ECARD_DEV(_dev);
 	struct ecard_driver *drv = ECARD_DRV(_drv);

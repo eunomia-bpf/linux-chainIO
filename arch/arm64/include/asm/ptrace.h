@@ -16,35 +16,17 @@
 #define CurrentEL_EL1		(1 << 2)
 #define CurrentEL_EL2		(2 << 2)
 
-/*
- * PMR values used to mask/unmask interrupts.
- *
- * GIC priority masking works as follows: if an IRQ's priority is a higher value
- * than the value held in PMR, that IRQ is masked. Lowering the value of PMR
- * means masking more IRQs (or at least that the same IRQs remain masked).
- *
- * To mask interrupts, we clear the most significant bit of PMR.
- *
- * Some code sections either automatically switch back to PSR.I or explicitly
- * require to not use priority masking. If bit GIC_PRIO_PSR_I_SET is included
- * in the priority mask, it indicates that PSR.I should be set and
- * interrupt disabling temporarily does not rely on IRQ priorities.
- */
-#define GIC_PRIO_IRQON			0xe0
-#define __GIC_PRIO_IRQOFF		(GIC_PRIO_IRQON & ~0x80)
-#define __GIC_PRIO_IRQOFF_NS		0xa0
-#define GIC_PRIO_PSR_I_SET		(1 << 4)
+#define INIT_PSTATE_EL1 \
+	(PSR_D_BIT | PSR_A_BIT | PSR_I_BIT | PSR_F_BIT | PSR_MODE_EL1h)
+#define INIT_PSTATE_EL2 \
+	(PSR_D_BIT | PSR_A_BIT | PSR_I_BIT | PSR_F_BIT | PSR_MODE_EL2h)
 
-#define GIC_PRIO_IRQOFF							\
-	({								\
-		extern struct static_key_false gic_nonsecure_priorities;\
-		u8 __prio = __GIC_PRIO_IRQOFF;				\
-									\
-		if (static_branch_unlikely(&gic_nonsecure_priorities))	\
-			__prio = __GIC_PRIO_IRQOFF_NS;			\
-									\
-		__prio;							\
-	})
+#include <linux/irqchip/arm-gic-v3-prio.h>
+
+#define GIC_PRIO_IRQON		GICV3_PRIO_UNMASKED
+#define GIC_PRIO_IRQOFF		GICV3_PRIO_IRQ
+
+#define GIC_PRIO_PSR_I_SET	GICV3_PRIO_PSR_I_SET
 
 /* Additional SPSR bits not exposed in the UABI */
 #define PSR_MODE_THREAD_BIT	(1 << 0)
@@ -116,6 +98,8 @@
 #include <linux/bug.h>
 #include <linux/types.h>
 
+#include <asm/stacktrace/frame.h>
+
 /* sizeof(struct user) for AArch32 */
 #define COMPAT_USER_SZ	296
 
@@ -167,8 +151,7 @@ static inline unsigned long pstate_to_compat_psr(const unsigned long pstate)
 
 /*
  * This struct defines the way the registers are stored on the stack during an
- * exception. Note that sizeof(struct pt_regs) has to be a multiple of 16 (for
- * stack alignment). struct user_pt_regs must form a prefix of struct pt_regs.
+ * exception. struct user_pt_regs must form a prefix of struct pt_regs.
  */
 struct pt_regs {
 	union {
@@ -181,19 +164,19 @@ struct pt_regs {
 		};
 	};
 	u64 orig_x0;
-#ifdef __AARCH64EB__
-	u32 unused2;
 	s32 syscallno;
-#else
-	s32 syscallno;
-	u32 unused2;
-#endif
+	u32 pmr;
 
-	u64 orig_addr_limit;
-	/* Only valid when ARM64_HAS_IRQ_PRIO_MASKING is enabled. */
-	u64 pmr_save;
-	u64 stackframe[2];
+	u64 sdei_ttbr1;
+	struct frame_record_meta stackframe;
+
+	/* Only valid for some EL1 exceptions. */
+	u64 lockdep_hardirqs;
+	u64 exit_rcu;
 };
+
+/* For correct stack alignment, pt_regs has to be a multiple of 16 bytes. */
+static_assert(IS_ALIGNED(sizeof(struct pt_regs), 16));
 
 static inline bool in_syscall(struct pt_regs const *regs)
 {
@@ -228,7 +211,7 @@ static inline void forget_syscall(struct pt_regs *regs)
 
 #define irqs_priority_unmasked(regs)					\
 	(system_uses_irq_prio_masking() ?				\
-		(regs)->pmr_save == GIC_PRIO_IRQON :			\
+		(regs)->pmr == GIC_PRIO_IRQON :				\
 		true)
 
 #define interrupts_enabled(regs)			\
@@ -312,7 +295,17 @@ static inline unsigned long kernel_stack_pointer(struct pt_regs *regs)
 
 static inline unsigned long regs_return_value(struct pt_regs *regs)
 {
-	return regs->regs[0];
+	unsigned long val = regs->regs[0];
+
+	/*
+	 * Audit currently uses regs_return_value() instead of
+	 * syscall_get_return_value(). Apply the same sign-extension here until
+	 * audit is updated to use syscall_get_return_value().
+	 */
+	if (compat_user_mode(regs))
+		val = sign_extend64(val, 31);
+
+	return val;
 }
 
 static inline void regs_set_return_value(struct pt_regs *regs, unsigned long rc)

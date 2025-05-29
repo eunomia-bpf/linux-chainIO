@@ -97,7 +97,7 @@ void snd_opl3_init_seq_oss(struct snd_opl3 *opl3, char *name)
 		return;
 
 	opl3->oss_seq_dev = dev;
-	strlcpy(dev->name, name, sizeof(dev->name));
+	strscpy(dev->name, name, sizeof(dev->name));
 	arg = SNDRV_SEQ_DEVICE_ARGPTR(dev);
 	arg->type = SYNTH_TYPE_FM;
 	if (opl3->hardware < OPL3_HW_OPL3) {
@@ -136,7 +136,8 @@ static int snd_opl3_open_seq_oss(struct snd_seq_oss_arg *arg, void *closure)
 	if (snd_BUG_ON(!arg))
 		return -ENXIO;
 
-	if ((err = snd_opl3_synth_setup(opl3)) < 0)
+	err = snd_opl3_synth_setup(opl3);
+	if (err < 0)
 		return err;
 
 	/* fill the argument data */
@@ -144,7 +145,8 @@ static int snd_opl3_open_seq_oss(struct snd_seq_oss_arg *arg, void *closure)
 	arg->addr.client = opl3->oss_chset->client;
 	arg->addr.port = opl3->oss_chset->port;
 
-	if ((err = snd_opl3_synth_use_inc(opl3)) < 0)
+	err = snd_opl3_synth_use_inc(opl3);
+	if (err < 0)
 		return err;
 
 	opl3->synth_mode = SNDRV_OPL3_MODE_SYNTH;
@@ -191,14 +193,14 @@ static int snd_opl3_load_patch_seq_oss(struct snd_seq_oss_arg *arg, int format,
 		return -EINVAL;
 
 	if (count < (int)sizeof(sbi)) {
-		snd_printk(KERN_ERR "FM Error: Patch record too short\n");
+		dev_err(opl3->card->dev, "FM Error: Patch record too short\n");
 		return -EINVAL;
 	}
 	if (copy_from_user(&sbi, buf, sizeof(sbi)))
 		return -EFAULT;
 
 	if (sbi.channel < 0 || sbi.channel >= SBFM_MAXINSTR) {
-		snd_printk(KERN_ERR "FM Error: Invalid instrument number %d\n",
+		dev_err(opl3->card->dev, "FM Error: Invalid instrument number %d\n",
 			   sbi.channel);
 		return -EINVAL;
 	}
@@ -218,13 +220,15 @@ static int snd_opl3_load_patch_seq_oss(struct snd_seq_oss_arg *arg, int format,
 static int snd_opl3_ioctl_seq_oss(struct snd_seq_oss_arg *arg, unsigned int cmd,
 				  unsigned long ioarg)
 {
+	struct snd_opl3 *opl3;
+
 	if (snd_BUG_ON(!arg))
 		return -ENXIO;
+	opl3 = arg->private_data;
 	switch (cmd) {
 		case SNDCTL_FM_LOAD_INSTR:
-			snd_printk(KERN_ERR "OPL3: "
-				   "Obsolete ioctl(SNDCTL_FM_LOAD_INSTR) used. "
-				   "Fix the program.\n");
+			dev_err(opl3->card->dev,
+				"OPL3: Obsolete ioctl(SNDCTL_FM_LOAD_INSTR) used. Fix the program.\n");
 			return -EINVAL;
 
 		case SNDCTL_SYNTH_MEMAVL:

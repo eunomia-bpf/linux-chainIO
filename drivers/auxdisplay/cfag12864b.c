@@ -5,7 +5,7 @@
  * Description: cfag12864b LCD driver
  *     Depends: ks0108
  *
- *      Author: Copyright (C) Miguel Ojeda Sandonis
+ *      Author: Copyright (C) Miguel Ojeda <ojeda@kernel.org>
  *        Date: 2006-10-31
  */
 
@@ -33,14 +33,9 @@
  */
 
 static unsigned int cfag12864b_rate = CONFIG_CFAG12864B_RATE;
-module_param(cfag12864b_rate, uint, S_IRUGO);
+module_param(cfag12864b_rate, uint, 0444);
 MODULE_PARM_DESC(cfag12864b_rate,
 	"Refresh rate (hertz)");
-
-unsigned int cfag12864b_getrate(void)
-{
-	return cfag12864b_rate;
-}
 
 /*
  * cfag12864b Commands
@@ -249,11 +244,6 @@ void cfag12864b_disable(void)
 	mutex_unlock(&cfag12864b_mutex);
 }
 
-unsigned char cfag12864b_isenabled(void)
-{
-	return cfag12864b_updating;
-}
-
 static void cfag12864b_update(struct work_struct *work)
 {
 	unsigned char c;
@@ -293,10 +283,8 @@ static void cfag12864b_update(struct work_struct *work)
  */
 
 EXPORT_SYMBOL_GPL(cfag12864b_buffer);
-EXPORT_SYMBOL_GPL(cfag12864b_getrate);
 EXPORT_SYMBOL_GPL(cfag12864b_enable);
 EXPORT_SYMBOL_GPL(cfag12864b_disable);
-EXPORT_SYMBOL_GPL(cfag12864b_isenabled);
 
 /*
  * Is the module inited?
@@ -376,5 +364,5 @@ module_init(cfag12864b_init);
 module_exit(cfag12864b_exit);
 
 MODULE_LICENSE("GPL v2");
-MODULE_AUTHOR("Miguel Ojeda Sandonis <miguel.ojeda.sandonis@gmail.com>");
+MODULE_AUTHOR("Miguel Ojeda <ojeda@kernel.org>");
 MODULE_DESCRIPTION("cfag12864b LCD driver");

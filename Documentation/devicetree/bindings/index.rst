@@ -1,12 +1,10 @@
 .. SPDX-License-Identifier: GPL-2.0
 
-===========
-Device Tree
-===========
-
 .. toctree::
    :maxdepth: 1
 
    ABI
-   submitting-patches
+   dts-coding-style
    writing-bindings
+   writing-schema
+   submitting-patches

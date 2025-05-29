@@ -131,20 +131,13 @@ struct snd_kcontrol *snd_hda_find_mixer_ctl(struct hda_codec *codec,
 int __snd_hda_add_vmaster(struct hda_codec *codec, char *name,
 			  unsigned int *tlv, const char * const *followers,
 			  const char *suffix, bool init_follower_vol,
-			  struct snd_kcontrol **ctl_ret);
-#define snd_hda_add_vmaster(codec, name, tlv, followers, suffix) \
-	__snd_hda_add_vmaster(codec, name, tlv, followers, suffix, true, NULL)
+			  unsigned int access, struct snd_kcontrol **ctl_ret);
+#define snd_hda_add_vmaster(codec, name, tlv, followers, suffix, access) \
+	__snd_hda_add_vmaster(codec, name, tlv, followers, suffix, true, access, NULL)
 int snd_hda_codec_reset(struct hda_codec *codec);
-void snd_hda_codec_register(struct hda_codec *codec);
-void snd_hda_codec_cleanup_for_unbind(struct hda_codec *codec);
+void snd_hda_codec_disconnect_pcms(struct hda_codec *codec);
 
 #define snd_hda_regmap_sync(codec)	snd_hdac_regmap_sync(&(codec)->core)
-
-enum {
-	HDA_VMUTE_OFF,
-	HDA_VMUTE_ON,
-	HDA_VMUTE_FOLLOW_MASTER,
-};
 
 struct hda_vmaster_mute_hook {
 	/* below two fields must be filled by the caller of
@@ -153,13 +146,11 @@ struct hda_vmaster_mute_hook {
 	struct snd_kcontrol *sw_kctl;
 	void (*hook)(void *, int);
 	/* below are initialized automatically */
-	unsigned int mute_mode; /* HDA_VMUTE_XXX */
 	struct hda_codec *codec;
 };
 
 int snd_hda_add_vmaster_hook(struct hda_codec *codec,
-			     struct hda_vmaster_mute_hook *hook,
-			     bool expose_enum_ctl);
+			     struct hda_vmaster_mute_hook *hook);
 void snd_hda_sync_vmaster_hook(struct hda_vmaster_mute_hook *hook);
 
 /* amp value bits */
@@ -180,7 +171,7 @@ int snd_hda_create_spdif_in_ctls(struct hda_codec *codec, hda_nid_t nid);
 /*
  * input MUX helper
  */
-#define HDA_MAX_NUM_INPUTS	16
+#define HDA_MAX_NUM_INPUTS	36
 struct hda_input_mux_item {
 	char label[32];
 	unsigned int index;
@@ -301,6 +292,32 @@ struct hda_fixup {
 	} v;
 };
 
+/*
+ * extended form of snd_pci_quirk:
+ * for PCI SSID matching, use SND_PCI_QUIRK() like before;
+ * for codec SSID matching, use the new HDA_CODEC_QUIRK() instead
+ */
+struct hda_quirk {
+	unsigned short subvendor;	/* PCI subvendor ID */
+	unsigned short subdevice;	/* PCI subdevice ID */
+	unsigned short subdevice_mask;	/* bitmask to match */
+	bool match_codec_ssid;		/* match only with codec SSID */
+	int value;			/* value */
+#ifdef CONFIG_SND_DEBUG_VERBOSE
+	const char *name;		/* name of the device (optional) */
+#endif
+};
+
+#ifdef CONFIG_SND_DEBUG_VERBOSE
+#define HDA_CODEC_QUIRK(vend, dev, xname, val) \
+	{ _SND_PCI_QUIRK_ID(vend, dev), .value = (val), .name = (xname),\
+			.match_codec_ssid = true }
+#else
+#define HDA_CODEC_QUIRK(vend, dev, xname, val) \
+	{ _SND_PCI_QUIRK_ID(vend, dev), .value = (val), \
+			.match_codec_ssid = true }
+#endif
+
 struct snd_hda_pin_quirk {
 	unsigned int codec;             /* Codec vendor/device ID */
 	unsigned short subvendor;	/* PCI subvendor ID */
@@ -357,9 +374,10 @@ void snd_hda_apply_verbs(struct hda_codec *codec);
 void snd_hda_apply_pincfgs(struct hda_codec *codec,
 			   const struct hda_pintbl *cfg);
 void snd_hda_apply_fixup(struct hda_codec *codec, int action);
+void __snd_hda_apply_fixup(struct hda_codec *codec, int id, int action, int depth);
 void snd_hda_pick_fixup(struct hda_codec *codec,
 			const struct hda_model_fixup *models,
-			const struct snd_pci_quirk *quirk,
+			const struct hda_quirk *quirk,
 			const struct hda_fixup *fixlist);
 void snd_hda_pick_pin_fixup(struct hda_codec *codec,
 			    const struct snd_hda_pin_quirk *pin_quirk,
@@ -445,6 +463,15 @@ int snd_hda_codec_set_pin_target(struct hda_codec *codec, hda_nid_t nid,
 
 #define for_each_hda_codec_node(nid, codec) \
 	for ((nid) = (codec)->core.start_nid; (nid) < (codec)->core.end_nid; (nid)++)
+
+/* Set the codec power_state flag to indicate to allow unsol event handling;
+ * see hda_codec_unsol_event() in hda_bind.c.  Calling this might confuse the
+ * state tracking, so use with care.
+ */
+static inline void snd_hda_codec_allow_unsol_events(struct hda_codec *codec)
+{
+	codec->core.dev.power.power_state = PMSG_ON;
+}
 
 /*
  * get widget capabilities
@@ -623,6 +650,8 @@ unsigned int snd_hda_codec_eapd_power_filter(struct hda_codec *codec,
 					     hda_nid_t nid,
 					     unsigned int power_state);
 
+void snd_hda_codec_shutdown(struct hda_codec *codec);
+
 /*
  * AMP control callbacks
  */
@@ -709,13 +738,16 @@ int snd_hdmi_get_eld_ati(struct hda_codec *codec, hda_nid_t nid,
 
 #ifdef CONFIG_SND_PROC_FS
 void snd_hdmi_print_eld_info(struct hdmi_eld *eld,
-			     struct snd_info_buffer *buffer);
+			     struct snd_info_buffer *buffer,
+			     hda_nid_t pin_nid, int dev_id, hda_nid_t cvt_nid);
 void snd_hdmi_write_eld_info(struct hdmi_eld *eld,
 			     struct snd_info_buffer *buffer);
 #endif
 
 #define SND_PRINT_CHANNEL_ALLOCATION_ADVISED_BUFSIZE 80
 void snd_print_channel_allocation(int spk_alloc, char *buf, int buflen);
+
+void snd_hda_codec_display_power(struct hda_codec *codec, bool enable);
 
 /*
  */

@@ -14,6 +14,8 @@
 #include <linux/of_irq.h>
 #include <linux/of_platform.h>
 
+#include "irq-msi-lib.h"
+
 /* Cause register */
 #define GICP_SECR(idx)		(0x0  + ((idx) * 0x4))
 /* Mask register */
@@ -303,23 +305,9 @@ static void mvebu_sei_cp_domain_free(struct irq_domain *domain,
 }
 
 static const struct irq_domain_ops mvebu_sei_cp_domain_ops = {
+	.select	= msi_lib_irq_domain_select,
 	.alloc	= mvebu_sei_cp_domain_alloc,
 	.free	= mvebu_sei_cp_domain_free,
-};
-
-static struct irq_chip mvebu_sei_msi_irq_chip = {
-	.name		= "SEI pMSI",
-	.irq_ack	= irq_chip_ack_parent,
-	.irq_set_type	= irq_chip_set_type_parent,
-};
-
-static struct msi_domain_ops mvebu_sei_msi_ops = {
-};
-
-static struct msi_domain_info mvebu_sei_msi_domain_info = {
-	.flags	= MSI_FLAG_USE_DEF_DOM_OPS | MSI_FLAG_USE_DEF_CHIP_OPS,
-	.ops	= &mvebu_sei_msi_ops,
-	.chip	= &mvebu_sei_msi_irq_chip,
 };
 
 static void mvebu_sei_handle_cascade_irq(struct irq_desc *desc)
@@ -337,17 +325,12 @@ static void mvebu_sei_handle_cascade_irq(struct irq_desc *desc)
 		irqmap = readl_relaxed(sei->base + GICP_SECR(idx));
 		for_each_set_bit(bit, &irqmap, SEI_IRQ_COUNT_PER_REG) {
 			unsigned long hwirq;
-			unsigned int virq;
+			int err;
 
 			hwirq = idx * SEI_IRQ_COUNT_PER_REG + bit;
-			virq = irq_find_mapping(sei->sei_domain, hwirq);
-			if (likely(virq)) {
-				generic_handle_irq(virq);
-				continue;
-			}
-
-			dev_warn(sei->dev,
-				 "Spurious IRQ detected (hwirq %lu)\n", hwirq);
+			err = generic_handle_domain_irq(sei->sei_domain, hwirq);
+			if (unlikely(err))
+				dev_warn(sei->dev, "Spurious IRQ detected (hwirq %lu)\n", hwirq);
 		}
 	}
 
@@ -365,10 +348,23 @@ static void mvebu_sei_reset(struct mvebu_sei *sei)
 	}
 }
 
+#define SEI_MSI_FLAGS_REQUIRED	(MSI_FLAG_USE_DEF_DOM_OPS |	\
+				 MSI_FLAG_USE_DEF_CHIP_OPS)
+
+#define SEI_MSI_FLAGS_SUPPORTED	(MSI_GENERIC_FLAGS_MASK)
+
+static const struct msi_parent_ops sei_msi_parent_ops = {
+	.supported_flags	= SEI_MSI_FLAGS_SUPPORTED,
+	.required_flags		= SEI_MSI_FLAGS_REQUIRED,
+	.bus_select_mask	= MATCH_PLATFORM_MSI,
+	.bus_select_token	= DOMAIN_BUS_GENERIC_MSI,
+	.prefix			= "SEI-",
+	.init_dev_msi_info	= msi_lib_init_dev_msi_info,
+};
+
 static int mvebu_sei_probe(struct platform_device *pdev)
 {
 	struct device_node *node = pdev->dev.of_node;
-	struct irq_domain *plat_domain;
 	struct mvebu_sei *sei;
 	u32 parent_irq;
 	int ret;
@@ -382,12 +378,9 @@ static int mvebu_sei_probe(struct platform_device *pdev)
 	mutex_init(&sei->cp_msi_lock);
 	raw_spin_lock_init(&sei->mask_lock);
 
-	sei->res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	sei->base = devm_ioremap_resource(sei->dev, sei->res);
-	if (IS_ERR(sei->base)) {
-		dev_err(sei->dev, "Failed to remap SEI resource\n");
+	sei->base = devm_platform_get_and_ioremap_resource(pdev, 0, &sei->res);
+	if (IS_ERR(sei->base))
 		return PTR_ERR(sei->base);
-	}
 
 	/* Retrieve the SEI capabilities with the interrupt ranges */
 	sei->caps = of_device_get_match_data(&pdev->dev);
@@ -448,33 +441,20 @@ static int mvebu_sei_probe(struct platform_device *pdev)
 	}
 
 	irq_domain_update_bus_token(sei->cp_domain, DOMAIN_BUS_GENERIC_MSI);
-
-	plat_domain = platform_msi_create_irq_domain(of_node_to_fwnode(node),
-						     &mvebu_sei_msi_domain_info,
-						     sei->cp_domain);
-	if (!plat_domain) {
-		pr_err("Failed to create CPs MSI domain\n");
-		ret = -ENOMEM;
-		goto remove_cp_domain;
-	}
+	sei->cp_domain->flags |= IRQ_DOMAIN_FLAG_MSI_PARENT;
+	sei->cp_domain->msi_parent_ops = &sei_msi_parent_ops;
 
 	mvebu_sei_reset(sei);
 
-	irq_set_chained_handler_and_data(parent_irq,
-					 mvebu_sei_handle_cascade_irq,
-					 sei);
-
+	irq_set_chained_handler_and_data(parent_irq, mvebu_sei_handle_cascade_irq, sei);
 	return 0;
 
-remove_cp_domain:
-	irq_domain_remove(sei->cp_domain);
 remove_ap_domain:
 	irq_domain_remove(sei->ap_domain);
 remove_sei_domain:
 	irq_domain_remove(sei->sei_domain);
 dispose_irq:
 	irq_dispose_mapping(parent_irq);
-
 	return ret;
 }
 

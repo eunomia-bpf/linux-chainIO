@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2013 - 2015 Linaro Ltd.
- * Copyright (c) 2013 Hisilicon Limited.
+ * Copyright (c) 2013 HiSilicon Limited.
  */
 #include <linux/sched.h>
 #include <linux/device.h>
@@ -15,7 +15,6 @@
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
-#include <linux/of_device.h>
 #include <linux/of.h>
 #include <linux/clk.h>
 #include <linux/of_dma.h>
@@ -223,24 +222,23 @@ static irqreturn_t k3_dma_int_handler(int irq, void *dev_id)
 		i = __ffs(stat);
 		stat &= ~BIT(i);
 		if (likely(tc1 & BIT(i)) || (tc2 & BIT(i))) {
-			unsigned long flags;
 
 			p = &d->phy[i];
 			c = p->vchan;
 			if (c && (tc1 & BIT(i))) {
-				spin_lock_irqsave(&c->vc.lock, flags);
+				spin_lock(&c->vc.lock);
 				if (p->ds_run != NULL) {
 					vchan_cookie_complete(&p->ds_run->vd);
 					p->ds_done = p->ds_run;
 					p->ds_run = NULL;
 				}
-				spin_unlock_irqrestore(&c->vc.lock, flags);
+				spin_unlock(&c->vc.lock);
 			}
 			if (c && (tc2 & BIT(i))) {
-				spin_lock_irqsave(&c->vc.lock, flags);
+				spin_lock(&c->vc.lock);
 				if (p->ds_run != NULL)
 					vchan_cyclic_callback(&p->ds_run->vd);
-				spin_unlock_irqrestore(&c->vc.lock, flags);
+				spin_unlock(&c->vc.lock);
 			}
 			irq_chan |= BIT(i);
 		}
@@ -840,7 +838,6 @@ static int k3_dma_probe(struct platform_device *op)
 {
 	const struct k3dma_soc_data *soc_data;
 	struct k3_dma_dev *d;
-	const struct of_device_id *of_id;
 	int i, ret, irq = 0;
 
 	d = devm_kzalloc(&op->dev, sizeof(*d), GFP_KERNEL);
@@ -855,19 +852,16 @@ static int k3_dma_probe(struct platform_device *op)
 	if (IS_ERR(d->base))
 		return PTR_ERR(d->base);
 
-	of_id = of_match_device(k3_pdma_dt_ids, &op->dev);
-	if (of_id) {
-		of_property_read_u32((&op->dev)->of_node,
-				"dma-channels", &d->dma_channels);
-		of_property_read_u32((&op->dev)->of_node,
-				"dma-requests", &d->dma_requests);
-		ret = of_property_read_u32((&op->dev)->of_node,
-				"dma-channel-mask", &d->dma_channel_mask);
-		if (ret) {
-			dev_warn(&op->dev,
-				 "dma-channel-mask doesn't exist, considering all as available.\n");
-			d->dma_channel_mask = (u32)~0UL;
-		}
+	of_property_read_u32((&op->dev)->of_node,
+			"dma-channels", &d->dma_channels);
+	of_property_read_u32((&op->dev)->of_node,
+			"dma-requests", &d->dma_requests);
+	ret = of_property_read_u32((&op->dev)->of_node,
+			"dma-channel-mask", &d->dma_channel_mask);
+	if (ret) {
+		dev_warn(&op->dev,
+			 "dma-channel-mask doesn't exist, considering all as available.\n");
+		d->dma_channel_mask = (u32)~0UL;
 	}
 
 	if (!(soc_data->flags & K3_FLAG_NOCLK)) {
@@ -975,7 +969,7 @@ dma_async_register_fail:
 	return ret;
 }
 
-static int k3_dma_remove(struct platform_device *op)
+static void k3_dma_remove(struct platform_device *op)
 {
 	struct k3_dma_chan *c, *cn;
 	struct k3_dma_dev *d = platform_get_drvdata(op);
@@ -991,7 +985,6 @@ static int k3_dma_remove(struct platform_device *op)
 	}
 	tasklet_kill(&d->task);
 	clk_disable_unprepare(d->clk);
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -1040,6 +1033,6 @@ static struct platform_driver k3_pdma_driver = {
 
 module_platform_driver(k3_pdma_driver);
 
-MODULE_DESCRIPTION("Hisilicon k3 DMA Driver");
+MODULE_DESCRIPTION("HiSilicon k3 DMA Driver");
 MODULE_ALIAS("platform:k3dma");
 MODULE_LICENSE("GPL v2");

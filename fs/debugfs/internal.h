@@ -7,6 +7,7 @@
 
 #ifndef _DEBUGFS_INTERNAL_H_
 #define _DEBUGFS_INTERNAL_H_
+#include <linux/list.h>
 
 struct file_operations;
 
@@ -17,8 +18,19 @@ extern const struct file_operations debugfs_full_proxy_file_operations;
 
 struct debugfs_fsdata {
 	const struct file_operations *real_fops;
-	refcount_t active_users;
-	struct completion active_users_drained;
+	const struct debugfs_short_fops *short_fops;
+	union {
+		/* automount_fn is used when real_fops is NULL */
+		debugfs_automount_t automount;
+		struct {
+			refcount_t active_users;
+			struct completion active_users_drained;
+
+			/* protect cancellations */
+			struct mutex cancellations_mtx;
+			struct list_head cancellations;
+		};
+	};
 };
 
 /*
@@ -28,6 +40,11 @@ struct debugfs_fsdata {
  * pointer gets its lowest bit set.
  */
 #define DEBUGFS_FSDATA_IS_REAL_FOPS_BIT BIT(0)
+/*
+ * A dentry's ->d_fsdata, when pointing to real fops, is with
+ * short fops instead of full fops.
+ */
+#define DEBUGFS_FSDATA_IS_SHORT_FOPS_BIT BIT(1)
 
 /* Access BITS */
 #define DEBUGFS_ALLOW_API	BIT(0)

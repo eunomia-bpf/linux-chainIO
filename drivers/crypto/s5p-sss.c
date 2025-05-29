@@ -30,7 +30,8 @@
 
 #include <crypto/hash.h>
 #include <crypto/md5.h>
-#include <crypto/sha.h>
+#include <crypto/sha1.h>
+#include <crypto/sha2.h>
 #include <crypto/internal/hash.h>
 
 #define _SBF(s, v)			((v) << (s))
@@ -223,9 +224,6 @@
 /* HASH HW constants */
 #define BUFLEN			HASH_BLOCK_SIZE
 
-#define SSS_HASH_DMA_LEN_ALIGN	8
-#define SSS_HASH_DMA_ALIGN_MASK	(SSS_HASH_DMA_LEN_ALIGN - 1)
-
 #define SSS_HASH_QUEUE_LENGTH	10
 
 /**
@@ -400,7 +398,7 @@ static const struct samsung_aes_variant exynos_aes_data = {
 static const struct samsung_aes_variant exynos5433_slim_aes_data = {
 	.aes_offset	= 0x400,
 	.hash_offset	= 0x800,
-	.clk_names	= { "pclk", "aclk", },
+	.clk_names	= { "aclk", "pclk", },
 };
 
 static const struct of_device_id s5p_sss_dt_match[] = {
@@ -423,13 +421,9 @@ MODULE_DEVICE_TABLE(of, s5p_sss_dt_match);
 static inline const struct samsung_aes_variant *find_s5p_sss_version
 				   (const struct platform_device *pdev)
 {
-	if (IS_ENABLED(CONFIG_OF) && (pdev->dev.of_node)) {
-		const struct of_device_id *match;
+	if (IS_ENABLED(CONFIG_OF) && (pdev->dev.of_node))
+		return of_device_get_match_data(&pdev->dev);
 
-		match = of_match_node(s5p_sss_dt_match,
-					pdev->dev.of_node);
-		return (const struct samsung_aes_variant *)match->data;
-	}
 	return (const struct samsung_aes_variant *)
 			platform_get_device_id(pdev)->driver_data;
 }
@@ -501,7 +495,7 @@ static void s5p_sg_done(struct s5p_aes_dev *dev)
 /* Calls the completion. Cannot be called with dev->lock hold. */
 static void s5p_aes_complete(struct skcipher_request *req, int err)
 {
-	req->base.complete(&req->base, err);
+	skcipher_request_complete(req, err);
 }
 
 static void s5p_unset_outdata(struct s5p_aes_dev *dev)
@@ -1357,7 +1351,7 @@ static void s5p_hash_finish_req(struct ahash_request *req, int err)
 	spin_unlock_irqrestore(&dd->hash_lock, flags);
 
 	if (req->base.complete)
-		req->base.complete(&req->base, err);
+		ahash_request_complete(req, err);
 }
 
 /**
@@ -1399,7 +1393,7 @@ retry:
 		return ret;
 
 	if (backlog)
-		backlog->complete(backlog, -EINPROGRESS);
+		crypto_request_complete(backlog, -EINPROGRESS);
 
 	req = ahash_request_cast(async_req);
 	dd->hash_req = req;
@@ -1749,7 +1743,6 @@ static struct ahash_alg algs_sha1_md5_sha256[] = {
 					  CRYPTO_ALG_NEED_FALLBACK,
 		.cra_blocksize		= HASH_BLOCK_SIZE,
 		.cra_ctxsize		= sizeof(struct s5p_hash_ctx),
-		.cra_alignmask		= SSS_HASH_DMA_ALIGN_MASK,
 		.cra_module		= THIS_MODULE,
 		.cra_init		= s5p_hash_cra_init,
 		.cra_exit		= s5p_hash_cra_exit,
@@ -1774,7 +1767,6 @@ static struct ahash_alg algs_sha1_md5_sha256[] = {
 					  CRYPTO_ALG_NEED_FALLBACK,
 		.cra_blocksize		= HASH_BLOCK_SIZE,
 		.cra_ctxsize		= sizeof(struct s5p_hash_ctx),
-		.cra_alignmask		= SSS_HASH_DMA_ALIGN_MASK,
 		.cra_module		= THIS_MODULE,
 		.cra_init		= s5p_hash_cra_init,
 		.cra_exit		= s5p_hash_cra_exit,
@@ -1799,7 +1791,6 @@ static struct ahash_alg algs_sha1_md5_sha256[] = {
 					  CRYPTO_ALG_NEED_FALLBACK,
 		.cra_blocksize		= HASH_BLOCK_SIZE,
 		.cra_ctxsize		= sizeof(struct s5p_hash_ctx),
-		.cra_alignmask		= SSS_HASH_DMA_ALIGN_MASK,
 		.cra_module		= THIS_MODULE,
 		.cra_init		= s5p_hash_cra_init,
 		.cra_exit		= s5p_hash_cra_exit,
@@ -1993,7 +1984,7 @@ static void s5p_tasklet_cb(unsigned long data)
 	spin_unlock_irqrestore(&dev->lock, flags);
 
 	if (backlog)
-		backlog->complete(backlog, -EINPROGRESS);
+		crypto_request_complete(backlog, -EINPROGRESS);
 
 	dev->req = skcipher_request_cast(async_req);
 	dev->ctx = crypto_tfm_ctx(dev->req->base.tfm);
@@ -2158,7 +2149,7 @@ static struct skcipher_alg algs[] = {
 static int s5p_aes_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
-	int i, j, err = -ENODEV;
+	int i, j, err;
 	const struct samsung_aes_variant *variant;
 	struct s5p_aes_dev *pdata;
 	struct resource *res;
@@ -2173,6 +2164,8 @@ static int s5p_aes_probe(struct platform_device *pdev)
 
 	variant = find_s5p_sss_version(pdev);
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	if (!res)
+		return -EINVAL;
 
 	/*
 	 * Note: HASH and PRNG uses the same registers in secss, avoid
@@ -2188,14 +2181,14 @@ static int s5p_aes_probe(struct platform_device *pdev)
 	}
 
 	pdata->res = res;
-	pdata->ioaddr = devm_ioremap_resource(&pdev->dev, res);
+	pdata->ioaddr = devm_ioremap_resource(dev, res);
 	if (IS_ERR(pdata->ioaddr)) {
 		if (!pdata->use_hash)
 			return PTR_ERR(pdata->ioaddr);
 		/* try AES without HASH */
 		res->end -= 0x300;
 		pdata->use_hash = false;
-		pdata->ioaddr = devm_ioremap_resource(&pdev->dev, res);
+		pdata->ioaddr = devm_ioremap_resource(dev, res);
 		if (IS_ERR(pdata->ioaddr))
 			return PTR_ERR(pdata->ioaddr);
 	}
@@ -2316,13 +2309,10 @@ err_clk:
 	return err;
 }
 
-static int s5p_aes_remove(struct platform_device *pdev)
+static void s5p_aes_remove(struct platform_device *pdev)
 {
 	struct s5p_aes_dev *pdata = platform_get_drvdata(pdev);
 	int i;
-
-	if (!pdata)
-		return -ENODEV;
 
 	for (i = 0; i < ARRAY_SIZE(algs); i++)
 		crypto_unregister_skcipher(&algs[i]);
@@ -2341,13 +2331,11 @@ static int s5p_aes_remove(struct platform_device *pdev)
 
 	clk_disable_unprepare(pdata->clk);
 	s5p_dev = NULL;
-
-	return 0;
 }
 
 static struct platform_driver s5p_aes_crypto = {
 	.probe	= s5p_aes_probe,
-	.remove	= s5p_aes_remove,
+	.remove = s5p_aes_remove,
 	.driver	= {
 		.name	= "s5p-secss",
 		.of_match_table = s5p_sss_dt_match,

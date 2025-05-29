@@ -125,7 +125,7 @@ static int moxart_mdio_probe(struct platform_device *pdev)
 	snprintf(bus->id, MII_BUS_ID_SIZE, "%s-%d-mii", pdev->name, pdev->id);
 	bus->parent = &pdev->dev;
 
-	/* Setting PHY_IGNORE_INTERRUPT here even if it has no effect,
+	/* Setting PHY_MAC_INTERRUPT here even if it has no effect,
 	 * of_mdiobus_register() sets these PHY_POLL.
 	 * Ideally, the interrupt from MAC controller could be used to
 	 * detect link state changes, not polling, i.e. if there was
@@ -133,7 +133,7 @@ static int moxart_mdio_probe(struct platform_device *pdev)
 	 * interrupt handled in ethernet drivercode.
 	 */
 	for (i = 0; i < PHY_MAX_ADDR; i++)
-		bus->irq[i] = PHY_IGNORE_INTERRUPT;
+		bus->irq[i] = PHY_MAC_INTERRUPT;
 
 	data = bus->priv;
 	data->base = devm_platform_ioremap_resource(pdev, 0);
@@ -155,14 +155,12 @@ err_out_free_mdiobus:
 	return ret;
 }
 
-static int moxart_mdio_remove(struct platform_device *pdev)
+static void moxart_mdio_remove(struct platform_device *pdev)
 {
 	struct mii_bus *bus = platform_get_drvdata(pdev);
 
 	mdiobus_unregister(bus);
 	mdiobus_free(bus);
-
-	return 0;
 }
 
 static const struct of_device_id moxart_mdio_dt_ids[] = {

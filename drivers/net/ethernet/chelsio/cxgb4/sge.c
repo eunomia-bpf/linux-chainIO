@@ -443,7 +443,7 @@ static void free_rx_bufs(struct adapter *adap, struct sge_fl *q, int n)
 		if (is_buf_mapped(d))
 			dma_unmap_page(adap->pdev_dev, get_buf_addr(d),
 				       get_buf_size(adap, d),
-				       PCI_DMA_FROMDEVICE);
+				       DMA_FROM_DEVICE);
 		put_page(d->page);
 		d->page = NULL;
 		if (++q->cidx == q->size)
@@ -469,7 +469,7 @@ static void unmap_rx_buf(struct adapter *adap, struct sge_fl *q)
 
 	if (is_buf_mapped(d))
 		dma_unmap_page(adap->pdev_dev, get_buf_addr(d),
-			       get_buf_size(adap, d), PCI_DMA_FROMDEVICE);
+			       get_buf_size(adap, d), DMA_FROM_DEVICE);
 	d->page = NULL;
 	if (++q->cidx == q->size)
 		q->cidx = 0;
@@ -566,7 +566,7 @@ static unsigned int refill_fl(struct adapter *adap, struct sge_fl *q, int n,
 
 		mapping = dma_map_page(adap->pdev_dev, pg, 0,
 				       PAGE_SIZE << s->fl_pg_order,
-				       PCI_DMA_FROMDEVICE);
+				       DMA_FROM_DEVICE);
 		if (unlikely(dma_mapping_error(adap->pdev_dev, mapping))) {
 			__free_pages(pg, s->fl_pg_order);
 			q->mapping_err++;
@@ -596,7 +596,7 @@ alloc_small_pages:
 		}
 
 		mapping = dma_map_page(adap->pdev_dev, pg, 0, PAGE_SIZE,
-				       PCI_DMA_FROMDEVICE);
+				       DMA_FROM_DEVICE);
 		if (unlikely(dma_mapping_error(adap->pdev_dev, mapping))) {
 			put_page(pg);
 			q->mapping_err++;
@@ -804,20 +804,6 @@ static inline unsigned int calc_tx_flits(const struct sk_buff *skb,
 }
 
 /**
- *	calc_tx_descs - calculate the number of Tx descriptors for a packet
- *	@skb: the packet
- *	@chip_ver: chip version
- *
- *	Returns the number of Tx descriptors needed for the given Ethernet
- *	packet, including the needed WR and CPL headers.
- */
-static inline unsigned int calc_tx_descs(const struct sk_buff *skb,
-					 unsigned int chip_ver)
-{
-	return flits_to_desc(calc_tx_flits(skb, chip_ver));
-}
-
-/**
  *	cxgb4_write_sgl - populate a scatter/gather list for a packet
  *	@skb: the packet
  *	@q: the Tx queue we are writing into
@@ -889,6 +875,114 @@ void cxgb4_write_sgl(const struct sk_buff *skb, struct sge_txq *q,
 		*end = 0;
 }
 EXPORT_SYMBOL(cxgb4_write_sgl);
+
+/*	cxgb4_write_partial_sgl - populate SGL for partial packet
+ *	@skb: the packet
+ *	@q: the Tx queue we are writing into
+ *	@sgl: starting location for writing the SGL
+ *	@end: points right after the end of the SGL
+ *	@addr: the list of bus addresses for the SGL elements
+ *	@start: start offset in the SKB where partial data starts
+ *	@len: length of data from @start to send out
+ *
+ *	This API will handle sending out partial data of a skb if required.
+ *	Unlike cxgb4_write_sgl, @start can be any offset into the skb data,
+ *	and @len will decide how much data after @start offset to send out.
+ */
+void cxgb4_write_partial_sgl(const struct sk_buff *skb, struct sge_txq *q,
+			     struct ulptx_sgl *sgl, u64 *end,
+			     const dma_addr_t *addr, u32 start, u32 len)
+{
+	struct ulptx_sge_pair buf[MAX_SKB_FRAGS / 2 + 1] = {0}, *to;
+	u32 frag_size, skb_linear_data_len = skb_headlen(skb);
+	struct skb_shared_info *si = skb_shinfo(skb);
+	u8 i = 0, frag_idx = 0, nfrags = 0;
+	skb_frag_t *frag;
+
+	/* Fill the first SGL either from linear data or from partial
+	 * frag based on @start.
+	 */
+	if (unlikely(start < skb_linear_data_len)) {
+		frag_size = min(len, skb_linear_data_len - start);
+		sgl->len0 = htonl(frag_size);
+		sgl->addr0 = cpu_to_be64(addr[0] + start);
+		len -= frag_size;
+		nfrags++;
+	} else {
+		start -= skb_linear_data_len;
+		frag = &si->frags[frag_idx];
+		frag_size = skb_frag_size(frag);
+		/* find the first frag */
+		while (start >= frag_size) {
+			start -= frag_size;
+			frag_idx++;
+			frag = &si->frags[frag_idx];
+			frag_size = skb_frag_size(frag);
+		}
+
+		frag_size = min(len, skb_frag_size(frag) - start);
+		sgl->len0 = cpu_to_be32(frag_size);
+		sgl->addr0 = cpu_to_be64(addr[frag_idx + 1] + start);
+		len -= frag_size;
+		nfrags++;
+		frag_idx++;
+	}
+
+	/* If the entire partial data fit in one SGL, then send it out
+	 * now.
+	 */
+	if (!len)
+		goto done;
+
+	/* Most of the complexity below deals with the possibility we hit the
+	 * end of the queue in the middle of writing the SGL.  For this case
+	 * only we create the SGL in a temporary buffer and then copy it.
+	 */
+	to = (u8 *)end > (u8 *)q->stat ? buf : sgl->sge;
+
+	/* If the skb couldn't fit in first SGL completely, fill the
+	 * rest of the frags in subsequent SGLs. Note that each SGL
+	 * pair can store 2 frags.
+	 */
+	while (len) {
+		frag_size = min(len, skb_frag_size(&si->frags[frag_idx]));
+		to->len[i & 1] = cpu_to_be32(frag_size);
+		to->addr[i & 1] = cpu_to_be64(addr[frag_idx + 1]);
+		if (i && (i & 1))
+			to++;
+		nfrags++;
+		frag_idx++;
+		i++;
+		len -= frag_size;
+	}
+
+	/* If we ended in an odd boundary, then set the second SGL's
+	 * length in the pair to 0.
+	 */
+	if (i & 1)
+		to->len[1] = cpu_to_be32(0);
+
+	/* Copy from temporary buffer to Tx ring, in case we hit the
+	 * end of the queue in the middle of writing the SGL.
+	 */
+	if (unlikely((u8 *)end > (u8 *)q->stat)) {
+		u32 part0 = (u8 *)q->stat - (u8 *)sgl->sge, part1;
+
+		if (likely(part0))
+			memcpy(sgl->sge, buf, part0);
+		part1 = (u8 *)end - (u8 *)q->stat;
+		memcpy(q->desc, (u8 *)buf + part0, part1);
+		end = (void *)q->desc + part1;
+	}
+
+	/* 0-pad to multiple of 16 */
+	if ((uintptr_t)end & 8)
+		*end = 0;
+done:
+	sgl->cmd_nsge = htonl(ULPTX_CMD_V(ULP_TX_SC_DSGL) |
+			ULPTX_NSGE_V(nfrags));
+}
+EXPORT_SYMBOL(cxgb4_write_partial_sgl);
 
 /* This function copies 64 byte coalesced work request to
  * memory mapped BAR2 space. For coalesced WR SGE fetches
@@ -1422,7 +1516,8 @@ static netdev_tx_t cxgb4_eth_xmit(struct sk_buff *skb, struct net_device *dev)
 #endif /* CHELSIO_IPSEC_INLINE */
 
 #if IS_ENABLED(CONFIG_CHELSIO_TLS_DEVICE)
-	if (skb->decrypted)
+	if (tls_is_skb_tx_device_offloaded(skb) &&
+	    (skb->len - skb_tcp_all_headers(skb)))
 		return adap->uld[CXGB4_ULD_KTLS].tx_handler(skb, dev);
 #endif /* CHELSIO_TLS_DEVICE */
 
@@ -1491,7 +1586,8 @@ static netdev_tx_t cxgb4_eth_xmit(struct sk_buff *skb, struct net_device *dev)
 		 * has opened up.
 		 */
 		eth_txq_stop(q);
-		wr_mid |= FW_WR_EQUEQ_F | FW_WR_EQUIQ_F;
+		if (chip_ver > CHELSIO_T5)
+			wr_mid |= FW_WR_EQUEQ_F | FW_WR_EQUIQ_F;
 	}
 
 	wr = (void *)&q->q.desc[q->q.pidx];
@@ -1723,6 +1819,7 @@ static netdev_tx_t cxgb4_vf_eth_xmit(struct sk_buff *skb,
 	struct adapter *adapter;
 	int qidx, credits, ret;
 	size_t fw_hdr_copy_len;
+	unsigned int chip_ver;
 	u64 cntrl, *end;
 	u32 wr_mid;
 
@@ -1731,8 +1828,10 @@ static netdev_tx_t cxgb4_vf_eth_xmit(struct sk_buff *skb,
 	 * (including the VLAN tag) into the header so we reject anything
 	 * smaller than that ...
 	 */
-	fw_hdr_copy_len = sizeof(wr->ethmacdst) + sizeof(wr->ethmacsrc) +
-			  sizeof(wr->ethtype) + sizeof(wr->vlantci);
+	BUILD_BUG_ON(sizeof(wr->firmware) !=
+		     (sizeof(wr->ethmacdst) + sizeof(wr->ethmacsrc) +
+		      sizeof(wr->ethtype) + sizeof(wr->vlantci)));
+	fw_hdr_copy_len = sizeof(wr->firmware);
 	ret = cxgb4_validate_skb(skb, dev, fw_hdr_copy_len);
 	if (ret)
 		goto out_free;
@@ -1787,6 +1886,7 @@ static netdev_tx_t cxgb4_vf_eth_xmit(struct sk_buff *skb,
 		goto out_free;
 	}
 
+	chip_ver = CHELSIO_CHIP_VERSION(adapter->params.chip);
 	wr_mid = FW_WR_LEN16_V(DIV_ROUND_UP(flits, 2));
 	if (unlikely(credits < ETHTXQ_STOP_THRES)) {
 		/* After we're done injecting the Work Request for this
@@ -1798,7 +1898,8 @@ static netdev_tx_t cxgb4_vf_eth_xmit(struct sk_buff *skb,
 		 * has opened up.
 		 */
 		eth_txq_stop(txq);
-		wr_mid |= FW_WR_EQUEQ_F | FW_WR_EQUIQ_F;
+		if (chip_ver > CHELSIO_T5)
+			wr_mid |= FW_WR_EQUEQ_F | FW_WR_EQUIQ_F;
 	}
 
 	/* Start filling in our Work Request.  Note that we do _not_ handle
@@ -1811,7 +1912,7 @@ static netdev_tx_t cxgb4_vf_eth_xmit(struct sk_buff *skb,
 	wr->equiq_to_len16 = cpu_to_be32(wr_mid);
 	wr->r3[0] = cpu_to_be32(0);
 	wr->r3[1] = cpu_to_be32(0);
-	skb_copy_from_linear_data(skb, (void *)wr->ethmacdst, fw_hdr_copy_len);
+	skb_copy_from_linear_data(skb, &wr->firmware, fw_hdr_copy_len);
 	end = (u64 *)wr + flits;
 
 	/* If this is a Large Send Offload packet we'll put in an LSO CPL
@@ -1851,7 +1952,7 @@ static netdev_tx_t cxgb4_vf_eth_xmit(struct sk_buff *skb,
 		 */
 		cpl = (void *)(lso + 1);
 
-		if (CHELSIO_CHIP_VERSION(adapter->params.chip) <= CHELSIO_T5)
+		if (chip_ver <= CHELSIO_T5)
 			cntrl = TXPKT_ETHHDR_LEN_V(eth_xtra_len);
 		else
 			cntrl = T6_TXPKT_ETHHDR_LEN_V(eth_xtra_len);
@@ -2443,6 +2544,12 @@ int cxgb4_ethofld_send_flowc(struct net_device *dev, u32 eotid, u32 tc)
 	if (!eosw_txq)
 		return -ENOMEM;
 
+	if (!(adap->flags & CXGB4_FW_OK)) {
+		/* Don't stall caller when access to FW is lost */
+		complete(&eosw_txq->completion);
+		return -EIO;
+	}
+
 	skb = alloc_skb(len, GFP_KERNEL);
 	if (!skb)
 		return -ENOMEM;
@@ -2450,12 +2557,12 @@ int cxgb4_ethofld_send_flowc(struct net_device *dev, u32 eotid, u32 tc)
 	spin_lock_bh(&eosw_txq->lock);
 	if (tc != FW_SCHED_CLS_NONE) {
 		if (eosw_txq->state != CXGB4_EO_STATE_CLOSED)
-			goto out_unlock;
+			goto out_free_skb;
 
 		next_state = CXGB4_EO_STATE_FLOWC_OPEN_SEND;
 	} else {
 		if (eosw_txq->state != CXGB4_EO_STATE_ACTIVE)
-			goto out_unlock;
+			goto out_free_skb;
 
 		next_state = CXGB4_EO_STATE_FLOWC_CLOSE_SEND;
 	}
@@ -2491,17 +2598,19 @@ int cxgb4_ethofld_send_flowc(struct net_device *dev, u32 eotid, u32 tc)
 		eosw_txq_flush_pending_skbs(eosw_txq);
 
 	ret = eosw_txq_enqueue(eosw_txq, skb);
-	if (ret) {
-		dev_consume_skb_any(skb);
-		goto out_unlock;
-	}
+	if (ret)
+		goto out_free_skb;
 
 	eosw_txq->state = next_state;
 	eosw_txq->flowc_idx = eosw_txq->pidx;
 	eosw_txq_advance(eosw_txq, 1);
 	ethofld_xmit(dev, eosw_txq);
 
-out_unlock:
+	spin_unlock_bh(&eosw_txq->lock);
+	return 0;
+
+out_free_skb:
+	dev_consume_skb_any(skb);
 	spin_unlock_bh(&eosw_txq->lock);
 	return ret;
 }
@@ -2561,12 +2670,12 @@ int cxgb4_selftest_lb_pkt(struct net_device *netdev)
 	lb->loopback = 1;
 
 	q = &adap->sge.ethtxq[pi->first_qset];
-	__netif_tx_lock(q->txq, smp_processor_id());
+	__netif_tx_lock_bh(q->txq);
 
 	reclaim_completed_tx(adap, &q->q, -1, true);
 	credits = txq_avail(&q->q) - ndesc;
 	if (unlikely(credits < 0)) {
-		__netif_tx_unlock(q->txq);
+		__netif_tx_unlock_bh(q->txq);
 		return -ENOMEM;
 	}
 
@@ -2601,7 +2710,7 @@ int cxgb4_selftest_lb_pkt(struct net_device *netdev)
 	init_completion(&lb->completion);
 	txq_advance(&q->q, ndesc);
 	cxgb4_ring_tx_db(adap, &q->q, ndesc);
-	__netif_tx_unlock(q->txq);
+	__netif_tx_unlock_bh(q->txq);
 
 	/* wait for the pkt to return */
 	ret = wait_for_completion_timeout(&lb->completion, 10 * HZ);
@@ -2733,17 +2842,22 @@ int t4_mgmt_tx(struct adapter *adap, struct sk_buff *skb)
  *	@skb: the packet
  *
  *	Returns true if a packet can be sent as an offload WR with immediate
- *	data.  We currently use the same limit as for Ethernet packets.
+ *	data.
+ *	FW_OFLD_TX_DATA_WR limits the payload to 255 bytes due to 8-bit field.
+ *      However, FW_ULPTX_WR commands have a 256 byte immediate only
+ *      payload limit.
  */
 static inline int is_ofld_imm(const struct sk_buff *skb)
 {
 	struct work_request_hdr *req = (struct work_request_hdr *)skb->data;
 	unsigned long opcode = FW_WR_OP_G(ntohl(req->wr_hi));
 
-	if (opcode == FW_CRYPTO_LOOKASIDE_WR)
+	if (unlikely(opcode == FW_ULPTX_WR))
+		return skb->len <= MAX_IMM_ULPTX_WR_LEN;
+	else if (opcode == FW_CRYPTO_LOOKASIDE_WR)
 		return skb->len <= SGE_MAX_WR_LEN;
 	else
-		return skb->len <= MAX_IMM_TX_PKT_LEN;
+		return skb->len <= MAX_IMM_OFLD_TX_DATA_WR_LEN;
 }
 
 /**
@@ -3489,6 +3603,25 @@ static void t4_tx_completion_handler(struct sge_rspq *rspq,
 	}
 
 	txq = &s->ethtxq[pi->first_qset + rspq->idx];
+
+	/* We've got the Hardware Consumer Index Update in the Egress Update
+	 * message. These Egress Update messages will be our sole CIDX Updates
+	 * we get since we don't want to chew up PCIe bandwidth for both Ingress
+	 * Messages and Status Page writes.  However, The code which manages
+	 * reclaiming successfully DMA'ed TX Work Requests uses the CIDX value
+	 * stored in the Status Page at the end of the TX Queue.  It's easiest
+	 * to simply copy the CIDX Update value from the Egress Update message
+	 * to the Status Page.  Also note that no Endian issues need to be
+	 * considered here since both are Big Endian and we're just copying
+	 * bytes consistently ...
+	 */
+	if (CHELSIO_CHIP_VERSION(adapter->params.chip) <= CHELSIO_T5) {
+		struct cpl_sge_egr_update *egr;
+
+		egr = (struct cpl_sge_egr_update *)rsp;
+		WRITE_ONCE(txq->q.stat->cidx, egr->cidx);
+	}
+
 	t4_sge_eth_txq_egress_update(adapter, txq, -1);
 }
 
@@ -4114,7 +4247,7 @@ static void sge_rx_timer_cb(struct timer_list *t)
 
 			if (fl_starving(adap, fl)) {
 				rxq = container_of(fl, struct sge_eth_rxq, fl);
-				if (napi_reschedule(&rxq->rspq.napi))
+				if (napi_schedule(&rxq->rspq.napi))
 					fl->starving++;
 				else
 					set_bit(id, s->starving_fl);
@@ -4320,7 +4453,7 @@ int t4_sge_alloc_rxq(struct adapter *adap, struct sge_rspq *iq, bool fwevtq,
 	if (ret)
 		goto err;
 
-	netif_napi_add(dev, &iq->napi, napi_rx_handler, 64);
+	netif_napi_add(dev, &iq->napi, napi_rx_handler);
 	iq->cur_desc = iq->desc;
 	iq->cidx = 0;
 	iq->gen = 1;
@@ -4474,11 +4607,15 @@ int t4_sge_alloc_eth_txq(struct adapter *adap, struct sge_eth_txq *txq,
 	 * write the CIDX Updates into the Status Page at the end of the
 	 * TX Queue.
 	 */
-	c.autoequiqe_to_viid = htonl(FW_EQ_ETH_CMD_AUTOEQUEQE_F |
+	c.autoequiqe_to_viid = htonl(((chip_ver <= CHELSIO_T5) ?
+				      FW_EQ_ETH_CMD_AUTOEQUIQE_F :
+				      FW_EQ_ETH_CMD_AUTOEQUEQE_F) |
 				     FW_EQ_ETH_CMD_VIID_V(pi->viid));
 
 	c.fetchszm_to_iqid =
-		htonl(FW_EQ_ETH_CMD_HOSTFCMODE_V(HOSTFCMODE_STATUS_PAGE_X) |
+		htonl(FW_EQ_ETH_CMD_HOSTFCMODE_V((chip_ver <= CHELSIO_T5) ?
+						 HOSTFCMODE_INGRESS_QUEUE_X :
+						 HOSTFCMODE_STATUS_PAGE_X) |
 		      FW_EQ_ETH_CMD_PCIECHN_V(pi->tx_chan) |
 		      FW_EQ_ETH_CMD_FETCHRO_F | FW_EQ_ETH_CMD_IQID_V(iqid));
 
@@ -4489,6 +4626,7 @@ int t4_sge_alloc_eth_txq(struct adapter *adap, struct sge_eth_txq *txq,
 					    : FETCHBURSTMIN_64B_T6_X) |
 		      FW_EQ_ETH_CMD_FBMAX_V(FETCHBURSTMAX_512B_X) |
 		      FW_EQ_ETH_CMD_CIDXFTHRESH_V(CIDXFLUSHTHRESH_32_X) |
+		      FW_EQ_ETH_CMD_CIDXFTHRESHO_V(chip_ver == CHELSIO_T5) |
 		      FW_EQ_ETH_CMD_EQSIZE_V(nentries));
 
 	c.eqaddr = cpu_to_be64(txq->q.phys_addr);
@@ -4734,22 +4872,6 @@ void free_rspq_fl(struct adapter *adap, struct sge_rspq *rq,
 		fl->cntxt_id = 0;
 		fl->desc = NULL;
 	}
-}
-
-/**
- *      t4_free_ofld_rxqs - free a block of consecutive Rx queues
- *      @adap: the adapter
- *      @n: number of queues
- *      @q: pointer to first queue
- *
- *      Release the resources of a consecutive block of offload Rx queues.
- */
-void t4_free_ofld_rxqs(struct adapter *adap, int n, struct sge_ofld_rxq *q)
-{
-	for ( ; n; n--, q++)
-		if (q->rspq.desc)
-			free_rspq_fl(adap, &q->rspq,
-				     q->fl.size ? &q->fl : NULL);
 }
 
 void t4_sge_free_ethofld_txq(struct adapter *adap, struct sge_eohw_txq *txq)

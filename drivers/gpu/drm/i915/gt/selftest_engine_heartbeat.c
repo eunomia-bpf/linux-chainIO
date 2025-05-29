@@ -1,6 +1,5 @@
+// SPDX-License-Identifier: MIT
 /*
- * SPDX-License-Identifier: MIT
- *
  * Copyright © 2018 Intel Corporation
  */
 
@@ -11,6 +10,12 @@
 #include "intel_gt_requests.h"
 #include "i915_selftest.h"
 #include "selftest_engine_heartbeat.h"
+
+static void reset_heartbeat(struct intel_engine_cs *engine)
+{
+	intel_engine_set_heartbeat(engine,
+				   engine->defaults.heartbeat_interval_ms);
+}
 
 static int timeline_sync(struct intel_timeline *tl)
 {
@@ -72,14 +77,14 @@ static struct pulse *pulse_create(void)
 		return p;
 
 	kref_init(&p->kref);
-	i915_active_init(&p->active, pulse_active, pulse_retire);
+	i915_active_init(&p->active, pulse_active, pulse_retire, 0);
 
 	return p;
 }
 
 static void pulse_unlock_wait(struct pulse *p)
 {
-	i915_active_unlock_wait(&p->active);
+	wait_var_event_timeout(&p->active, i915_active_is_idle(&p->active), HZ);
 }
 
 static int __live_idle_pulse(struct intel_engine_cs *engine,
@@ -117,9 +122,9 @@ static int __live_idle_pulse(struct intel_engine_cs *engine,
 	GEM_BUG_ON(!llist_empty(&engine->barrier_tasks));
 
 	if (engine_sync_barrier(engine)) {
-		struct drm_printer m = drm_err_printer("pulse");
+		struct drm_printer m = drm_err_printer(&engine->i915->drm, "pulse");
 
-		pr_err("%s: no heartbeat pulse?\n", engine->name);
+		drm_printf(&m, "%s: no heartbeat pulse?\n", engine->name);
 		intel_engine_dump(engine, &m, "%s", engine->name);
 
 		err = -ETIME;
@@ -131,10 +136,10 @@ static int __live_idle_pulse(struct intel_engine_cs *engine,
 	pulse_unlock_wait(p); /* synchronize with the retirement callback */
 
 	if (!i915_active_is_idle(&p->active)) {
-		struct drm_printer m = drm_err_printer("pulse");
+		struct drm_printer m = drm_err_printer(&engine->i915->drm, "pulse");
 
-		pr_err("%s: heartbeat pulse did not flush idle tasks\n",
-		       engine->name);
+		drm_printf(&m, "%s: heartbeat pulse did not flush idle tasks\n",
+			   engine->name);
 		i915_active_print(&p->active, &m);
 
 		err = -EINVAL;
@@ -188,107 +193,6 @@ static int live_idle_pulse(void *arg)
 	return err;
 }
 
-static int cmp_u32(const void *_a, const void *_b)
-{
-	const u32 *a = _a, *b = _b;
-
-	return *a - *b;
-}
-
-static int __live_heartbeat_fast(struct intel_engine_cs *engine)
-{
-	struct intel_context *ce;
-	struct i915_request *rq;
-	ktime_t t0, t1;
-	u32 times[5];
-	int err;
-	int i;
-
-	ce = intel_context_create(engine);
-	if (IS_ERR(ce))
-		return PTR_ERR(ce);
-
-	intel_engine_pm_get(engine);
-
-	err = intel_engine_set_heartbeat(engine, 1);
-	if (err)
-		goto err_pm;
-
-	for (i = 0; i < ARRAY_SIZE(times); i++) {
-		/* Manufacture a tick */
-		do {
-			while (READ_ONCE(engine->heartbeat.systole))
-				flush_delayed_work(&engine->heartbeat.work);
-
-			engine->serial++; /* quick, pretend we are not idle! */
-			flush_delayed_work(&engine->heartbeat.work);
-			if (!delayed_work_pending(&engine->heartbeat.work)) {
-				pr_err("%s: heartbeat did not start\n",
-				       engine->name);
-				err = -EINVAL;
-				goto err_pm;
-			}
-
-			rcu_read_lock();
-			rq = READ_ONCE(engine->heartbeat.systole);
-			if (rq)
-				rq = i915_request_get_rcu(rq);
-			rcu_read_unlock();
-		} while (!rq);
-
-		t0 = ktime_get();
-		while (rq == READ_ONCE(engine->heartbeat.systole))
-			yield(); /* work is on the local cpu! */
-		t1 = ktime_get();
-
-		i915_request_put(rq);
-		times[i] = ktime_us_delta(t1, t0);
-	}
-
-	sort(times, ARRAY_SIZE(times), sizeof(times[0]), cmp_u32, NULL);
-
-	pr_info("%s: Heartbeat delay: %uus [%u, %u]\n",
-		engine->name,
-		times[ARRAY_SIZE(times) / 2],
-		times[0],
-		times[ARRAY_SIZE(times) - 1]);
-
-	/* Min work delay is 2 * 2 (worst), +1 for scheduling, +1 for slack */
-	if (times[ARRAY_SIZE(times) / 2] > jiffies_to_usecs(6)) {
-		pr_err("%s: Heartbeat delay was %uus, expected less than %dus\n",
-		       engine->name,
-		       times[ARRAY_SIZE(times) / 2],
-		       jiffies_to_usecs(6));
-		err = -EINVAL;
-	}
-
-	intel_engine_set_heartbeat(engine, CONFIG_DRM_I915_HEARTBEAT_INTERVAL);
-err_pm:
-	intel_engine_pm_put(engine);
-	intel_context_put(ce);
-	return err;
-}
-
-static int live_heartbeat_fast(void *arg)
-{
-	struct intel_gt *gt = arg;
-	struct intel_engine_cs *engine;
-	enum intel_engine_id id;
-	int err = 0;
-
-	/* Check that the heartbeat ticks at the desired rate. */
-	if (!CONFIG_DRM_I915_HEARTBEAT_INTERVAL)
-		return 0;
-
-	for_each_engine(engine, gt, id) {
-		err = __live_heartbeat_fast(engine);
-		if (err)
-			break;
-	}
-
-	return err;
-}
-
 static int __live_heartbeat_off(struct intel_engine_cs *engine)
 {
 	int err;
@@ -325,7 +229,7 @@ static int __live_heartbeat_off(struct intel_engine_cs *engine)
 	}
 
 err_beat:
-	intel_engine_set_heartbeat(engine, CONFIG_DRM_I915_HEARTBEAT_INTERVAL);
+	reset_heartbeat(engine);
 err_pm:
 	intel_engine_pm_put(engine);
 	return err;
@@ -359,19 +263,18 @@ int intel_heartbeat_live_selftests(struct drm_i915_private *i915)
 	static const struct i915_subtest tests[] = {
 		SUBTEST(live_idle_flush),
 		SUBTEST(live_idle_pulse),
-		SUBTEST(live_heartbeat_fast),
 		SUBTEST(live_heartbeat_off),
 	};
 	int saved_hangcheck;
 	int err;
 
-	if (intel_gt_is_wedged(&i915->gt))
+	if (intel_gt_is_wedged(to_gt(i915)))
 		return 0;
 
 	saved_hangcheck = i915->params.enable_hangcheck;
 	i915->params.enable_hangcheck = INT_MAX;
 
-	err = intel_gt_live_subtests(tests, &i915->gt);
+	err = intel_gt_live_subtests(tests, to_gt(i915));
 
 	i915->params.enable_hangcheck = saved_hangcheck;
 	return err;
@@ -389,6 +292,28 @@ void st_engine_heartbeat_enable(struct intel_engine_cs *engine)
 {
 	intel_engine_pm_put(engine);
 
+	engine->props.heartbeat_interval_ms =
+		engine->defaults.heartbeat_interval_ms;
+}
+
+void st_engine_heartbeat_disable_no_pm(struct intel_engine_cs *engine)
+{
+	engine->props.heartbeat_interval_ms = 0;
+
+	/*
+	 * Park the heartbeat but without holding the PM lock as that
+	 * makes the engines appear not-idle. Note that if/when unpark
+	 * is called due to the PM lock being acquired later the
+	 * heartbeat still won't be enabled because of the above = 0.
+	 */
+	if (intel_engine_pm_get_if_awake(engine)) {
+		intel_engine_park_heartbeat(engine);
+		intel_engine_pm_put(engine);
+	}
+}
+
+void st_engine_heartbeat_enable_no_pm(struct intel_engine_cs *engine)
+{
 	engine->props.heartbeat_interval_ms =
 		engine->defaults.heartbeat_interval_ms;
 }

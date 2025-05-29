@@ -8,17 +8,66 @@
 #ifndef __ARCH_S390_ATOMIC_OPS__
 #define __ARCH_S390_ATOMIC_OPS__
 
-#ifdef CONFIG_HAVE_MARCH_Z196_FEATURES
+#include <linux/limits.h>
+#include <asm/march.h>
+
+static __always_inline int __atomic_read(const atomic_t *v)
+{
+	int c;
+
+	asm volatile(
+		"	l	%[c],%[counter]\n"
+		: [c] "=d" (c) : [counter] "R" (v->counter));
+	return c;
+}
+
+static __always_inline void __atomic_set(atomic_t *v, int i)
+{
+	if (__builtin_constant_p(i) && i >= S16_MIN && i <= S16_MAX) {
+		asm volatile(
+			"	mvhi	%[counter], %[i]\n"
+			: [counter] "=Q" (v->counter) : [i] "K" (i));
+	} else {
+		asm volatile(
+			"	st	%[i],%[counter]\n"
+			: [counter] "=R" (v->counter) : [i] "d" (i));
+	}
+}
+
+static __always_inline s64 __atomic64_read(const atomic64_t *v)
+{
+	s64 c;
+
+	asm volatile(
+		"	lg	%[c],%[counter]\n"
+		: [c] "=d" (c) : [counter] "RT" (v->counter));
+	return c;
+}
+
+static __always_inline void __atomic64_set(atomic64_t *v, s64 i)
+{
+	if (__builtin_constant_p(i) && i >= S16_MIN && i <= S16_MAX) {
+		asm volatile(
+			"	mvghi	%[counter], %[i]\n"
+			: [counter] "=Q" (v->counter) : [i] "K" (i));
+	} else {
+		asm volatile(
+			"	stg	%[i],%[counter]\n"
+			: [counter] "=RT" (v->counter) : [i] "d" (i));
+	}
+}
+
+#ifdef MARCH_HAS_Z196_FEATURES
 
 #define __ATOMIC_OP(op_name, op_type, op_string, op_barrier)		\
-static inline op_type op_name(op_type val, op_type *ptr)		\
+static __always_inline op_type op_name(op_type val, op_type *ptr)	\
 {									\
 	op_type old;							\
 									\
 	asm volatile(							\
 		op_string "	%[old],%[val],%[ptr]\n"			\
 		op_barrier						\
-		: [old] "=d" (old), [ptr] "+Q" (*ptr)			\
+		: [old] "=d" (old), [ptr] "+QS" (*ptr)			\
 		: [val] "d" (val) : "cc", "memory");			\
 	return old;							\
 }									\
@@ -46,7 +95,7 @@ static __always_inline void op_name(op_type val, op_type *ptr)		\
 	asm volatile(							\
 		op_string "	%[ptr],%[val]\n"			\
 		op_barrier						\
-		: [ptr] "+Q" (*ptr) : [val] "i" (val) : "cc", "memory");\
+		: [ptr] "+QS" (*ptr) : [val] "i" (val) : "cc", "memory");\
 }
 
 #define __ATOMIC_CONST_OPS(op_name, op_type, op_string)			\
@@ -59,10 +108,10 @@ __ATOMIC_CONST_OPS(__atomic64_add_const, long, "agsi")
 #undef __ATOMIC_CONST_OPS
 #undef __ATOMIC_CONST_OP
 
-#else /* CONFIG_HAVE_MARCH_Z196_FEATURES */
+#else /* MARCH_HAS_Z196_FEATURES */
 
 #define __ATOMIC_OP(op_name, op_string)					\
-static inline int op_name(int val, int *ptr)				\
+static __always_inline int op_name(int val, int *ptr)			\
 {									\
 	int old, new;							\
 									\
@@ -88,7 +137,7 @@ __ATOMIC_OPS(__atomic_xor, "xr")
 #undef __ATOMIC_OPS
 
 #define __ATOMIC64_OP(op_name, op_string)				\
-static inline long op_name(long val, long *ptr)				\
+static __always_inline long op_name(long val, long *ptr)		\
 {									\
 	long old, new;							\
 									\
@@ -97,7 +146,7 @@ static inline long op_name(long val, long *ptr)				\
 		op_string "	%[new],%[val]\n"			\
 		"	csg	%[old],%[new],%[ptr]\n"			\
 		"	jl	0b"					\
-		: [old] "=d" (old), [new] "=&d" (new), [ptr] "+Q" (*ptr)\
+		: [old] "=d" (old), [new] "=&d" (new), [ptr] "+QS" (*ptr)\
 		: [val] "d" (val), "0" (*ptr) : "cc", "memory");	\
 	return old;							\
 }
@@ -118,26 +167,6 @@ __ATOMIC64_OPS(__atomic64_xor, "xgr")
 #define __atomic64_add_const(val, ptr)		__atomic64_add(val, ptr)
 #define __atomic64_add_const_barrier(val, ptr)	__atomic64_add(val, ptr)
 
-#endif /* CONFIG_HAVE_MARCH_Z196_FEATURES */
-
-static inline int __atomic_cmpxchg(int *ptr, int old, int new)
-{
-	return __sync_val_compare_and_swap(ptr, old, new);
-}
-
-static inline int __atomic_cmpxchg_bool(int *ptr, int old, int new)
-{
-	return __sync_bool_compare_and_swap(ptr, old, new);
-}
-
-static inline long __atomic64_cmpxchg(long *ptr, long old, long new)
-{
-	return __sync_val_compare_and_swap(ptr, old, new);
-}
-
-static inline long __atomic64_cmpxchg_bool(long *ptr, long old, long new)
-{
-	return __sync_bool_compare_and_swap(ptr, old, new);
-}
+#endif /* MARCH_HAS_Z196_FEATURES */
 
 #endif /* __ARCH_S390_ATOMIC_OPS__  */

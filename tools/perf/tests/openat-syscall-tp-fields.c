@@ -14,6 +14,7 @@
 #include "util/mmap.h"
 #include <errno.h>
 #include <perf/mmap.h>
+#include "util/sample.h"
 
 #ifndef O_DIRECTORY
 #define O_DIRECTORY    00200000
@@ -22,7 +23,8 @@
 #define AT_FDCWD       -100
 #endif
 
-int test__syscall_openat_tp_fields(struct test *test __maybe_unused, int subtest __maybe_unused)
+static int test__syscall_openat_tp_fields(struct test_suite *test __maybe_unused,
+					  int subtest __maybe_unused)
 {
 	struct record_opts opts = {
 		.target = {
@@ -38,25 +40,26 @@ int test__syscall_openat_tp_fields(struct test *test __maybe_unused, int subtest
 	int flags = O_RDONLY | O_DIRECTORY;
 	struct evlist *evlist = evlist__new();
 	struct evsel *evsel;
-	int err = -1, i, nr_events = 0, nr_polls = 0;
+	int ret = TEST_FAIL, err, i, nr_events = 0, nr_polls = 0;
 	char sbuf[STRERR_BUFSIZE];
 
 	if (evlist == NULL) {
-		pr_debug("%s: perf_evlist__new\n", __func__);
+		pr_debug("%s: evlist__new\n", __func__);
 		goto out;
 	}
 
 	evsel = evsel__newtp("syscalls", "sys_enter_openat");
 	if (IS_ERR(evsel)) {
 		pr_debug("%s: evsel__newtp\n", __func__);
+		ret = PTR_ERR(evsel) == -EACCES ? TEST_SKIP : TEST_FAIL;
 		goto out_delete_evlist;
 	}
 
 	evlist__add(evlist, evsel);
 
-	err = perf_evlist__create_maps(evlist, &opts.target);
+	err = evlist__create_maps(evlist, &opts.target);
 	if (err < 0) {
-		pr_debug("%s: perf_evlist__create_maps\n", __func__);
+		pr_debug("%s: evlist__create_maps\n", __func__);
 		goto out_delete_evlist;
 	}
 
@@ -136,9 +139,21 @@ int test__syscall_openat_tp_fields(struct test *test __maybe_unused, int subtest
 		}
 	}
 out_ok:
-	err = 0;
+	ret = TEST_OK;
 out_delete_evlist:
 	evlist__delete(evlist);
 out:
-	return err;
+	return ret;
 }
+
+static struct test_case tests__syscall_openat_tp_fields[] = {
+	TEST_CASE_REASON("syscalls:sys_enter_openat event fields",
+			 syscall_openat_tp_fields,
+			 "permissions"),
+	{	.name = NULL, }
+};
+
+struct test_suite suite__syscall_openat_tp_fields = {
+	.desc = "syscalls:sys_enter_openat event fields",
+	.test_cases = tests__syscall_openat_tp_fields,
+};

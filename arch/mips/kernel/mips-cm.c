@@ -179,13 +179,18 @@ static char *cm3_causes[32] = {
 static DEFINE_PER_CPU_ALIGNED(spinlock_t, cm_core_lock);
 static DEFINE_PER_CPU_ALIGNED(unsigned long, cm_core_lock_flags);
 
-phys_addr_t __mips_cm_phys_base(void)
+phys_addr_t __weak mips_cm_phys_base(void)
 {
-	u32 config3 = read_c0_config3();
 	unsigned long cmgcr;
 
 	/* Check the CMGCRBase register is implemented */
-	if (!(config3 & MIPS_CONF3_CMGCR))
+	if (!(read_c0_config() & MIPS_CONF_M))
+		return 0;
+
+	if (!(read_c0_config2() & MIPS_CONF_M))
+		return 0;
+
+	if (!(read_c0_config3() & MIPS_CONF3_CMGCR))
 		return 0;
 
 	/* Read the address from CMGCRBase */
@@ -193,10 +198,7 @@ phys_addr_t __mips_cm_phys_base(void)
 	return (cmgcr & MIPS_CMGCRF_BASE) << (36 - 32);
 }
 
-phys_addr_t mips_cm_phys_base(void)
-	__attribute__((weak, alias("__mips_cm_phys_base")));
-
-phys_addr_t __mips_cm_l2sync_phys_base(void)
+phys_addr_t __weak mips_cm_l2sync_phys_base(void)
 {
 	u32 base_reg;
 
@@ -212,17 +214,13 @@ phys_addr_t __mips_cm_l2sync_phys_base(void)
 	return mips_cm_phys_base() + MIPS_CM_GCR_SIZE;
 }
 
-phys_addr_t mips_cm_l2sync_phys_base(void)
-	__attribute__((weak, alias("__mips_cm_l2sync_phys_base")));
-
 static void mips_cm_probe_l2sync(void)
 {
 	unsigned major_rev;
 	phys_addr_t addr;
 
 	/* L2-only sync was introduced with CM major revision 6 */
-	major_rev = (read_gcr_rev() & CM_GCR_REV_MAJOR) >>
-		__ffs(CM_GCR_REV_MAJOR);
+	major_rev = FIELD_GET(CM_GCR_REV_MAJOR, read_gcr_rev());
 	if (major_rev < 6)
 		return;
 
@@ -266,6 +264,7 @@ int mips_cm_probe(void)
 	if ((base_reg & CM_GCR_BASE_GCRBASE) != addr) {
 		pr_err("GCRs appear to have been moved (expected them at 0x%08lx)!\n",
 		       (unsigned long)addr);
+		iounmap(mips_gcr_base);
 		mips_gcr_base = NULL;
 		return -ENODEV;
 	}
@@ -305,13 +304,13 @@ void mips_cm_lock_other(unsigned int cluster, unsigned int core,
 	preempt_disable();
 
 	if (cm_rev >= CM_REV_CM3) {
-		val = core << __ffs(CM3_GCR_Cx_OTHER_CORE);
-		val |= vp << __ffs(CM3_GCR_Cx_OTHER_VP);
+		val = FIELD_PREP(CM3_GCR_Cx_OTHER_CORE, core) |
+		      FIELD_PREP(CM3_GCR_Cx_OTHER_VP, vp);
 
 		if (cm_rev >= CM_REV_CM3_5) {
 			val |= CM_GCR_Cx_OTHER_CLUSTER_EN;
-			val |= cluster << __ffs(CM_GCR_Cx_OTHER_CLUSTER);
-			val |= block << __ffs(CM_GCR_Cx_OTHER_BLOCK);
+			val |= FIELD_PREP(CM_GCR_Cx_OTHER_CLUSTER, cluster);
+			val |= FIELD_PREP(CM_GCR_Cx_OTHER_BLOCK, block);
 		} else {
 			WARN_ON(cluster != 0);
 			WARN_ON(block != CM_GCR_Cx_OTHER_BLOCK_LOCAL);
@@ -341,7 +340,7 @@ void mips_cm_lock_other(unsigned int cluster, unsigned int core,
 		spin_lock_irqsave(&per_cpu(cm_core_lock, curr_core),
 				  per_cpu(cm_core_lock_flags, curr_core));
 
-		val = core << __ffs(CM_GCR_Cx_OTHER_CORENUM);
+		val = FIELD_PREP(CM_GCR_Cx_OTHER_CORENUM, core);
 	}
 
 	write_gcr_cl_other(val);
@@ -385,8 +384,8 @@ void mips_cm_error_report(void)
 	cm_other = read_gcr_error_mult();
 
 	if (revision < CM_REV_CM3) { /* CM2 */
-		cause = cm_error >> __ffs(CM_GCR_ERROR_CAUSE_ERRTYPE);
-		ocause = cm_other >> __ffs(CM_GCR_ERROR_MULT_ERR2ND);
+		cause = FIELD_GET(CM_GCR_ERROR_CAUSE_ERRTYPE, cm_error);
+		ocause = FIELD_GET(CM_GCR_ERROR_MULT_ERR2ND, cm_other);
 
 		if (!cause)
 			return;
@@ -444,8 +443,8 @@ void mips_cm_error_report(void)
 		ulong core_id_bits, vp_id_bits, cmd_bits, cmd_group_bits;
 		ulong cm3_cca_bits, mcp_bits, cm3_tr_bits, sched_bit;
 
-		cause = cm_error >> __ffs64(CM3_GCR_ERROR_CAUSE_ERRTYPE);
-		ocause = cm_other >> __ffs(CM_GCR_ERROR_MULT_ERR2ND);
+		cause = FIELD_GET(CM3_GCR_ERROR_CAUSE_ERRTYPE, cm_error);
+		ocause = FIELD_GET(CM_GCR_ERROR_MULT_ERR2ND, cm_other);
 
 		if (!cause)
 			return;
@@ -512,4 +511,41 @@ void mips_cm_error_report(void)
 
 	/* reprime cause register */
 	write_gcr_error_cause(cm_error);
+}
+
+unsigned int mips_cps_first_online_in_cluster(void)
+{
+	unsigned int local_cl;
+	int i;
+
+	local_cl = cpu_cluster(&current_cpu_data);
+
+	/*
+	 * We rely upon knowledge that CPUs are numbered sequentially by
+	 * cluster - ie. CPUs 0..X will be in cluster 0, CPUs X+1..Y in cluster
+	 * 1, CPUs Y+1..Z in cluster 2 etc. This means that CPUs in the same
+	 * cluster will immediately precede or follow one another.
+	 *
+	 * First we scan backwards, until we find an online CPU in the cluster
+	 * or we move on to another cluster.
+	 */
+	for (i = smp_processor_id() - 1; i >= 0; i--) {
+		if (cpu_cluster(&cpu_data[i]) != local_cl)
+			break;
+		if (!cpu_online(i))
+			continue;
+		return false;
+	}
+
+	/* Then do the same for higher numbered CPUs */
+	for (i = smp_processor_id() + 1; i < nr_cpu_ids; i++) {
+		if (cpu_cluster(&cpu_data[i]) != local_cl)
+			break;
+		if (!cpu_online(i))
+			continue;
+		return false;
+	}
+
+	/* We found no online CPUs in the local cluster */
+	return true;
 }

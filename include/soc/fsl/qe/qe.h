@@ -23,15 +23,11 @@
 #include <linux/of_address.h>
 #include <linux/types.h>
 
+struct device;
+
 #define QE_NUM_OF_SNUM	256	/* There are 256 serial number in QE */
 #define QE_NUM_OF_BRGS	16
 #define QE_NUM_OF_PORTS	1024
-
-/* Memory partitions
-*/
-#define MEM_PART_SYSTEM		0
-#define MEM_PART_SECONDARY	1
-#define MEM_PART_MURAM		2
 
 /* Clocks and BRGs */
 enum qe_clock {
@@ -99,14 +95,25 @@ int cpm_muram_init(void);
 
 #if defined(CONFIG_CPM) || defined(CONFIG_QUICC_ENGINE)
 s32 cpm_muram_alloc(unsigned long size, unsigned long align);
+s32 devm_cpm_muram_alloc(struct device *dev, unsigned long size,
+			 unsigned long align);
 void cpm_muram_free(s32 offset);
 s32 cpm_muram_alloc_fixed(unsigned long offset, unsigned long size);
+s32 devm_cpm_muram_alloc_fixed(struct device *dev, unsigned long offset,
+			       unsigned long size);
 void __iomem *cpm_muram_addr(unsigned long offset);
-unsigned long cpm_muram_offset(void __iomem *addr);
+unsigned long cpm_muram_offset(const void __iomem *addr);
 dma_addr_t cpm_muram_dma(void __iomem *addr);
+void cpm_muram_free_addr(const void __iomem *addr);
 #else
 static inline s32 cpm_muram_alloc(unsigned long size,
 				  unsigned long align)
+{
+	return -ENOSYS;
+}
+
+static inline s32 devm_cpm_muram_alloc(struct device *dev, unsigned long size,
+				       unsigned long align)
 {
 	return -ENOSYS;
 }
@@ -121,12 +128,19 @@ static inline s32 cpm_muram_alloc_fixed(unsigned long offset,
 	return -ENOSYS;
 }
 
+static inline s32 devm_cpm_muram_alloc_fixed(struct device *dev,
+					     unsigned long offset,
+					     unsigned long size)
+{
+	return -ENOSYS;
+}
+
 static inline void __iomem *cpm_muram_addr(unsigned long offset)
 {
 	return NULL;
 }
 
-static inline unsigned long cpm_muram_offset(void __iomem *addr)
+static inline unsigned long cpm_muram_offset(const void __iomem *addr)
 {
 	return -ENOSYS;
 }
@@ -134,6 +148,9 @@ static inline unsigned long cpm_muram_offset(void __iomem *addr)
 static inline dma_addr_t cpm_muram_dma(void __iomem *addr)
 {
 	return 0;
+}
+static inline void cpm_muram_free_addr(const void __iomem *addr)
+{
 }
 #endif /* defined(CONFIG_CPM) || defined(CONFIG_QUICC_ENGINE) */
 
@@ -176,12 +193,12 @@ static inline int par_io_data_set(u8 port, u8 pin, u8 val) { return -ENOSYS; }
  */
 struct qe_pin;
 #ifdef CONFIG_QE_GPIO
-extern struct qe_pin *qe_pin_request(struct device_node *np, int index);
+extern struct qe_pin *qe_pin_request(struct device *dev, int index);
 extern void qe_pin_free(struct qe_pin *qe_pin);
 extern void qe_pin_set_gpio(struct qe_pin *qe_pin);
 extern void qe_pin_set_dedicated(struct qe_pin *pin);
 #else
-static inline struct qe_pin *qe_pin_request(struct device_node *np, int index)
+static inline struct qe_pin *qe_pin_request(struct device *dev, int index)
 {
 	return ERR_PTR(-ENOSYS);
 }
@@ -234,47 +251,34 @@ static inline int qe_alive_during_sleep(void)
 /* we actually use cpm_muram implementation, define this for convenience */
 #define qe_muram_init cpm_muram_init
 #define qe_muram_alloc cpm_muram_alloc
+#define devm_qe_muram_alloc devm_cpm_muram_alloc
 #define qe_muram_alloc_fixed cpm_muram_alloc_fixed
+#define devm_qe_muram_alloc_fixed devm_cpm_muram_alloc_fixed
 #define qe_muram_free cpm_muram_free
 #define qe_muram_addr cpm_muram_addr
 #define qe_muram_offset cpm_muram_offset
 #define qe_muram_dma cpm_muram_dma
+#define qe_muram_free_addr cpm_muram_free_addr
 
-#ifdef CONFIG_PPC32
-#define qe_iowrite8(val, addr)     out_8(addr, val)
-#define qe_iowrite16be(val, addr)  out_be16(addr, val)
-#define qe_iowrite32be(val, addr)  out_be32(addr, val)
-#define qe_ioread8(addr)           in_8(addr)
-#define qe_ioread16be(addr)        in_be16(addr)
-#define qe_ioread32be(addr)        in_be32(addr)
-#else
-#define qe_iowrite8(val, addr)     iowrite8(val, addr)
-#define qe_iowrite16be(val, addr)  iowrite16be(val, addr)
-#define qe_iowrite32be(val, addr)  iowrite32be(val, addr)
-#define qe_ioread8(addr)           ioread8(addr)
-#define qe_ioread16be(addr)        ioread16be(addr)
-#define qe_ioread32be(addr)        ioread32be(addr)
-#endif
+#define qe_setbits_be32(_addr, _v) iowrite32be(ioread32be(_addr) |  (_v), (_addr))
+#define qe_clrbits_be32(_addr, _v) iowrite32be(ioread32be(_addr) & ~(_v), (_addr))
 
-#define qe_setbits_be32(_addr, _v) qe_iowrite32be(qe_ioread32be(_addr) |  (_v), (_addr))
-#define qe_clrbits_be32(_addr, _v) qe_iowrite32be(qe_ioread32be(_addr) & ~(_v), (_addr))
+#define qe_setbits_be16(_addr, _v) iowrite16be(ioread16be(_addr) |  (_v), (_addr))
+#define qe_clrbits_be16(_addr, _v) iowrite16be(ioread16be(_addr) & ~(_v), (_addr))
 
-#define qe_setbits_be16(_addr, _v) qe_iowrite16be(qe_ioread16be(_addr) |  (_v), (_addr))
-#define qe_clrbits_be16(_addr, _v) qe_iowrite16be(qe_ioread16be(_addr) & ~(_v), (_addr))
-
-#define qe_setbits_8(_addr, _v) qe_iowrite8(qe_ioread8(_addr) |  (_v), (_addr))
-#define qe_clrbits_8(_addr, _v) qe_iowrite8(qe_ioread8(_addr) & ~(_v), (_addr))
+#define qe_setbits_8(_addr, _v) iowrite8(ioread8(_addr) |  (_v), (_addr))
+#define qe_clrbits_8(_addr, _v) iowrite8(ioread8(_addr) & ~(_v), (_addr))
 
 #define qe_clrsetbits_be32(addr, clear, set) \
-	qe_iowrite32be((qe_ioread32be(addr) & ~(clear)) | (set), (addr))
+	iowrite32be((ioread32be(addr) & ~(clear)) | (set), (addr))
 #define qe_clrsetbits_be16(addr, clear, set) \
-	qe_iowrite16be((qe_ioread16be(addr) & ~(clear)) | (set), (addr))
+	iowrite16be((ioread16be(addr) & ~(clear)) | (set), (addr))
 #define qe_clrsetbits_8(addr, clear, set) \
-	qe_iowrite8((qe_ioread8(addr) & ~(clear)) | (set), (addr))
+	iowrite8((ioread8(addr) & ~(clear)) | (set), (addr))
 
 /* Structure that defines QE firmware binary files.
  *
- * See Documentation/powerpc/qe_firmware.rst for a description of these
+ * See Documentation/arch/powerpc/qe_firmware.rst for a description of these
  * fields.
  */
 struct qe_firmware {
@@ -465,6 +469,7 @@ enum comm_dir {
 #define QE_QMC_STOP_TX			0x0000000c
 #define QE_QMC_STOP_RX			0x0000000d
 #define QE_SS7_SU_FIL_RESET		0x0000000e
+#define QE_PUSHSCHED			0x0000000f
 /* jonathbr added from here down for 83xx */
 #define QE_RESET_BCS			0x0000000a
 #define QE_MCC_INIT_TX_RX_16		0x00000003

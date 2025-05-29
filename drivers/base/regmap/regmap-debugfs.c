@@ -48,7 +48,7 @@ static ssize_t regmap_name_read_file(struct file *file,
 		name = map->dev->driver->name;
 
 	ret = snprintf(buf, PAGE_SIZE, "%s\n", name);
-	if (ret < 0) {
+	if (ret >= PAGE_SIZE) {
 		kfree(buf);
 		return ret;
 	}
@@ -226,8 +226,8 @@ static ssize_t regmap_read_debugfs(struct regmap *map, unsigned int from,
 	if (*ppos < 0 || !count)
 		return -EINVAL;
 
-	if (count > (PAGE_SIZE << (MAX_ORDER - 1)))
-		count = PAGE_SIZE << (MAX_ORDER - 1);
+	if (count > (PAGE_SIZE << MAX_PAGE_ORDER))
+		count = PAGE_SIZE << MAX_PAGE_ORDER;
 
 	buf = kmalloc(count, GFP_KERNEL);
 	if (!buf)
@@ -368,13 +368,13 @@ static ssize_t regmap_reg_ranges_read_file(struct file *file,
 	char *buf;
 	char *entry;
 	int ret;
-	unsigned entry_len;
+	unsigned int entry_len;
 
 	if (*ppos < 0 || !count)
 		return -EINVAL;
 
-	if (count > (PAGE_SIZE << (MAX_ORDER - 1)))
-		count = PAGE_SIZE << (MAX_ORDER - 1);
+	if (count > (PAGE_SIZE << MAX_PAGE_ORDER))
+		count = PAGE_SIZE << MAX_PAGE_ORDER;
 
 	buf = kmalloc(count, GFP_KERNEL);
 	if (!buf)
@@ -582,8 +582,12 @@ void regmap_debugfs_init(struct regmap *map)
 		devname = dev_name(map->dev);
 
 	if (name) {
-		map->debugfs_name = kasprintf(GFP_KERNEL, "%s-%s",
+		if (!map->debugfs_name) {
+			map->debugfs_name = kasprintf(GFP_KERNEL, "%s-%s",
 					      devname, name);
+			if (!map->debugfs_name)
+				return;
+		}
 		name = map->debugfs_name;
 	} else {
 		name = devname;
@@ -591,9 +595,10 @@ void regmap_debugfs_init(struct regmap *map)
 
 	if (!strcmp(name, "dummy")) {
 		kfree(map->debugfs_name);
-
 		map->debugfs_name = kasprintf(GFP_KERNEL, "dummy%d",
 						dummy_index);
+		if (!map->debugfs_name)
+			return;
 		name = map->debugfs_name;
 		dummy_index++;
 	}
@@ -631,6 +636,17 @@ void regmap_debugfs_init(struct regmap *map)
 				    &regmap_cache_bypass_fops);
 	}
 
+	/*
+	 * This could interfere with driver operation. Therefore, don't provide
+	 * any real compile time configuration option for this feature. One will
+	 * have to modify the source code directly in order to use it.
+	 */
+#undef REGMAP_ALLOW_FORCE_WRITE_FIELD_DEBUGFS
+#ifdef REGMAP_ALLOW_FORCE_WRITE_FIELD_DEBUGFS
+	debugfs_create_bool("force_write_field", 0600, map->debugfs,
+			    &map->force_write_field);
+#endif
+
 	next = rb_first(&map->range_tree);
 	while (next) {
 		range_node = rb_entry(next, struct regmap_range_node, node);
@@ -655,6 +671,7 @@ void regmap_debugfs_exit(struct regmap *map)
 		regmap_debugfs_free_dump_cache(map);
 		mutex_unlock(&map->cache_lock);
 		kfree(map->debugfs_name);
+		map->debugfs_name = NULL;
 	} else {
 		struct regmap_debugfs_node *node, *tmp;
 

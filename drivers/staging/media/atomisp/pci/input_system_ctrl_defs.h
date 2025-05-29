@@ -2,15 +2,6 @@
 /*
  * Support for Intel Camera Imaging ISP subsystem.
  * Copyright (c) 2015, Intel Corporation.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
  */
 
 #ifndef _input_system_ctrl_defs_h
@@ -27,7 +18,7 @@
 // Number of registers
 #define ISYS_CTRL_NOF_REGS                              23
 
-// Register id's of MMIO slave accesible registers
+// Register id's of MMIO slave accessible registers
 #define ISYS_CTRL_CAPT_START_ADDR_A_REG_ID              0
 #define ISYS_CTRL_CAPT_START_ADDR_B_REG_ID              1
 #define ISYS_CTRL_CAPT_START_ADDR_C_REG_ID              2

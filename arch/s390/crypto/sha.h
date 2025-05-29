@@ -11,7 +11,8 @@
 #define _CRYPTO_ARCH_S390_SHA_H
 
 #include <linux/crypto.h>
-#include <crypto/sha.h>
+#include <crypto/sha1.h>
+#include <crypto/sha2.h>
 #include <crypto/sha3.h>
 
 /* must be big enough for the largest SHA variant */
@@ -24,6 +25,7 @@ struct s390_sha_ctx {
 	u32 state[CPACF_MAX_PARMBLOCK_SIZE / sizeof(u32)];
 	u8 buf[SHA_MAX_BLOCK_SIZE];
 	int func;		/* KIMD function to use */
+	int first_message_part;
 };
 
 struct shash_desc;

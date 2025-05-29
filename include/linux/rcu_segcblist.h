@@ -63,6 +63,130 @@ struct rcu_cblist {
 #define RCU_NEXT_TAIL		3
 #define RCU_CBLIST_NSEGS	4
 
+
+/*
+ *                     ==NOCB Offloading state machine==
+ *
+ *
+ *  ----------------------------------------------------------------------------
+ *  |                              SEGCBLIST_RCU_CORE                          |
+ *  |                                                                          |
+ *  |  Callbacks processed by rcu_core() from softirqs or local                |
+ *  |  rcuc kthread, without holding nocb_lock.                                |
+ *  ----------------------------------------------------------------------------
+ *                                         |
+ *                                         v
+ *  ----------------------------------------------------------------------------
+ *  |       SEGCBLIST_RCU_CORE | SEGCBLIST_LOCKING | SEGCBLIST_OFFLOADED       |
+ *  |                                                                          |
+ *  | Callbacks processed by rcu_core() from softirqs or local                 |
+ *  | rcuc kthread, while holding nocb_lock. Waking up CB and GP kthreads.     |
+ *  ----------------------------------------------------------------------------
+ *                                         |
+ *                                         v
+ *  ----------------------------------------------------------------------------
+ *  |        SEGCBLIST_RCU_CORE | SEGCBLIST_LOCKING | SEGCBLIST_OFFLOADED      |
+ *  |                              + unparked CB kthread                       |
+ *  |                                                                          |
+ *  | CB kthread got unparked and processes callbacks concurrently with        |
+ *  | rcu_core(), holding nocb_lock.                                           |
+ *  ---------------------------------------------------------------------------
+ *                                         |
+ *                                         v
+ *  ---------------------------------------------------------------------------|
+ *  |                           SEGCBLIST_RCU_CORE |                           |
+ *  |                           SEGCBLIST_LOCKING |                            |
+ *  |                           SEGCBLIST_OFFLOADED |                          |
+ *  |                           SEGCBLIST_KTHREAD_GP                           |
+ *  |                           + unparked CB kthread                          |
+ *  |                                                                          |
+ *  | GP kthread woke up and acknowledged nocb_lock.                           |
+ *  ---------------------------------------- -----------------------------------
+ *                                         |
+ *                                         v
+ *  |--------------------------------------------------------------------------|
+ *  |                           SEGCBLIST_LOCKING |                            |
+ *  |                           SEGCBLIST_OFFLOADED |                          |
+ *  |                           SEGCBLIST_KTHREAD_GP |                         |
+ *  |                           + unparked CB kthread                          |
+ *  |                                                                          |
+ *  |   Kthreads handle callbacks holding nocb_lock, local rcu_core() stops    |
+ *  |   handling callbacks. Enable bypass queueing.                            |
+ *  ----------------------------------------------------------------------------
+ */
+
+
+
+/*
+ *                       ==NOCB De-Offloading state machine==
+ *
+ *
+ *  |--------------------------------------------------------------------------|
+ *  |                           SEGCBLIST_LOCKING    |                         |
+ *  |                           SEGCBLIST_OFFLOADED  |                         |
+ *  |                           SEGCBLIST_KTHREAD_GP                           |
+ *  |                           + unparked CB kthread                          |
+ *  |                                                                          |
+ *  |   CB/GP kthreads handle callbacks holding nocb_lock, local rcu_core()    |
+ *  |   ignores callbacks. Bypass enqueue is enabled.                          |
+ *  ----------------------------------------------------------------------------
+ *                                      |
+ *                                      v
+ *  |--------------------------------------------------------------------------|
+ *  |                           SEGCBLIST_RCU_CORE   |                         |
+ *  |                           SEGCBLIST_LOCKING    |                         |
+ *  |                           SEGCBLIST_OFFLOADED  |                         |
+ *  |                           SEGCBLIST_KTHREAD_GP                           |
+ *  |                           + unparked CB kthread                          |
+ *  |                                                                          |
+ *  |   CB/GP kthreads handle callbacks holding nocb_lock, local rcu_core()    |
+ *  |   handles callbacks concurrently. Bypass enqueue is disabled.            |
+ *  |   Invoke RCU core so we make sure not to preempt it in the middle with   |
+ *  |   leaving some urgent work unattended within a jiffy.                    |
+ *  ----------------------------------------------------------------------------
+ *                                      |
+ *                                      v
+ *  |--------------------------------------------------------------------------|
+ *  |                           SEGCBLIST_RCU_CORE   |                         |
+ *  |                           SEGCBLIST_LOCKING    |                         |
+ *  |                           SEGCBLIST_KTHREAD_GP                           |
+ *  |                           + unparked CB kthread                          |
+ *  |                                                                          |
+ *  |   CB/GP kthreads and local rcu_core() handle callbacks concurrently      |
+ *  |   holding nocb_lock. Wake up GP kthread if necessary.                    |
+ *  ----------------------------------------------------------------------------
+ *                                      |
+ *                                      v
+ *  |--------------------------------------------------------------------------|
+ *  |                           SEGCBLIST_RCU_CORE   |                         |
+ *  |                           SEGCBLIST_LOCKING    |                         |
+ *  |                           + unparked CB kthread                          |
+ *  |                                                                          |
+ *  |   GP kthread woke up and acknowledged the fact that SEGCBLIST_OFFLOADED  |
+ *  |   got cleared. The callbacks from the target CPU will be ignored from the|
+ *  |   GP kthread loop.                                                       |
+ *  ----------------------------------------------------------------------------
+ *                                      |
+ *                                      v
+ *  ----------------------------------------------------------------------------
+ *  |                SEGCBLIST_RCU_CORE | SEGCBLIST_LOCKING                    |
+ *  |                          + parked CB kthread                             |
+ *  |                                                                          |
+ *  | CB kthread is parked. Callbacks processed by rcu_core() from softirqs or |
+ *  | local rcuc kthread, while holding nocb_lock.                             |
+ *  ----------------------------------------------------------------------------
+ *                                      |
+ *                                      v
+ *  ----------------------------------------------------------------------------
+ *  |                         SEGCBLIST_RCU_CORE                               |
+ *  |                                                                          |
+ *  |  Callbacks processed by rcu_core() from softirqs or local                |
+ *  |  rcuc kthread, without holding nocb_lock.                                |
+ *  ----------------------------------------------------------------------------
+ */
+#define SEGCBLIST_ENABLED	BIT(0)
+#define SEGCBLIST_OFFLOADED	BIT(1)
+
 struct rcu_segcblist {
 	struct rcu_head *head;
 	struct rcu_head **tails[RCU_CBLIST_NSEGS];
@@ -72,8 +196,8 @@ struct rcu_segcblist {
 #else
 	long len;
 #endif
-	u8 enabled;
-	u8 offloaded;
+	long seglen[RCU_CBLIST_NSEGS];
+	u8 flags;
 };
 
 #define RCU_SEGCBLIST_INITIALIZER(n) \

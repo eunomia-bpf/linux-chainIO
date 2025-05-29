@@ -19,12 +19,16 @@ enum {
 	TCA_ACT_FLAGS,
 	TCA_ACT_HW_STATS,
 	TCA_ACT_USED_HW_STATS,
+	TCA_ACT_IN_HW_COUNT,
 	__TCA_ACT_MAX
 };
 
-#define TCA_ACT_FLAGS_NO_PERCPU_STATS 1 /* Don't use percpu allocator for
-					 * actions stats.
-					 */
+/* See other TCA_ACT_FLAGS_ * flags in include/net/act_api.h. */
+#define TCA_ACT_FLAGS_NO_PERCPU_STATS (1 << 0) /* Don't use percpu allocator for
+						* actions stats.
+						*/
+#define TCA_ACT_FLAGS_SKIP_HW	(1 << 1) /* don't offload action to HW */
+#define TCA_ACT_FLAGS_SKIP_SW	(1 << 2) /* don't use action in SW */
 
 /* tca HW stats type
  * When user does not pass the attribute, he does not care.
@@ -95,7 +99,7 @@ enum {
  * versions.
  */
 #define TCA_ACT_GACT 5
-#define TCA_ACT_IPT 6
+#define TCA_ACT_IPT 6 /* obsoleted, can be reused */
 #define TCA_ACT_PEDIT 7
 #define TCA_ACT_MIRRED 8
 #define TCA_ACT_NAT 9
@@ -116,7 +120,7 @@ enum tca_id {
 	TCA_ID_UNSPEC = 0,
 	TCA_ID_POLICE = 1,
 	TCA_ID_GACT = TCA_ACT_GACT,
-	TCA_ID_IPT = TCA_ACT_IPT,
+	TCA_ID_IPT = TCA_ACT_IPT, /* Obsoleted, can be reused */
 	TCA_ID_PEDIT = TCA_ACT_PEDIT,
 	TCA_ID_MIRRED = TCA_ACT_MIRRED,
 	TCA_ID_NAT = TCA_ACT_NAT,
@@ -190,6 +194,8 @@ enum {
 	TCA_POLICE_PAD,
 	TCA_POLICE_RATE64,
 	TCA_POLICE_PEAKRATE64,
+	TCA_POLICE_PKTRATE64,
+	TCA_POLICE_PKTBURST64,
 	__TCA_POLICE_MAX
 #define TCA_POLICE_RESULT TCA_POLICE_RESULT
 };
@@ -240,17 +246,20 @@ struct tc_u32_key {
 };
 
 struct tc_u32_sel {
-	unsigned char		flags;
-	unsigned char		offshift;
-	unsigned char		nkeys;
+	/* New members MUST be added within the __struct_group() macro below. */
+	__struct_group(tc_u32_sel_hdr, hdr, /* no attrs */,
+		unsigned char		flags;
+		unsigned char		offshift;
+		unsigned char		nkeys;
 
-	__be16			offmask;
-	__u16			off;
-	short			offoff;
+		__be16			offmask;
+		__u16			off;
+		short			offoff;
 
-	short			hoff;
-	__be32			hmask;
-	struct tc_u32_key	keys[0];
+		short			hoff;
+		__be32			hmask;
+	);
+	struct tc_u32_key	keys[];
 };
 
 struct tc_u32_mark {
@@ -262,7 +271,7 @@ struct tc_u32_mark {
 struct tc_u32_pcnt {
 	__u64 rcnt;
 	__u64 rhit;
-	__u64 kcnts[0];
+	__u64 kcnts[];
 };
 
 /* Flags */
@@ -273,37 +282,6 @@ struct tc_u32_pcnt {
 #define TC_U32_EAT		8
 
 #define TC_U32_MAXDEPTH 8
-
-
-/* RSVP filter */
-
-enum {
-	TCA_RSVP_UNSPEC,
-	TCA_RSVP_CLASSID,
-	TCA_RSVP_DST,
-	TCA_RSVP_SRC,
-	TCA_RSVP_PINFO,
-	TCA_RSVP_POLICE,
-	TCA_RSVP_ACT,
-	__TCA_RSVP_MAX
-};
-
-#define TCA_RSVP_MAX (__TCA_RSVP_MAX - 1 )
-
-struct tc_rsvp_gpi {
-	__u32	key;
-	__u32	mask;
-	int	offset;
-};
-
-struct tc_rsvp_pinfo {
-	struct tc_rsvp_gpi dpi;
-	struct tc_rsvp_gpi spi;
-	__u8	protocol;
-	__u8	tunnelid;
-	__u8	tunnelhdr;
-	__u8	pad;
-};
 
 /* ROUTE filter */
 
@@ -334,22 +312,6 @@ enum {
 };
 
 #define TCA_FW_MAX (__TCA_FW_MAX - 1)
-
-/* TC index filter */
-
-enum {
-	TCA_TCINDEX_UNSPEC,
-	TCA_TCINDEX_HASH,
-	TCA_TCINDEX_MASK,
-	TCA_TCINDEX_SHIFT,
-	TCA_TCINDEX_FALL_THROUGH,
-	TCA_TCINDEX_CLASSID,
-	TCA_TCINDEX_POLICE,
-	TCA_TCINDEX_ACT,
-	__TCA_TCINDEX_MAX
-};
-
-#define TCA_TCINDEX_MAX     (__TCA_TCINDEX_MAX - 1)
 
 /* Flow filter */
 
@@ -581,6 +543,23 @@ enum {
 	TCA_FLOWER_KEY_HASH,		/* u32 */
 	TCA_FLOWER_KEY_HASH_MASK,	/* u32 */
 
+	TCA_FLOWER_KEY_NUM_OF_VLANS,    /* u8 */
+
+	TCA_FLOWER_KEY_PPPOE_SID,	/* be16 */
+	TCA_FLOWER_KEY_PPP_PROTO,	/* be16 */
+
+	TCA_FLOWER_KEY_L2TPV3_SID,	/* be32 */
+
+	TCA_FLOWER_L2_MISS,		/* u8 */
+
+	TCA_FLOWER_KEY_CFM,		/* nested */
+
+	TCA_FLOWER_KEY_SPI,		/* be32 */
+	TCA_FLOWER_KEY_SPI_MASK,	/* be32 */
+
+	TCA_FLOWER_KEY_ENC_FLAGS,	/* be32 */
+	TCA_FLOWER_KEY_ENC_FLAGS_MASK,	/* be32 */
+
 	__TCA_FLOWER_MAX,
 };
 
@@ -591,6 +570,9 @@ enum {
 	TCA_FLOWER_KEY_CT_FLAGS_ESTABLISHED = 1 << 1, /* Part of an existing connection. */
 	TCA_FLOWER_KEY_CT_FLAGS_RELATED = 1 << 2, /* Related to an established connection. */
 	TCA_FLOWER_KEY_CT_FLAGS_TRACKED = 1 << 3, /* Conntrack has occurred. */
+	TCA_FLOWER_KEY_CT_FLAGS_INVALID = 1 << 4, /* Conntrack is invalid. */
+	TCA_FLOWER_KEY_CT_FLAGS_REPLY = 1 << 5, /* Packet is in the reply direction. */
+	__TCA_FLOWER_KEY_CT_FLAGS_MAX,
 };
 
 enum {
@@ -605,6 +587,14 @@ enum {
 					 */
 	TCA_FLOWER_KEY_ENC_OPTS_ERSPAN,	/* Nested
 					 * TCA_FLOWER_KEY_ENC_OPT_ERSPAN_
+					 * attributes
+					 */
+	TCA_FLOWER_KEY_ENC_OPTS_GTP,	/* Nested
+					 * TCA_FLOWER_KEY_ENC_OPT_GTP_
+					 * attributes
+					 */
+	TCA_FLOWER_KEY_ENC_OPTS_PFCP,	/* Nested
+					 * TCA_FLOWER_KEY_ENC_IPT_PFCP
 					 * attributes
 					 */
 	__TCA_FLOWER_KEY_ENC_OPTS_MAX,
@@ -646,6 +636,27 @@ enum {
 		(__TCA_FLOWER_KEY_ENC_OPT_ERSPAN_MAX - 1)
 
 enum {
+	TCA_FLOWER_KEY_ENC_OPT_GTP_UNSPEC,
+	TCA_FLOWER_KEY_ENC_OPT_GTP_PDU_TYPE,		/* u8 */
+	TCA_FLOWER_KEY_ENC_OPT_GTP_QFI,			/* u8 */
+
+	__TCA_FLOWER_KEY_ENC_OPT_GTP_MAX,
+};
+
+#define TCA_FLOWER_KEY_ENC_OPT_GTP_MAX \
+		(__TCA_FLOWER_KEY_ENC_OPT_GTP_MAX - 1)
+
+enum {
+	TCA_FLOWER_KEY_ENC_OPT_PFCP_UNSPEC,
+	TCA_FLOWER_KEY_ENC_OPT_PFCP_TYPE,		/* u8 */
+	TCA_FLOWER_KEY_ENC_OPT_PFCP_SEID,		/* be64 */
+	__TCA_FLOWER_KEY_ENC_OPT_PFCP_MAX,
+};
+
+#define TCA_FLOWER_KEY_ENC_OPT_PFCP_MAX \
+		(__TCA_FLOWER_KEY_ENC_OPT_PFCP_MAX - 1)
+
+enum {
 	TCA_FLOWER_KEY_MPLS_OPTS_UNSPEC,
 	TCA_FLOWER_KEY_MPLS_OPTS_LSE,
 	__TCA_FLOWER_KEY_MPLS_OPTS_MAX,
@@ -669,7 +680,23 @@ enum {
 enum {
 	TCA_FLOWER_KEY_FLAGS_IS_FRAGMENT = (1 << 0),
 	TCA_FLOWER_KEY_FLAGS_FRAG_IS_FIRST = (1 << 1),
+	TCA_FLOWER_KEY_FLAGS_TUNNEL_CSUM = (1 << 2),
+	TCA_FLOWER_KEY_FLAGS_TUNNEL_DONT_FRAGMENT = (1 << 3),
+	TCA_FLOWER_KEY_FLAGS_TUNNEL_OAM = (1 << 4),
+	TCA_FLOWER_KEY_FLAGS_TUNNEL_CRIT_OPT = (1 << 5),
+	__TCA_FLOWER_KEY_FLAGS_MAX,
 };
+
+#define TCA_FLOWER_KEY_FLAGS_MAX (__TCA_FLOWER_KEY_FLAGS_MAX - 1)
+
+enum {
+	TCA_FLOWER_KEY_CFM_OPT_UNSPEC,
+	TCA_FLOWER_KEY_CFM_MD_LEVEL,
+	TCA_FLOWER_KEY_CFM_OPCODE,
+	__TCA_FLOWER_KEY_CFM_OPT_MAX,
+};
+
+#define TCA_FLOWER_KEY_CFM_OPT_MAX (__TCA_FLOWER_KEY_CFM_OPT_MAX - 1)
 
 #define TCA_FLOWER_MASK_FLAGS_RANGE	(1 << 0) /* Range-based match */
 

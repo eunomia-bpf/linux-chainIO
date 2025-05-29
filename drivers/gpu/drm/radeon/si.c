@@ -32,11 +32,14 @@
 
 #include "atom.h"
 #include "clearstate_si.h"
+#include "evergreen.h"
+#include "r600.h"
 #include "radeon.h"
 #include "radeon_asic.h"
 #include "radeon_audio.h"
 #include "radeon_ucode.h"
 #include "si_blit_shaders.h"
+#include "si.h"
 #include "sid.h"
 
 
@@ -127,14 +130,6 @@ static void si_pcie_gen3_enable(struct radeon_device *rdev);
 static void si_program_aspm(struct radeon_device *rdev);
 extern void sumo_rlc_fini(struct radeon_device *rdev);
 extern int sumo_rlc_init(struct radeon_device *rdev);
-extern int r600_ih_ring_alloc(struct radeon_device *rdev);
-extern void r600_ih_ring_fini(struct radeon_device *rdev);
-extern void evergreen_fix_pci_max_read_req_size(struct radeon_device *rdev);
-extern void evergreen_mc_stop(struct radeon_device *rdev, struct evergreen_mc_save *save);
-extern void evergreen_mc_resume(struct radeon_device *rdev, struct evergreen_mc_save *save);
-extern u32 evergreen_get_number_of_dram_channels(struct radeon_device *rdev);
-extern void evergreen_print_gpu_status_regs(struct radeon_device *rdev);
-extern bool evergreen_is_display_hung(struct radeon_device *rdev);
 static void si_enable_gui_idle_interrupt(struct radeon_device *rdev,
 					 bool enable);
 static void si_init_pg(struct radeon_device *rdev);
@@ -143,8 +138,7 @@ static void si_fini_pg(struct radeon_device *rdev);
 static void si_fini_cg(struct radeon_device *rdev);
 static void si_rlc_stop(struct radeon_device *rdev);
 
-static const u32 crtc_offsets[] =
-{
+static const u32 crtc_offsets[] = {
 	EVERGREEN_CRTC0_REGISTER_OFFSET,
 	EVERGREEN_CRTC1_REGISTER_OFFSET,
 	EVERGREEN_CRTC2_REGISTER_OFFSET,
@@ -153,8 +147,7 @@ static const u32 crtc_offsets[] =
 	EVERGREEN_CRTC5_REGISTER_OFFSET
 };
 
-static const u32 si_disp_int_status[] =
-{
+static const u32 si_disp_int_status[] = {
 	DISP_INTERRUPT_STATUS,
 	DISP_INTERRUPT_STATUS_CONTINUE,
 	DISP_INTERRUPT_STATUS_CONTINUE2,
@@ -167,8 +160,7 @@ static const u32 si_disp_int_status[] =
 #define DC_HPDx_INT_CONTROL(x)    (DC_HPD1_INT_CONTROL + (x * 0xc))
 #define DC_HPDx_INT_STATUS_REG(x) (DC_HPD1_INT_STATUS  + (x * 0xc))
 
-static const u32 verde_rlc_save_restore_register_list[] =
-{
+static const u32 verde_rlc_save_restore_register_list[] = {
 	(0x8000 << 16) | (0x98f4 >> 2),
 	0x00000000,
 	(0x8040 << 16) | (0x98f4 >> 2),
@@ -389,8 +381,7 @@ static const u32 verde_rlc_save_restore_register_list[] =
 	0x00000000
 };
 
-static const u32 tahiti_golden_rlc_registers[] =
-{
+static const u32 tahiti_golden_rlc_registers[] = {
 	0xc424, 0xffffffff, 0x00601005,
 	0xc47c, 0xffffffff, 0x10104040,
 	0xc488, 0xffffffff, 0x0100000a,
@@ -399,8 +390,7 @@ static const u32 tahiti_golden_rlc_registers[] =
 	0xf4a8, 0xffffffff, 0x00000000
 };
 
-static const u32 tahiti_golden_registers[] =
-{
+static const u32 tahiti_golden_registers[] = {
 	0x9a10, 0x00010000, 0x00018208,
 	0x9830, 0xffffffff, 0x00000000,
 	0x9834, 0xf00fffff, 0x00000400,
@@ -434,13 +424,11 @@ static const u32 tahiti_golden_registers[] =
 	0x15c0, 0x000c0fc0, 0x000c0400
 };
 
-static const u32 tahiti_golden_registers2[] =
-{
+static const u32 tahiti_golden_registers2[] = {
 	0xc64, 0x00000001, 0x00000001
 };
 
-static const u32 pitcairn_golden_rlc_registers[] =
-{
+static const u32 pitcairn_golden_rlc_registers[] = {
 	0xc424, 0xffffffff, 0x00601004,
 	0xc47c, 0xffffffff, 0x10102020,
 	0xc488, 0xffffffff, 0x01000020,
@@ -448,8 +436,7 @@ static const u32 pitcairn_golden_rlc_registers[] =
 	0xc30c, 0xffffffff, 0x800000a4
 };
 
-static const u32 pitcairn_golden_registers[] =
-{
+static const u32 pitcairn_golden_registers[] = {
 	0x9a10, 0x00010000, 0x00018208,
 	0x9830, 0xffffffff, 0x00000000,
 	0x9834, 0xf00fffff, 0x00000400,
@@ -479,8 +466,7 @@ static const u32 pitcairn_golden_registers[] =
 	0x15c0, 0x000c0fc0, 0x000c0400
 };
 
-static const u32 verde_golden_rlc_registers[] =
-{
+static const u32 verde_golden_rlc_registers[] = {
 	0xc424, 0xffffffff, 0x033f1005,
 	0xc47c, 0xffffffff, 0x10808020,
 	0xc488, 0xffffffff, 0x00800008,
@@ -488,8 +474,7 @@ static const u32 verde_golden_rlc_registers[] =
 	0xc30c, 0xffffffff, 0x80010014
 };
 
-static const u32 verde_golden_registers[] =
-{
+static const u32 verde_golden_registers[] = {
 	0x9a10, 0x00010000, 0x00018208,
 	0x9830, 0xffffffff, 0x00000000,
 	0x9834, 0xf00fffff, 0x00000400,
@@ -544,8 +529,7 @@ static const u32 verde_golden_registers[] =
 	0x15c0, 0x000c0fc0, 0x000c0400
 };
 
-static const u32 oland_golden_rlc_registers[] =
-{
+static const u32 oland_golden_rlc_registers[] = {
 	0xc424, 0xffffffff, 0x00601005,
 	0xc47c, 0xffffffff, 0x10104040,
 	0xc488, 0xffffffff, 0x0100000a,
@@ -553,8 +537,7 @@ static const u32 oland_golden_rlc_registers[] =
 	0xc30c, 0xffffffff, 0x800000f4
 };
 
-static const u32 oland_golden_registers[] =
-{
+static const u32 oland_golden_registers[] = {
 	0x9a10, 0x00010000, 0x00018208,
 	0x9830, 0xffffffff, 0x00000000,
 	0x9834, 0xf00fffff, 0x00000400,
@@ -584,8 +567,7 @@ static const u32 oland_golden_registers[] =
 	0x15c0, 0x000c0fc0, 0x000c0400
 };
 
-static const u32 hainan_golden_registers[] =
-{
+static const u32 hainan_golden_registers[] = {
 	0x9a10, 0x00010000, 0x00018208,
 	0x9830, 0xffffffff, 0x00000000,
 	0x9834, 0xf00fffff, 0x00000400,
@@ -613,13 +595,11 @@ static const u32 hainan_golden_registers[] =
 	0x15c0, 0x000c0fc0, 0x000c0400
 };
 
-static const u32 hainan_golden_registers2[] =
-{
+static const u32 hainan_golden_registers2[] = {
 	0x98f8, 0xffffffff, 0x02010001
 };
 
-static const u32 tahiti_mgcg_cgcg_init[] =
-{
+static const u32 tahiti_mgcg_cgcg_init[] = {
 	0xc400, 0xffffffff, 0xfffffffc,
 	0x802c, 0xffffffff, 0xe0000000,
 	0x9a60, 0xffffffff, 0x00000100,
@@ -748,8 +728,7 @@ static const u32 tahiti_mgcg_cgcg_init[] =
 	0xd8c0, 0xfffffff0, 0x00000100
 };
 
-static const u32 pitcairn_mgcg_cgcg_init[] =
-{
+static const u32 pitcairn_mgcg_cgcg_init[] = {
 	0xc400, 0xffffffff, 0xfffffffc,
 	0x802c, 0xffffffff, 0xe0000000,
 	0x9a60, 0xffffffff, 0x00000100,
@@ -846,8 +825,7 @@ static const u32 pitcairn_mgcg_cgcg_init[] =
 	0xd8c0, 0xfffffff0, 0x00000100
 };
 
-static const u32 verde_mgcg_cgcg_init[] =
-{
+static const u32 verde_mgcg_cgcg_init[] = {
 	0xc400, 0xffffffff, 0xfffffffc,
 	0x802c, 0xffffffff, 0xe0000000,
 	0x9a60, 0xffffffff, 0x00000100,
@@ -946,8 +924,7 @@ static const u32 verde_mgcg_cgcg_init[] =
 	0xd8c0, 0xfffffff0, 0x00000100
 };
 
-static const u32 oland_mgcg_cgcg_init[] =
-{
+static const u32 oland_mgcg_cgcg_init[] = {
 	0xc400, 0xffffffff, 0xfffffffc,
 	0x802c, 0xffffffff, 0xe0000000,
 	0x9a60, 0xffffffff, 0x00000100,
@@ -1026,8 +1003,7 @@ static const u32 oland_mgcg_cgcg_init[] =
 	0xd8c0, 0xfffffff0, 0x00000100
 };
 
-static const u32 hainan_mgcg_cgcg_init[] =
-{
+static const u32 hainan_mgcg_cgcg_init[] = {
 	0xc400, 0xffffffff, 0xfffffffc,
 	0x802c, 0xffffffff, 0xe0000000,
 	0x9a60, 0xffffffff, 0x00000100,
@@ -1103,8 +1079,7 @@ static const u32 hainan_mgcg_cgcg_init[] =
 	0xd8c0, 0xfffffff0, 0x00000100
 };
 
-static u32 verde_pg_init[] =
-{
+static u32 verde_pg_init[] = {
 	0x353c, 0xffffffff, 0x40000,
 	0x3538, 0xffffffff, 0x200010ff,
 	0x353c, 0xffffffff, 0x0,
@@ -1773,7 +1748,8 @@ static int si_init_microcode(struct radeon_device *rdev)
 		mc_req_size = mc2_req_size = OLAND_MC_UCODE_SIZE * 4;
 		smc_req_size = ALIGN(HAINAN_SMC_UCODE_SIZE, 4);
 		break;
-	default: BUG();
+	default:
+		BUG();
 	}
 
 	/* this memory configuration requires special firmware */
@@ -3093,7 +3069,7 @@ static void si_setup_rb(struct radeon_device *rdev,
 static void si_gpu_init(struct radeon_device *rdev)
 {
 	u32 gb_addr_config = 0;
-	u32 mc_shared_chmap, mc_arb_ramcfg;
+	u32 mc_arb_ramcfg;
 	u32 sx_debug_1;
 	u32 hdp_host_path_cntl;
 	u32 tmp;
@@ -3205,7 +3181,7 @@ static void si_gpu_init(struct radeon_device *rdev)
 
 	WREG32(BIF_FB_EN, FB_READ_EN | FB_WRITE_EN);
 
-	mc_shared_chmap = RREG32(MC_SHARED_CHMAP);
+	RREG32(MC_SHARED_CHMAP);
 	mc_arb_ramcfg = RREG32(MC_ARB_RAMCFG);
 
 	rdev->config.si.num_tile_pipes = rdev->config.si.max_tile_pipes;
@@ -3616,6 +3592,10 @@ static int si_cp_start(struct radeon_device *rdev)
 	for (i = RADEON_RING_TYPE_GFX_INDEX; i <= CAYMAN_RING_TYPE_CP2_INDEX; ++i) {
 		ring = &rdev->ring[i];
 		r = radeon_ring_lock(rdev, ring, 2);
+		if (r) {
+			DRM_ERROR("radeon: cp failed to lock ring (%d).\n", r);
+			return r;
+		}
 
 		/* clear the compute context state */
 		radeon_ring_write(ring, PACKET3_COMPUTE(PACKET3_CLEAR_STATE, 0));
@@ -4516,7 +4496,7 @@ static int si_vm_packet3_cp_dma_check(u32 *ib, u32 idx)
 			} else {
 				for (i = 0; i < (command & 0x1fffff); i++) {
 					reg = start_reg + (4 * i);
-				if (!si_vm_reg_valid(reg)) {
+					if (!si_vm_reg_valid(reg)) {
 						DRM_ERROR("CP DMA Bad DST register\n");
 						return -EINVAL;
 					}
@@ -6297,7 +6277,7 @@ restart_ih:
 				event_name = "vblank";
 
 				if (rdev->irq.crtc_vblank_int[crtc_idx]) {
-					drm_handle_vblank(rdev->ddev, crtc_idx);
+					drm_handle_vblank(rdev_to_drm(rdev), crtc_idx);
 					rdev->pm.vblank_sync = true;
 					wake_up(&rdev->irq.vblank_queue);
 				}
@@ -6805,8 +6785,8 @@ int si_suspend(struct radeon_device *rdev)
 	si_cp_enable(rdev, false);
 	cayman_dma_stop(rdev);
 	if (rdev->has_uvd) {
-		uvd_v1_0_fini(rdev);
 		radeon_uvd_suspend(rdev);
+		uvd_v1_0_fini(rdev);
 	}
 	if (rdev->has_vce)
 		radeon_vce_suspend(rdev);
@@ -6859,12 +6839,10 @@ int si_init(struct radeon_device *rdev)
 	/* Initialize surface registers */
 	radeon_surface_init(rdev);
 	/* Initialize clocks */
-	radeon_get_clock_info(rdev->ddev);
+	radeon_get_clock_info(rdev_to_drm(rdev));
 
 	/* Fence driver */
-	r = radeon_fence_driver_init(rdev);
-	if (r)
-		return r;
+	radeon_fence_driver_init(rdev);
 
 	/* initialize memory controller */
 	r = si_mc_init(rdev);
@@ -7138,17 +7116,8 @@ static void si_pcie_gen3_enable(struct radeon_device *rdev)
 			u16 bridge_cfg2, gpu_cfg2;
 			u32 max_lw, current_lw, tmp;
 
-			pcie_capability_read_word(root, PCI_EXP_LNKCTL,
-						  &bridge_cfg);
-			pcie_capability_read_word(rdev->pdev, PCI_EXP_LNKCTL,
-						  &gpu_cfg);
-
-			tmp16 = bridge_cfg | PCI_EXP_LNKCTL_HAWD;
-			pcie_capability_write_word(root, PCI_EXP_LNKCTL, tmp16);
-
-			tmp16 = gpu_cfg | PCI_EXP_LNKCTL_HAWD;
-			pcie_capability_write_word(rdev->pdev, PCI_EXP_LNKCTL,
-						   tmp16);
+			pcie_capability_set_word(root, PCI_EXP_LNKCTL, PCI_EXP_LNKCTL_HAWD);
+			pcie_capability_set_word(rdev->pdev, PCI_EXP_LNKCTL, PCI_EXP_LNKCTL_HAWD);
 
 			tmp = RREG32_PCIE(PCIE_LC_STATUS1);
 			max_lw = (tmp & LC_DETECTED_LINK_WIDTH_MASK) >> LC_DETECTED_LINK_WIDTH_SHIFT;
@@ -7195,46 +7164,28 @@ static void si_pcie_gen3_enable(struct radeon_device *rdev)
 				msleep(100);
 
 				/* linkctl */
-				pcie_capability_read_word(root, PCI_EXP_LNKCTL,
-							  &tmp16);
-				tmp16 &= ~PCI_EXP_LNKCTL_HAWD;
-				tmp16 |= (bridge_cfg & PCI_EXP_LNKCTL_HAWD);
-				pcie_capability_write_word(root,
-							   PCI_EXP_LNKCTL,
-							   tmp16);
-
-				pcie_capability_read_word(rdev->pdev,
-							  PCI_EXP_LNKCTL,
-							  &tmp16);
-				tmp16 &= ~PCI_EXP_LNKCTL_HAWD;
-				tmp16 |= (gpu_cfg & PCI_EXP_LNKCTL_HAWD);
-				pcie_capability_write_word(rdev->pdev,
-							   PCI_EXP_LNKCTL,
-							   tmp16);
+				pcie_capability_clear_and_set_word(root, PCI_EXP_LNKCTL,
+								   PCI_EXP_LNKCTL_HAWD,
+								   bridge_cfg &
+								   PCI_EXP_LNKCTL_HAWD);
+				pcie_capability_clear_and_set_word(rdev->pdev, PCI_EXP_LNKCTL,
+								   PCI_EXP_LNKCTL_HAWD,
+								   gpu_cfg &
+								   PCI_EXP_LNKCTL_HAWD);
 
 				/* linkctl2 */
-				pcie_capability_read_word(root, PCI_EXP_LNKCTL2,
-							  &tmp16);
-				tmp16 &= ~(PCI_EXP_LNKCTL2_ENTER_COMP |
-					   PCI_EXP_LNKCTL2_TX_MARGIN);
-				tmp16 |= (bridge_cfg2 &
-					  (PCI_EXP_LNKCTL2_ENTER_COMP |
-					   PCI_EXP_LNKCTL2_TX_MARGIN));
-				pcie_capability_write_word(root,
-							   PCI_EXP_LNKCTL2,
-							   tmp16);
-
-				pcie_capability_read_word(rdev->pdev,
-							  PCI_EXP_LNKCTL2,
-							  &tmp16);
-				tmp16 &= ~(PCI_EXP_LNKCTL2_ENTER_COMP |
-					   PCI_EXP_LNKCTL2_TX_MARGIN);
-				tmp16 |= (gpu_cfg2 &
-					  (PCI_EXP_LNKCTL2_ENTER_COMP |
-					   PCI_EXP_LNKCTL2_TX_MARGIN));
-				pcie_capability_write_word(rdev->pdev,
-							   PCI_EXP_LNKCTL2,
-							   tmp16);
+				pcie_capability_clear_and_set_word(root, PCI_EXP_LNKCTL2,
+								   PCI_EXP_LNKCTL2_ENTER_COMP |
+								   PCI_EXP_LNKCTL2_TX_MARGIN,
+								   bridge_cfg2 &
+								   (PCI_EXP_LNKCTL2_ENTER_COMP |
+								    PCI_EXP_LNKCTL2_TX_MARGIN));
+				pcie_capability_clear_and_set_word(rdev->pdev, PCI_EXP_LNKCTL2,
+								   PCI_EXP_LNKCTL2_ENTER_COMP |
+								   PCI_EXP_LNKCTL2_TX_MARGIN,
+								   gpu_cfg2 &
+								   (PCI_EXP_LNKCTL2_ENTER_COMP |
+								    PCI_EXP_LNKCTL2_TX_MARGIN));
 
 				tmp = RREG32_PCIE_PORT(PCIE_LC_CNTL4);
 				tmp &= ~LC_SET_QUIESCE;
@@ -7248,15 +7199,15 @@ static void si_pcie_gen3_enable(struct radeon_device *rdev)
 	speed_cntl &= ~LC_FORCE_DIS_SW_SPEED_CHANGE;
 	WREG32_PCIE_PORT(PCIE_LC_SPEED_CNTL, speed_cntl);
 
-	pcie_capability_read_word(rdev->pdev, PCI_EXP_LNKCTL2, &tmp16);
-	tmp16 &= ~PCI_EXP_LNKCTL2_TLS;
+	tmp16 = 0;
 	if (speed_cap == PCIE_SPEED_8_0GT)
 		tmp16 |= PCI_EXP_LNKCTL2_TLS_8_0GT; /* gen3 */
 	else if (speed_cap == PCIE_SPEED_5_0GT)
 		tmp16 |= PCI_EXP_LNKCTL2_TLS_5_0GT; /* gen2 */
 	else
 		tmp16 |= PCI_EXP_LNKCTL2_TLS_2_5GT; /* gen1 */
-	pcie_capability_write_word(rdev->pdev, PCI_EXP_LNKCTL2, tmp16);
+	pcie_capability_clear_and_set_word(rdev->pdev, PCI_EXP_LNKCTL2,
+					   PCI_EXP_LNKCTL2_TLS, tmp16);
 
 	speed_cntl = RREG32_PCIE_PORT(PCIE_LC_SPEED_CNTL);
 	speed_cntl |= LC_INITIATE_LINK_SPEED_CHANGE;

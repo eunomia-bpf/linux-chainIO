@@ -128,7 +128,7 @@ __tx2_pmu_##_var##_show(struct device *dev,				\
 			       char *page)				\
 {									\
 	BUILD_BUG_ON(sizeof(_format) >= PAGE_SIZE);			\
-	return sprintf(page, _format "\n");				\
+	return sysfs_emit(page, _format "\n");				\
 }									\
 									\
 static struct device_attribute format_attr_##_var =			\
@@ -176,7 +176,7 @@ static ssize_t tx2_pmu_event_show(struct device *dev,
 	struct dev_ext_attribute *eattr;
 
 	eattr = container_of(attr, struct dev_ext_attribute, attr);
-	return sprintf(buf, "event=0x%lx\n", (unsigned long) eattr->var);
+	return sysfs_emit(buf, "event=0x%lx\n", (unsigned long) eattr->var);
 }
 
 #define TX2_EVENT_ATTR(name, config) \
@@ -487,7 +487,7 @@ static void tx2_uncore_event_update(struct perf_event *event)
 		new = reg_readl(hwc->event_base);
 		prev = local64_xchg(&hwc->prev_count, new);
 		/* handles rollover of 32 bit counter */
-		delta = (u32)(((1UL << 32) - prev) + new);
+		delta = (u32)(((1ULL << 32) - prev) + new);
 	}
 
 	/* DMC event data_transfers granularity is 16 Bytes, convert it to 64 */
@@ -504,24 +504,19 @@ static void tx2_uncore_event_update(struct perf_event *event)
 
 static enum tx2_uncore_type get_tx2_pmu_type(struct acpi_device *adev)
 {
-	int i = 0;
-	struct acpi_tx2_pmu_device {
-		__u8 id[ACPI_ID_LEN];
-		enum tx2_uncore_type type;
-	} devices[] = {
+	struct acpi_device_id devices[] = {
 		{"CAV901D", PMU_TYPE_L3C},
 		{"CAV901F", PMU_TYPE_DMC},
 		{"CAV901E", PMU_TYPE_CCPI2},
-		{"", PMU_TYPE_INVALID}
+		{}
 	};
+	const struct acpi_device_id *id;
 
-	while (devices[i].type != PMU_TYPE_INVALID) {
-		if (!strcmp(acpi_device_hid(adev), devices[i].id))
-			break;
-		i++;
-	}
+	id = acpi_match_acpi_device(devices, adev);
+	if (!id)
+		return PMU_TYPE_INVALID;
 
-	return devices[i].type;
+	return (enum tx2_uncore_type)id->driver_data;
 }
 
 static bool tx2_uncore_validate_event(struct pmu *pmu,
@@ -729,6 +724,7 @@ static int tx2_uncore_pmu_register(
 	/* Perf event registration */
 	tx2_pmu->pmu = (struct pmu) {
 		.module         = THIS_MODULE,
+		.parent		= tx2_pmu->dev,
 		.attr_groups	= tx2_pmu->attr_groups,
 		.task_ctx_nr	= perf_invalid_context,
 		.event_init	= tx2_uncore_event_init,
@@ -817,10 +813,8 @@ static struct tx2_uncore_pmu *tx2_uncore_pmu_init_dev(struct device *dev,
 	}
 
 	base = devm_ioremap_resource(dev, &res);
-	if (IS_ERR(base)) {
-		dev_err(dev, "PMU type %d: Fail to map resource\n", type);
+	if (IS_ERR(base))
 		return NULL;
-	}
 
 	tx2_pmu = devm_kzalloc(dev, sizeof(*tx2_pmu), GFP_KERNEL);
 	if (!tx2_pmu)
@@ -889,13 +883,11 @@ static struct tx2_uncore_pmu *tx2_uncore_pmu_init_dev(struct device *dev,
 static acpi_status tx2_uncore_pmu_add(acpi_handle handle, u32 level,
 				    void *data, void **return_value)
 {
+	struct acpi_device *adev = acpi_fetch_acpi_dev(handle);
 	struct tx2_uncore_pmu *tx2_pmu;
-	struct acpi_device *adev;
 	enum tx2_uncore_type type;
 
-	if (acpi_bus_get_device(handle, &adev))
-		return AE_OK;
-	if (acpi_bus_get_status(adev) || !adev->status.present)
+	if (!adev || acpi_bus_get_status(adev) || !adev->status.present)
 		return AE_OK;
 
 	type = get_tx2_pmu_type(adev);
@@ -936,9 +928,8 @@ static int tx2_uncore_pmu_online_cpu(unsigned int cpu,
 static int tx2_uncore_pmu_offline_cpu(unsigned int cpu,
 		struct hlist_node *hpnode)
 {
-	int new_cpu;
 	struct tx2_uncore_pmu *tx2_pmu;
-	struct cpumask cpu_online_mask_temp;
+	unsigned int new_cpu;
 
 	tx2_pmu = hlist_entry_safe(hpnode,
 			struct tx2_uncore_pmu, hpnode);
@@ -949,11 +940,8 @@ static int tx2_uncore_pmu_offline_cpu(unsigned int cpu,
 	if (tx2_pmu->hrtimer_callback)
 		hrtimer_cancel(&tx2_pmu->hrtimer);
 
-	cpumask_copy(&cpu_online_mask_temp, cpu_online_mask);
-	cpumask_clear_cpu(cpu, &cpu_online_mask_temp);
-	new_cpu = cpumask_any_and(
-			cpumask_of_node(tx2_pmu->node),
-			&cpu_online_mask_temp);
+	new_cpu = cpumask_any_and_but(cpumask_of_node(tx2_pmu->node),
+				      cpu_online_mask, cpu);
 
 	tx2_pmu->cpu = new_cpu;
 	if (new_cpu >= nr_cpu_ids)
@@ -997,7 +985,7 @@ static int tx2_uncore_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int tx2_uncore_remove(struct platform_device *pdev)
+static void tx2_uncore_remove(struct platform_device *pdev)
 {
 	struct tx2_uncore_pmu *tx2_pmu, *temp;
 	struct device *dev = &pdev->dev;
@@ -1013,7 +1001,6 @@ static int tx2_uncore_remove(struct platform_device *pdev)
 			}
 		}
 	}
-	return 0;
 }
 
 static struct platform_driver tx2_uncore_driver = {

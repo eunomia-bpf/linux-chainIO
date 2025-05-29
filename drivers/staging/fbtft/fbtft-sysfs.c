@@ -27,12 +27,8 @@ int fbtft_gamma_parse_str(struct fbtft_par *par, u32 *curves,
 	int curve_counter, value_counter;
 	int _count;
 
-	fbtft_par_dbg(DEBUG_SYSFS, par, "%s() str=\n", __func__);
-
 	if (!str || !curves)
 		return -EINVAL;
-
-	fbtft_par_dbg(DEBUG_SYSFS, par, "%s\n", str);
 
 	tmp = kmemdup(str, size + 1, GFP_KERNEL);
 	if (!tmp)
@@ -199,7 +195,7 @@ static ssize_t show_debug(struct device *device,
 	struct fb_info *fb_info = dev_get_drvdata(device);
 	struct fbtft_par *par = fb_info->par;
 
-	return snprintf(buf, PAGE_SIZE, "%lu\n", par->debug);
+	return sysfs_emit(buf, "%lu\n", par->debug);
 }
 
 static struct device_attribute debug_device_attr =

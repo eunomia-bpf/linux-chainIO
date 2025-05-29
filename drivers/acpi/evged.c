@@ -101,7 +101,7 @@ static acpi_status acpi_ged_request_interrupt(struct acpi_resource *ares,
 
 	switch (gsi) {
 	case 0 ... 255:
-		sprintf(ev_name, "_%c%02hhX",
+		sprintf(ev_name, "_%c%02X",
 			trigger == ACPI_EDGE_SENSITIVE ? 'E' : 'L', gsi);
 
 		if (ACPI_SUCCESS(acpi_get_handle(handle, ev_name, &evt_handle)))
@@ -173,10 +173,9 @@ static void ged_shutdown(struct platform_device *pdev)
 	}
 }
 
-static int ged_remove(struct platform_device *pdev)
+static void ged_remove(struct platform_device *pdev)
 {
 	ged_shutdown(pdev);
-	return 0;
 }
 
 static const struct acpi_device_id ged_acpi_ids[] = {

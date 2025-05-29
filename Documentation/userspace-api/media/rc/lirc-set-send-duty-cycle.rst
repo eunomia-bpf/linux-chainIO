@@ -1,4 +1,4 @@
-.. SPDX-License-Identifier: GFDL-1.1-no-invariants-or-later
+.. SPDX-License-Identifier: GPL-2.0 OR GFDL-1.1-no-invariants-or-later
 .. c:namespace:: RC
 
 .. _lirc_set_send_duty_cycle:
@@ -27,7 +27,7 @@ Arguments
     File descriptor returned by open().
 
 ``duty_cycle``
-    Duty cicle, describing the pulse width in percent (from 1 to 99) of
+    Duty cycle, describing the pulse width in percent (from 1 to 99) of
     the total cycle. Values 0 and 100 are reserved.
 
 Description

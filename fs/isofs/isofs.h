@@ -3,7 +3,7 @@
 #include <linux/buffer_head.h>
 #include <linux/exportfs.h>
 #include <linux/iso_fs.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 
 enum isofs_file_format {
 	isofs_file_normal = 0,
@@ -44,7 +44,6 @@ struct isofs_sb_info {
 	unsigned char s_session;
 	unsigned int  s_high_sierra:1;
 	unsigned int  s_rock:2;
-	unsigned int  s_utf8:1;
 	unsigned int  s_cruft:1; /* Broken disks with high byte of length
 				  * containing junk */
 	unsigned int  s_nocompress:1;

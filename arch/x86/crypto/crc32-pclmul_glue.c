@@ -24,7 +24,7 @@
 /*
  * Copyright 2012 Xyratex Technology Limited
  *
- * Wrappers for kernel crypto shash api to pclmulqdq crc32 imlementation.
+ * Wrappers for kernel crypto shash api to pclmulqdq crc32 implementation.
  */
 #include <linux/init.h>
 #include <linux/module.h>
@@ -195,6 +195,7 @@ module_init(crc32_pclmul_mod_init);
 module_exit(crc32_pclmul_mod_fini);
 
 MODULE_AUTHOR("Alexander Boyko <alexander_boyko@xyratex.com>");
+MODULE_DESCRIPTION("CRC32 algorithm (IEEE 802.3) accelerated with PCLMULQDQ");
 MODULE_LICENSE("GPL");
 
 MODULE_ALIAS_CRYPTO("crc32");

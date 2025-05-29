@@ -4,6 +4,14 @@
  * the allocated memory contains normal pages in the direct kernel mapping.
  */
 #include <linux/dma-map-ops.h>
+#include <linux/iommu-dma.h>
+
+static struct page *dma_common_vaddr_to_page(void *cpu_addr)
+{
+	if (is_vmalloc_addr(cpu_addr))
+		return vmalloc_to_page(cpu_addr);
+	return virt_to_page(cpu_addr);
+}
 
 /*
  * Create scatter-list for the already allocated DMA buffer.
@@ -12,7 +20,7 @@ int dma_common_get_sgtable(struct device *dev, struct sg_table *sgt,
 		 void *cpu_addr, dma_addr_t dma_addr, size_t size,
 		 unsigned long attrs)
 {
-	struct page *page = virt_to_page(cpu_addr);
+	struct page *page = dma_common_vaddr_to_page(cpu_addr);
 	int ret;
 
 	ret = sg_alloc_table(sgt, 1, GFP_KERNEL);
@@ -32,6 +40,7 @@ int dma_common_mmap(struct device *dev, struct vm_area_struct *vma,
 	unsigned long user_count = vma_pages(vma);
 	unsigned long count = PAGE_ALIGN(size) >> PAGE_SHIFT;
 	unsigned long off = vma->vm_pgoff;
+	struct page *page = dma_common_vaddr_to_page(cpu_addr);
 	int ret = -ENXIO;
 
 	vma->vm_page_prot = dma_pgprot(dev, vma->vm_page_prot, attrs);
@@ -43,7 +52,7 @@ int dma_common_mmap(struct device *dev, struct vm_area_struct *vma,
 		return -ENXIO;
 
 	return remap_pfn_range(vma, vma->vm_start,
-			page_to_pfn(virt_to_page(cpu_addr)) + vma->vm_pgoff,
+			page_to_pfn(page) + vma->vm_pgoff,
 			user_count << PAGE_SHIFT, vma->vm_page_prot);
 #else
 	return -ENXIO;
@@ -62,8 +71,12 @@ struct page *dma_common_alloc_pages(struct device *dev, size_t size,
 	if (!page)
 		return NULL;
 
-	*dma_handle = ops->map_page(dev, page, 0, size, dir,
-				    DMA_ATTR_SKIP_CPU_SYNC);
+	if (use_dma_iommu(dev))
+		*dma_handle = iommu_dma_map_page(dev, page, 0, size, dir,
+						 DMA_ATTR_SKIP_CPU_SYNC);
+	else
+		*dma_handle = ops->map_page(dev, page, 0, size, dir,
+					    DMA_ATTR_SKIP_CPU_SYNC);
 	if (*dma_handle == DMA_MAPPING_ERROR) {
 		dma_free_contiguous(dev, page, size);
 		return NULL;
@@ -78,7 +91,10 @@ void dma_common_free_pages(struct device *dev, size_t size, struct page *page,
 {
 	const struct dma_map_ops *ops = get_dma_ops(dev);
 
-	if (ops->unmap_page)
+	if (use_dma_iommu(dev))
+		iommu_dma_unmap_page(dev, dma_handle, size, dir,
+				     DMA_ATTR_SKIP_CPU_SYNC);
+	else if (ops->unmap_page)
 		ops->unmap_page(dev, dma_handle, size, dir,
 				DMA_ATTR_SKIP_CPU_SYNC);
 	dma_free_contiguous(dev, page, size);

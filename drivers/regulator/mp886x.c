@@ -9,7 +9,7 @@
 #include <linux/gpio/consumer.h>
 #include <linux/i2c.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/regmap.h>
 #include <linux/regulator/driver.h>
 #include <linux/regulator/of_regulator.h>
@@ -26,7 +26,7 @@
 
 struct mp886x_cfg_info {
 	const struct regulator_ops *rops;
-	const int slew_rates[8];
+	const unsigned int slew_rates[8];
 	const int switch_freq[4];
 	const u8 fs_reg;
 	const u8 fs_shift;
@@ -41,28 +41,6 @@ struct mp886x_device_info {
 	u32 r[2];
 	unsigned int sel;
 };
-
-static int mp886x_set_ramp(struct regulator_dev *rdev, int ramp)
-{
-	struct mp886x_device_info *di = rdev_get_drvdata(rdev);
-	const struct mp886x_cfg_info *ci = di->ci;
-	int reg = -1, i;
-
-	for (i = 0; i < ARRAY_SIZE(ci->slew_rates); i++) {
-		if (ramp <= ci->slew_rates[i])
-			reg = i;
-		else
-			break;
-	}
-
-	if (reg < 0) {
-		dev_err(di->dev, "unsupported ramp value %d\n", ramp);
-		return -EINVAL;
-	}
-
-	return regmap_update_bits(rdev->regmap, MP886X_SYSCNTLREG1,
-				  MP886X_SLEW_MASK, reg << MP886X_SLEW_SHIFT);
-}
 
 static void mp886x_set_switch_freq(struct mp886x_device_info *di,
 				   struct regmap *regmap,
@@ -169,7 +147,7 @@ static const struct regulator_ops mp8869_regulator_ops = {
 	.is_enabled = regulator_is_enabled_regmap,
 	.set_mode = mp886x_set_mode,
 	.get_mode = mp886x_get_mode,
-	.set_ramp_delay = mp886x_set_ramp,
+	.set_ramp_delay = regulator_set_ramp_delay_regmap,
 };
 
 static const struct mp886x_cfg_info mp8869_ci = {
@@ -248,7 +226,7 @@ static const struct regulator_ops mp8867_regulator_ops = {
 	.is_enabled = regulator_is_enabled_regmap,
 	.set_mode = mp886x_set_mode,
 	.get_mode = mp886x_get_mode,
-	.set_ramp_delay = mp886x_set_ramp,
+	.set_ramp_delay = regulator_set_ramp_delay_regmap,
 };
 
 static const struct mp886x_cfg_info mp8867_ci = {
@@ -290,6 +268,10 @@ static int mp886x_regulator_register(struct mp886x_device_info *di,
 	rdesc->uV_step = 10000;
 	rdesc->vsel_reg = MP886X_VSEL;
 	rdesc->vsel_mask = 0x3f;
+	rdesc->ramp_reg = MP886X_SYSCNTLREG1;
+	rdesc->ramp_mask = MP886X_SLEW_MASK;
+	rdesc->ramp_delay_table = di->ci->slew_rates;
+	rdesc->n_ramp_values = ARRAY_SIZE(di->ci->slew_rates);
 	rdesc->owner = THIS_MODULE;
 
 	rdev = devm_regulator_register(di->dev, &di->desc, config);
@@ -333,7 +315,7 @@ static int mp886x_i2c_probe(struct i2c_client *client)
 	if (IS_ERR(di->en_gpio))
 		return PTR_ERR(di->en_gpio);
 
-	di->ci = of_device_get_match_data(dev);
+	di->ci = i2c_get_match_data(client);
 	di->dev = dev;
 
 	regmap = devm_regmap_init_i2c(client, &mp886x_regmap_config);
@@ -359,20 +341,14 @@ static int mp886x_i2c_probe(struct i2c_client *client)
 }
 
 static const struct of_device_id mp886x_dt_ids[] = {
-	{
-		.compatible = "mps,mp8867",
-		.data = &mp8867_ci
-	},
-	{
-		.compatible = "mps,mp8869",
-		.data = &mp8869_ci
-	},
+	{ .compatible = "mps,mp8867", .data = &mp8867_ci },
+	{ .compatible = "mps,mp8869", .data = &mp8869_ci },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, mp886x_dt_ids);
 
 static const struct i2c_device_id mp886x_id[] = {
-	{ "mp886x", },
+	{ "mp886x", (kernel_ulong_t)&mp8869_ci },
 	{ },
 };
 MODULE_DEVICE_TABLE(i2c, mp886x_id);
@@ -380,9 +356,10 @@ MODULE_DEVICE_TABLE(i2c, mp886x_id);
 static struct i2c_driver mp886x_regulator_driver = {
 	.driver = {
 		.name = "mp886x-regulator",
-		.of_match_table = of_match_ptr(mp886x_dt_ids),
+		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
+		.of_match_table = mp886x_dt_ids,
 	},
-	.probe_new = mp886x_i2c_probe,
+	.probe = mp886x_i2c_probe,
 	.id_table = mp886x_id,
 };
 module_i2c_driver(mp886x_regulator_driver);

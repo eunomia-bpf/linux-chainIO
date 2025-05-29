@@ -69,14 +69,14 @@ int monitor_device(const char *device_name,
 	}
 
 	if (num_lines == 1) {
-		fprintf(stdout, "Monitoring line %d on %s\n", lines[0], device_name);
+		fprintf(stdout, "Monitoring line %u on %s\n", lines[0], device_name);
 		fprintf(stdout, "Initial line value: %d\n",
 			gpiotools_test_bit(values.bits, 0));
 	} else {
-		fprintf(stdout, "Monitoring lines %d", lines[0]);
+		fprintf(stdout, "Monitoring lines %u", lines[0]);
 		for (i = 1; i < num_lines - 1; i++)
-			fprintf(stdout, ", %d", lines[i]);
-		fprintf(stdout, " and %d on %s\n", lines[i], device_name);
+			fprintf(stdout, ", %u", lines[i]);
+		fprintf(stdout, " and %u on %s\n", lines[i], device_name);
 		fprintf(stdout, "Initial line values: %d",
 			gpiotools_test_bit(values.bits, 0));
 		for (i = 1; i < num_lines - 1; i++)
@@ -86,6 +86,7 @@ int monitor_device(const char *device_name,
 			gpiotools_test_bit(values.bits, i));
 	}
 
+	i = 0;
 	while (1) {
 		struct gpio_v2_line_event event;
 
@@ -107,8 +108,8 @@ int monitor_device(const char *device_name,
 			ret = -EIO;
 			break;
 		}
-		fprintf(stdout, "GPIO EVENT at %llu on line %d (%d|%d) ",
-			event.timestamp_ns, event.offset, event.line_seqno,
+		fprintf(stdout, "GPIO EVENT at %" PRIu64 " on line %d (%d|%d) ",
+			(uint64_t)event.timestamp_ns, event.offset, event.line_seqno,
 			event.seqno);
 		switch (event.id) {
 		case GPIO_V2_LINE_EVENT_RISING_EDGE:
@@ -148,6 +149,8 @@ void print_usage(void)
 		"  -s         Set line as open source\n"
 		"  -r         Listen for rising edges\n"
 		"  -f         Listen for falling edges\n"
+		"  -w         Report the wall-clock time for events\n"
+		"  -t         Report the hardware timestamp for events\n"
 		"  -b <n>     Debounce the line with period n microseconds\n"
 		" [-c <n>]    Do <n> loops (optional, infinite loop if not stated)\n"
 		"  -?         This helptext\n"
@@ -173,7 +176,7 @@ int main(int argc, char **argv)
 
 	memset(&config, 0, sizeof(config));
 	config.flags = GPIO_V2_LINE_FLAG_INPUT;
-	while ((c = getopt(argc, argv, "c:n:o:b:dsrf?")) != -1) {
+	while ((c = getopt(argc, argv, "c:n:o:b:dsrfwt?")) != -1) {
 		switch (c) {
 		case 'c':
 			loops = strtoul(optarg, NULL, 10);
@@ -203,6 +206,12 @@ int main(int argc, char **argv)
 			break;
 		case 'f':
 			config.flags |= GPIO_V2_LINE_FLAG_EDGE_FALLING;
+			break;
+		case 'w':
+			config.flags |= GPIO_V2_LINE_FLAG_EVENT_CLOCK_REALTIME;
+			break;
+		case 't':
+			config.flags |= GPIO_V2_LINE_FLAG_EVENT_CLOCK_HTE;
 			break;
 		case '?':
 			print_usage();

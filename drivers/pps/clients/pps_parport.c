@@ -22,8 +22,6 @@
 #include <linux/parport.h>
 #include <linux/pps_kernel.h>
 
-#define DRVDESC "parallel port PPS client"
-
 /* module parameters */
 
 #define CLEAR_WAIT_MAX		100
@@ -138,13 +136,22 @@ static void parport_attach(struct parport *port)
 		.dev		= NULL
 	};
 
+	if (clear_wait > CLEAR_WAIT_MAX) {
+		pr_err("clear_wait value should be not greater then %d\n",
+		       CLEAR_WAIT_MAX);
+		return;
+	}
+
 	device = kzalloc(sizeof(struct pps_client_pp), GFP_KERNEL);
 	if (!device) {
 		pr_err("memory allocation failed, not attaching\n");
 		return;
 	}
 
-	index = ida_simple_get(&pps_client_index, 0, 0, GFP_KERNEL);
+	index = ida_alloc(&pps_client_index, GFP_KERNEL);
+	if (index < 0)
+		goto err_free_device;
+
 	memset(&pps_client_cb, 0, sizeof(pps_client_cb));
 	pps_client_cb.private = device;
 	pps_client_cb.irq_func = parport_irq;
@@ -155,7 +162,7 @@ static void parport_attach(struct parport *port)
 						    index);
 	if (!device->pardev) {
 		pr_err("couldn't register with %s\n", port->name);
-		goto err_free;
+		goto err_free_ida;
 	}
 
 	if (parport_claim_or_block(device->pardev) < 0) {
@@ -183,8 +190,9 @@ err_release_dev:
 	parport_release(device->pardev);
 err_unregister_dev:
 	parport_unregister_device(device->pardev);
-err_free:
-	ida_simple_remove(&pps_client_index, index);
+err_free_ida:
+	ida_free(&pps_client_index, index);
+err_free_device:
 	kfree(device);
 }
 
@@ -204,7 +212,7 @@ static void parport_detach(struct parport *port)
 	pps_unregister_source(device->pps);
 	parport_release(pardev);
 	parport_unregister_device(pardev);
-	ida_simple_remove(&pps_client_index, device->index);
+	ida_free(&pps_client_index, device->index);
 	kfree(device);
 }
 
@@ -212,40 +220,9 @@ static struct parport_driver pps_parport_driver = {
 	.name = KBUILD_MODNAME,
 	.match_port = parport_attach,
 	.detach = parport_detach,
-	.devmodel = true,
 };
-
-/* module staff */
-
-static int __init pps_parport_init(void)
-{
-	int ret;
-
-	pr_info(DRVDESC "\n");
-
-	if (clear_wait > CLEAR_WAIT_MAX) {
-		pr_err("clear_wait value should be not greater"
-				" then %d\n", CLEAR_WAIT_MAX);
-		return -EINVAL;
-	}
-
-	ret = parport_register_driver(&pps_parport_driver);
-	if (ret) {
-		pr_err("unable to register with parport\n");
-		return ret;
-	}
-
-	return  0;
-}
-
-static void __exit pps_parport_exit(void)
-{
-	parport_unregister_driver(&pps_parport_driver);
-}
-
-module_init(pps_parport_init);
-module_exit(pps_parport_exit);
+module_parport_driver(pps_parport_driver);
 
 MODULE_AUTHOR("Alexander Gordeev <lasaine@lvk.cs.msu.su>");
-MODULE_DESCRIPTION(DRVDESC);
+MODULE_DESCRIPTION("parallel port PPS client");
 MODULE_LICENSE("GPL");

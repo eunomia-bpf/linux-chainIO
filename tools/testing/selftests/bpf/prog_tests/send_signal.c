@@ -1,38 +1,46 @@
 // SPDX-License-Identifier: GPL-2.0
 #include <test_progs.h>
+#include <sys/time.h>
+#include <sys/resource.h>
 #include "test_send_signal_kern.skel.h"
+#include "io_helpers.h"
 
-static volatile int sigusr1_received = 0;
+static int sigusr1_received;
 
 static void sigusr1_handler(int signum)
 {
-	sigusr1_received++;
+	sigusr1_received = 8;
+}
+
+static void sigusr1_siginfo_handler(int s, siginfo_t *i, void *v)
+{
+	sigusr1_received = (int)(long long)i->si_value.sival_ptr;
 }
 
 static void test_send_signal_common(struct perf_event_attr *attr,
-				    bool signal_thread,
-				    const char *test_name)
+				    bool signal_thread, bool remote)
 {
 	struct test_send_signal_kern *skel;
+	struct sigaction sa;
 	int pipe_c2p[2], pipe_p2c[2];
 	int err = -1, pmu_fd = -1;
-	__u32 duration = 0;
+	volatile int j = 0;
+	int retry_count;
 	char buf[256];
 	pid_t pid;
+	int old_prio;
 
-	if (CHECK(pipe(pipe_c2p), test_name,
-		  "pipe pipe_c2p error: %s\n", strerror(errno)))
+	if (!ASSERT_OK(pipe(pipe_c2p), "pipe_c2p"))
 		return;
 
-	if (CHECK(pipe(pipe_p2c), test_name,
-		  "pipe pipe_p2c error: %s\n", strerror(errno))) {
+	if (!ASSERT_OK(pipe(pipe_p2c), "pipe_p2c")) {
 		close(pipe_c2p[0]);
 		close(pipe_c2p[1]);
 		return;
 	}
 
 	pid = fork();
-	if (CHECK(pid < 0, test_name, "fork error: %s\n", strerror(errno))) {
+	if (!ASSERT_GE(pid, 0, "fork")) {
 		close(pipe_c2p[0]);
 		close(pipe_c2p[1]);
 		close(pipe_p2c[0]);
@@ -42,25 +50,56 @@ static void test_send_signal_common(struct perf_event_attr *attr,
 
 	if (pid == 0) {
 		/* install signal handler and notify parent */
-		signal(SIGUSR1, sigusr1_handler);
+		if (remote) {
+			sa.sa_sigaction = sigusr1_siginfo_handler;
+			sa.sa_flags = SA_RESTART | SA_SIGINFO;
+			ASSERT_NEQ(sigaction(SIGUSR1, &sa, NULL), -1, "sigaction");
+		} else {
+			ASSERT_NEQ(signal(SIGUSR1, sigusr1_handler), SIG_ERR, "signal");
+		}
 
 		close(pipe_c2p[0]); /* close read */
 		close(pipe_p2c[1]); /* close write */
 
+		/* boost with a high priority so we got a higher chance
+		 * that if an interrupt happens, the underlying task
+		 * is this process.
+		 */
+		if (!remote) {
+			errno = 0;
+			old_prio = getpriority(PRIO_PROCESS, 0);
+			ASSERT_OK(errno, "getpriority");
+			ASSERT_OK(setpriority(PRIO_PROCESS, 0, -20), "setpriority");
+		}
+
 		/* notify parent signal handler is installed */
-		CHECK(write(pipe_c2p[1], buf, 1) != 1, "pipe_write", "err %d\n", -errno);
+		ASSERT_EQ(write(pipe_c2p[1], buf, 1), 1, "pipe_write");
 
 		/* make sure parent enabled bpf program to send_signal */
-		CHECK(read(pipe_p2c[0], buf, 1) != 1, "pipe_read", "err %d\n", -errno);
+		ASSERT_EQ(read(pipe_p2c[0], buf, 1), 1, "pipe_read");
 
 		/* wait a little for signal handler */
-		sleep(1);
+		for (int i = 0; i < 1000000000 && !sigusr1_received; i++) {
+			j /= i + j + 1;
+			if (remote)
+				sleep(1);
+			else
+				if (!attr)
+					/* trigger the nanosleep tracepoint program. */
+					usleep(1);
+		}
 
-		buf[0] = sigusr1_received ? '2' : '0';
-		CHECK(write(pipe_c2p[1], buf, 1) != 1, "pipe_write", "err %d\n", -errno);
+		buf[0] = sigusr1_received;
+
+		ASSERT_EQ(sigusr1_received, 8, "sigusr1_received");
+		ASSERT_EQ(write(pipe_c2p[1], buf, 1), 1, "pipe_write");
 
 		/* wait for parent notification and exit */
-		CHECK(read(pipe_p2c[0], buf, 1) != 1, "pipe_read", "err %d\n", -errno);
+		ASSERT_EQ(read(pipe_p2c[0], buf, 1), 1, "pipe_read");
+
+		/* restore the old priority */
+		if (!remote)
+			ASSERT_OK(setpriority(PRIO_PROCESS, 0, old_prio), "setpriority");
 
 		close(pipe_c2p[1]);
 		close(pipe_p2c[0]);
@@ -71,86 +110,127 @@ static void test_send_signal_common(struct perf_event_attr *attr,
 	close(pipe_p2c[0]); /* close read */
 
 	skel = test_send_signal_kern__open_and_load();
-	if (CHECK(!skel, "skel_open_and_load", "skeleton open_and_load failed\n"))
+	if (!ASSERT_OK_PTR(skel, "skel_open_and_load"))
 		goto skel_open_load_failure;
+
+	/* boost with a high priority so we got a higher chance
+	 * that if an interrupt happens, the underlying task
+	 * is this process.
+	 */
+	if (remote) {
+		errno = 0;
+		old_prio = getpriority(PRIO_PROCESS, 0);
+		ASSERT_OK(errno, "getpriority");
+		ASSERT_OK(setpriority(PRIO_PROCESS, 0, -20), "setpriority");
+	}
 
 	if (!attr) {
 		err = test_send_signal_kern__attach(skel);
-		if (CHECK(err, "skel_attach", "skeleton attach failed\n")) {
+		if (!ASSERT_OK(err, "skel_attach")) {
 			err = -1;
 			goto destroy_skel;
 		}
 	} else {
-		pmu_fd = syscall(__NR_perf_event_open, attr, pid, -1,
-				 -1 /* group id */, 0 /* flags */);
-		if (CHECK(pmu_fd < 0, test_name, "perf_event_open error: %s\n",
-			strerror(errno))) {
+		if (!remote)
+			pmu_fd = syscall(__NR_perf_event_open, attr, pid, -1 /* cpu */,
+					 -1 /* group id */, 0 /* flags */);
+		else
+			pmu_fd = syscall(__NR_perf_event_open, attr, getpid(), -1 /* cpu */,
+					 -1 /* group id */, 0 /* flags */);
+		if (!ASSERT_GE(pmu_fd, 0, "perf_event_open")) {
 			err = -1;
 			goto destroy_skel;
 		}
 
 		skel->links.send_signal_perf =
 			bpf_program__attach_perf_event(skel->progs.send_signal_perf, pmu_fd);
-		if (CHECK(IS_ERR(skel->links.send_signal_perf), "attach_perf_event",
-			  "err %ld\n", PTR_ERR(skel->links.send_signal_perf)))
+		if (!ASSERT_OK_PTR(skel->links.send_signal_perf, "attach_perf_event"))
 			goto disable_pmu;
 	}
 
 	/* wait until child signal handler installed */
-	CHECK(read(pipe_c2p[0], buf, 1) != 1, "pipe_read", "err %d\n", -errno);
+	ASSERT_EQ(read(pipe_c2p[0], buf, 1), 1, "pipe_read");
 
 	/* trigger the bpf send_signal */
-	skel->bss->pid = pid;
-	skel->bss->sig = SIGUSR1;
 	skel->bss->signal_thread = signal_thread;
+	skel->bss->sig = SIGUSR1;
+	if (!remote) {
+		skel->bss->target_pid = 0;
+		skel->bss->pid = pid;
+	} else {
+		skel->bss->target_pid = pid;
+		skel->bss->pid = getpid();
+	}
 
 	/* notify child that bpf program can send_signal now */
-	CHECK(write(pipe_p2c[1], buf, 1) != 1, "pipe_write", "err %d\n", -errno);
+	ASSERT_EQ(write(pipe_p2c[1], buf, 1), 1, "pipe_write");
 
-	/* wait for result */
-	err = read(pipe_c2p[0], buf, 1);
-	if (CHECK(err < 0, test_name, "reading pipe error: %s\n", strerror(errno)))
+	for (retry_count = 0;;) {
+		/* For the remote test, the BPF program is triggered from this
+		 * process but the other process/thread is signaled.
+		 */
+		if (remote) {
+			if (!attr) {
+				for (int i = 0; i < 10; i++)
+					usleep(1);
+			} else {
+				for (int i = 0; i < 100000000; i++)
+					j /= i + 1;
+			}
+		}
+		/* wait for result */
+		err = read_with_timeout(pipe_c2p[0], buf, 1, 100);
+		if (err == -EAGAIN && retry_count++ < 10000)
+			continue;
+		break;
+	}
+	if (!ASSERT_GE(err, 0, "reading pipe"))
 		goto disable_pmu;
-	if (CHECK(err == 0, test_name, "reading pipe error: size 0\n")) {
+	if (!ASSERT_GT(err, 0, "reading pipe error: size 0")) {
 		err = -1;
 		goto disable_pmu;
 	}
 
-	CHECK(buf[0] != '2', test_name, "incorrect result\n");
+	ASSERT_EQ(buf[0], 8, "incorrect result");
 
 	/* notify child safe to exit */
-	CHECK(write(pipe_p2c[1], buf, 1) != 1, "pipe_write", "err %d\n", -errno);
+	ASSERT_EQ(write(pipe_p2c[1], buf, 1), 1, "pipe_write");
 
 disable_pmu:
 	close(pmu_fd);
 destroy_skel:
 	test_send_signal_kern__destroy(skel);
+	/* restore the old priority */
+	if (remote)
+		ASSERT_OK(setpriority(PRIO_PROCESS, 0, old_prio), "setpriority");
 skel_open_load_failure:
 	close(pipe_c2p[0]);
 	close(pipe_p2c[1]);
 	wait(NULL);
 }
 
-static void test_send_signal_tracepoint(bool signal_thread)
+static void test_send_signal_tracepoint(bool signal_thread, bool remote)
 {
-	test_send_signal_common(NULL, signal_thread, "tracepoint");
+	test_send_signal_common(NULL, signal_thread, remote);
 }
 
-static void test_send_signal_perf(bool signal_thread)
+static void test_send_signal_perf(bool signal_thread, bool remote)
 {
 	struct perf_event_attr attr = {
-		.sample_period = 1,
+		.freq = 1,
+		.sample_freq = 1000,
 		.type = PERF_TYPE_SOFTWARE,
 		.config = PERF_COUNT_SW_CPU_CLOCK,
 	};
 
-	test_send_signal_common(&attr, signal_thread, "perf_sw_event");
+	test_send_signal_common(&attr, signal_thread, remote);
 }
 
-static void test_send_signal_nmi(bool signal_thread)
+static void test_send_signal_nmi(bool signal_thread, bool remote)
 {
 	struct perf_event_attr attr = {
-		.sample_period = 1,
+		.freq = 1,
+		.sample_freq = 1000,
 		.type = PERF_TYPE_HARDWARE,
 		.config = PERF_COUNT_HW_CPU_CYCLES,
 	};
@@ -162,7 +242,7 @@ static void test_send_signal_nmi(bool signal_thread)
 	pmu_fd = syscall(__NR_perf_event_open, &attr, 0 /* pid */,
 			 -1 /* cpu */, -1 /* group_fd */, 0 /* flags */);
 	if (pmu_fd == -1) {
-		if (errno == ENOENT) {
+		if (errno == ENOENT || errno == EOPNOTSUPP) {
 			printf("%s:SKIP:no PERF_COUNT_HW_CPU_CYCLES\n",
 			       __func__);
 			test__skip();
@@ -173,21 +253,35 @@ static void test_send_signal_nmi(bool signal_thread)
 		close(pmu_fd);
 	}
 
-	test_send_signal_common(&attr, signal_thread, "perf_hw_event");
+	test_send_signal_common(&attr, signal_thread, remote);
 }
 
 void test_send_signal(void)
 {
 	if (test__start_subtest("send_signal_tracepoint"))
-		test_send_signal_tracepoint(false);
+		test_send_signal_tracepoint(false, false);
 	if (test__start_subtest("send_signal_perf"))
-		test_send_signal_perf(false);
+		test_send_signal_perf(false, false);
 	if (test__start_subtest("send_signal_nmi"))
-		test_send_signal_nmi(false);
+		test_send_signal_nmi(false, false);
 	if (test__start_subtest("send_signal_tracepoint_thread"))
-		test_send_signal_tracepoint(true);
+		test_send_signal_tracepoint(true, false);
 	if (test__start_subtest("send_signal_perf_thread"))
-		test_send_signal_perf(true);
+		test_send_signal_perf(true, false);
 	if (test__start_subtest("send_signal_nmi_thread"))
-		test_send_signal_nmi(true);
+		test_send_signal_nmi(true, false);
+
+	/* Signal remote thread and thread group */
+	if (test__start_subtest("send_signal_tracepoint_remote"))
+		test_send_signal_tracepoint(false, true);
+	if (test__start_subtest("send_signal_perf_remote"))
+		test_send_signal_perf(false, true);
+	if (test__start_subtest("send_signal_nmi_remote"))
+		test_send_signal_nmi(false, true);
+	if (test__start_subtest("send_signal_tracepoint_thread_remote"))
+		test_send_signal_tracepoint(true, true);
+	if (test__start_subtest("send_signal_perf_thread_remote"))
+		test_send_signal_perf(true, true);
+	if (test__start_subtest("send_signal_nmi_thread_remote"))
+		test_send_signal_nmi(true, true);
 }

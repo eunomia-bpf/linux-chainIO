@@ -32,7 +32,7 @@ This header file (and its .c file; kernel-doc of functions see there)
   Because of this later property, it is called "lru_cache".
   As it actually Tracks Objects in an Active SeT, we could also call it
   toast (incidentally that is what may happen to the data on the
-  backend storage uppon next resync, if we don't get it right).
+  backend storage upon next resync, if we don't get it right).
 
 What for?
 
@@ -119,7 +119,7 @@ write intent log information, three of which are mentioned here.
 */
 
 /* this defines an element in a tracked set
- * .colision is for hash table lookup.
+ * .collision is for hash table lookup.
  * When we process a new IO request, we know its sector, thus can deduce the
  * region number (label) easily.  To do the label -> object lookup without a
  * full list walk, we use a simple hash table.
@@ -145,14 +145,14 @@ write intent log information, three of which are mentioned here.
  * But it avoids high order page allocations in kmalloc.
  */
 struct lc_element {
-	struct hlist_node colision;
+	struct hlist_node collision;
 	struct list_head list;		 /* LRU list or free list */
 	unsigned refcnt;
 	/* back "pointer" into lc_cache->element[index],
 	 * for paranoia, and for "lc_element_to_index" */
 	unsigned lc_index;
 	/* if we want to track a larger set of objects,
-	 * it needs to become arch independend u64 */
+	 * it needs to become an architecture independent u64 */
 	unsigned lc_number;
 	/* special label when on free list */
 #define LC_FREE (~0U)
@@ -199,7 +199,6 @@ struct lru_cache {
 	unsigned long flags;
 
 
-	void  *lc_private;
 	const char *name;
 
 	/* nr_elements there */
@@ -241,7 +240,6 @@ extern struct lru_cache *lc_create(const char *name, struct kmem_cache *cache,
 		unsigned e_count, size_t e_size, size_t e_off);
 extern void lc_reset(struct lru_cache *lc);
 extern void lc_destroy(struct lru_cache *lc);
-extern void lc_set(struct lru_cache *lc, unsigned int enr, int index);
 extern void lc_del(struct lru_cache *lc, struct lc_element *element);
 
 extern struct lc_element *lc_get_cumulative(struct lru_cache *lc, unsigned int enr);
@@ -263,7 +261,7 @@ extern void lc_seq_dump_details(struct seq_file *seq, struct lru_cache *lc, char
  *
  * Allows (expects) the set to be "dirty".  Note that the reference counts and
  * order on the active and lru lists may still change.  Used to serialize
- * changing transactions.  Returns true if we aquired the lock.
+ * changing transactions.  Returns true if we acquired the lock.
  */
 static inline int lc_try_lock_for_transaction(struct lru_cache *lc)
 {
@@ -275,7 +273,7 @@ static inline int lc_try_lock_for_transaction(struct lru_cache *lc)
  * @lc: the lru cache to operate on
  *
  * Note that the reference counts and order on the active and lru lists may
- * still change.  Only works on a "clean" set.  Returns true if we aquired the
+ * still change.  Only works on a "clean" set.  Returns true if we acquired the
  * lock, which means there are no pending changes, and any further attempt to
  * change the set will not succeed until the next lc_unlock().
  */
@@ -297,6 +295,5 @@ extern bool lc_is_used(struct lru_cache *lc, unsigned int enr);
 	container_of(ptr, type, member)
 
 extern struct lc_element *lc_element_by_index(struct lru_cache *lc, unsigned i);
-extern unsigned int lc_index_of(struct lru_cache *lc, struct lc_element *e);
 
 #endif

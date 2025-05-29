@@ -14,8 +14,7 @@
  */
 
 #define __KERNEL_SYSCALLS__
-#include <stdarg.h>
-
+#include <linux/cpu.h>
 #include <linux/errno.h>
 #include <linux/sched.h>
 #include <linux/sched/debug.h>
@@ -34,11 +33,14 @@
 #include <linux/init_task.h>
 #include <linux/mqueue.h>
 #include <linux/fs.h>
+#include <linux/reboot.h>
 
 #include <linux/uaccess.h>
+#include <asm/fpu.h>
 #include <asm/io.h>
 #include <asm/processor.h>
 #include <asm/spr_defs.h>
+#include <asm/switch_to.h>
 
 #include <linux/smp.h>
 
@@ -49,9 +51,27 @@
  */
 struct thread_info *current_thread_info_set[NR_CPUS] = { &init_thread_info, };
 
-void machine_restart(void)
+void machine_restart(char *cmd)
 {
-	printk(KERN_INFO "*** MACHINE RESTART ***\n");
+	do_kernel_restart(cmd);
+
+	__asm__("l.nop 13");
+
+	/* Give a grace period for failure to restart of 1s */
+	mdelay(1000);
+
+	/* Whoops - the platform was unable to reboot. Tell the user! */
+	pr_emerg("Reboot failed -- System halted\n");
+	while (1);
+}
+
+/*
+ * This is used if a sys-off handler was not set by a power management
+ * driver, in this case we can assume we are on a simulator.  On
+ * OpenRISC simulators l.nop 1 will trigger the simulator exit.
+ */
+static void default_power_off(void)
+{
 	__asm__("l.nop 1");
 }
 
@@ -70,7 +90,8 @@ void machine_halt(void)
 void machine_power_off(void)
 {
 	printk(KERN_INFO "*** MACHINE POWER OFF ***\n");
-	__asm__("l.nop 1");
+	do_kernel_power_off();
+	default_power_off();
 }
 
 /*
@@ -79,12 +100,13 @@ void machine_power_off(void)
  */
 void arch_cpu_idle(void)
 {
-	local_irq_enable();
+	raw_local_irq_enable();
 	if (mfspr(SPR_UPR) & SPR_UPR_PMP)
 		mtspr(SPR_PMR, mfspr(SPR_PMR) | SPR_PMR_DME);
+	raw_local_irq_disable();
 }
 
-void (*pm_power_off) (void) = machine_power_off;
+void (*pm_power_off)(void) = NULL;
 EXPORT_SYMBOL(pm_power_off);
 
 /*
@@ -98,15 +120,9 @@ void flush_thread(void)
 
 void show_regs(struct pt_regs *regs)
 {
-	extern void show_registers(struct pt_regs *regs);
-
 	show_regs_print_info(KERN_DEFAULT);
 	/* __PHX__ cleanup this mess */
 	show_registers(regs);
-}
-
-void release_thread(struct task_struct *dead_task)
-{
 }
 
 /*
@@ -147,9 +163,11 @@ extern asmlinkage void ret_from_fork(void);
  */
 
 int
-copy_thread(unsigned long clone_flags, unsigned long usp, unsigned long arg,
-	    struct task_struct *p, unsigned long tls)
+copy_thread(struct task_struct *p, const struct kernel_clone_args *args)
 {
+	unsigned long clone_flags = args->flags;
+	unsigned long usp = args->stack;
+	unsigned long tls = args->tls;
 	struct pt_regs *userregs;
 	struct pt_regs *kregs;
 	unsigned long sp = (unsigned long)task_stack_page(p) + THREAD_SIZE;
@@ -167,10 +185,10 @@ copy_thread(unsigned long clone_flags, unsigned long usp, unsigned long arg,
 	sp -= sizeof(struct pt_regs);
 	kregs = (struct pt_regs *)sp;
 
-	if (unlikely(p->flags & PF_KTHREAD)) {
+	if (unlikely(args->fn)) {
 		memset(kregs, 0, sizeof(struct pt_regs));
-		kregs->gpr[20] = usp; /* fn, kernel thread */
-		kregs->gpr[22] = arg;
+		kregs->gpr[20] = (unsigned long)args->fn;
+		kregs->gpr[22] = (unsigned long)args->fn_arg;
 	} else {
 		*userregs = *current_pt_regs();
 
@@ -227,6 +245,8 @@ struct task_struct *__switch_to(struct task_struct *old,
 
 	local_irq_save(flags);
 
+	save_fpu(current);
+
 	/* current_set is an array of saved current pointers
 	 * (one for each cpu). we need them at user->kernel transition,
 	 * while we save them at kernel->user transition
@@ -238,6 +258,8 @@ struct task_struct *__switch_to(struct task_struct *old,
 
 	current_thread_info_set[smp_processor_id()] = new_ti;
 	last = (_switch(old_ti, new_ti))->task;
+
+	restore_fpu(current);
 
 	local_irq_restore(flags);
 
@@ -258,7 +280,7 @@ void dump_elf_thread(elf_greg_t *dest, struct pt_regs* regs)
 	dest[35] = 0;
 }
 
-unsigned long get_wchan(struct task_struct *p)
+unsigned long __get_wchan(struct task_struct *p)
 {
 	/* TODO */
 

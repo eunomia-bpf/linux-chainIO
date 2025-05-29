@@ -48,6 +48,7 @@ static void acpi_rs_dump_address_common(union acpi_resource_data *resource);
 static void
 acpi_rs_dump_descriptor(void *resource, struct acpi_rsdump_info *table);
 
+#ifdef ACPI_DEBUGGER
 /*******************************************************************************
  *
  * FUNCTION:    acpi_rs_dump_resource_list
@@ -86,6 +87,9 @@ void acpi_rs_dump_resource_list(struct acpi_resource *resource_list)
 			acpi_os_printf
 			    ("Invalid descriptor type (%X) in resource list\n",
 			     resource_list->type);
+			return;
+		} else if (!resource_list->type) {
+			ACPI_ERROR((AE_INFO, "Invalid Zero Resource Type"));
 			return;
 		}
 
@@ -157,6 +161,7 @@ void acpi_rs_dump_irq_list(u8 *route_table)
 					   prt_element, prt_element->length);
 	}
 }
+#endif
 
 /*******************************************************************************
  *
@@ -256,6 +261,11 @@ acpi_rs_dump_descriptor(void *resource, struct acpi_rsdump_info *table)
 
 			acpi_rs_out_string(name,
 					   table->pointer[*target & 0x07]);
+			break;
+
+		case ACPI_RSD_6BITFLAG:
+
+			acpi_rs_out_integer8(name, (ACPI_GET8(target) & 0x3F));
 			break;
 
 		case ACPI_RSD_SHORTLIST:

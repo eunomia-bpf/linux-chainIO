@@ -18,20 +18,28 @@ struct bpf_stab {
 	struct bpf_map map;
 	struct sock **sks;
 	struct sk_psock_progs progs;
-	raw_spinlock_t lock;
+	spinlock_t lock;
 };
 
 #define SOCK_CREATE_FLAG_MASK				\
 	(BPF_F_NUMA_NODE | BPF_F_RDONLY | BPF_F_WRONLY)
 
+/* This mutex is used to
+ *  - protect race between prog/link attach/detach and link prog update, and
+ *  - protect race between releasing and accessing map in bpf_link.
+ * A single global mutex lock is used since it is expected contention is low.
+ */
+static DEFINE_MUTEX(sockmap_mutex);
+
+static int sock_map_prog_update(struct bpf_map *map, struct bpf_prog *prog,
+				struct bpf_prog *old, struct bpf_link *link,
+				u32 which);
+static struct sk_psock_progs *sock_map_progs(struct bpf_map *map);
+
 static struct bpf_map *sock_map_alloc(union bpf_attr *attr)
 {
 	struct bpf_stab *stab;
-	u64 cost;
-	int err;
 
-	if (!capable(CAP_NET_ADMIN))
-		return ERR_PTR(-EPERM);
 	if (attr->max_entries == 0 ||
 	    attr->key_size    != 4 ||
 	    (attr->value_size != sizeof(u32) &&
@@ -39,82 +47,70 @@ static struct bpf_map *sock_map_alloc(union bpf_attr *attr)
 	    attr->map_flags & ~SOCK_CREATE_FLAG_MASK)
 		return ERR_PTR(-EINVAL);
 
-	stab = kzalloc(sizeof(*stab), GFP_USER);
+	stab = bpf_map_area_alloc(sizeof(*stab), NUMA_NO_NODE);
 	if (!stab)
 		return ERR_PTR(-ENOMEM);
 
 	bpf_map_init_from_attr(&stab->map, attr);
-	raw_spin_lock_init(&stab->lock);
+	spin_lock_init(&stab->lock);
 
-	/* Make sure page count doesn't overflow. */
-	cost = (u64) stab->map.max_entries * sizeof(struct sock *);
-	err = bpf_map_charge_init(&stab->map.memory, cost);
-	if (err)
-		goto free_stab;
-
-	stab->sks = bpf_map_area_alloc(stab->map.max_entries *
+	stab->sks = bpf_map_area_alloc((u64) stab->map.max_entries *
 				       sizeof(struct sock *),
 				       stab->map.numa_node);
-	if (stab->sks)
-		return &stab->map;
-	err = -ENOMEM;
-	bpf_map_charge_finish(&stab->map.memory);
-free_stab:
-	kfree(stab);
-	return ERR_PTR(err);
+	if (!stab->sks) {
+		bpf_map_area_free(stab);
+		return ERR_PTR(-ENOMEM);
+	}
+
+	return &stab->map;
 }
 
 int sock_map_get_from_fd(const union bpf_attr *attr, struct bpf_prog *prog)
 {
-	u32 ufd = attr->target_fd;
 	struct bpf_map *map;
-	struct fd f;
 	int ret;
 
 	if (attr->attach_flags || attr->replace_bpf_fd)
 		return -EINVAL;
 
-	f = fdget(ufd);
+	CLASS(fd, f)(attr->target_fd);
 	map = __bpf_map_get(f);
 	if (IS_ERR(map))
 		return PTR_ERR(map);
-	ret = sock_map_prog_update(map, prog, NULL, attr->attach_type);
-	fdput(f);
+	mutex_lock(&sockmap_mutex);
+	ret = sock_map_prog_update(map, prog, NULL, NULL, attr->attach_type);
+	mutex_unlock(&sockmap_mutex);
 	return ret;
 }
 
 int sock_map_prog_detach(const union bpf_attr *attr, enum bpf_prog_type ptype)
 {
-	u32 ufd = attr->target_fd;
 	struct bpf_prog *prog;
 	struct bpf_map *map;
-	struct fd f;
 	int ret;
 
 	if (attr->attach_flags || attr->replace_bpf_fd)
 		return -EINVAL;
 
-	f = fdget(ufd);
+	CLASS(fd, f)(attr->target_fd);
 	map = __bpf_map_get(f);
 	if (IS_ERR(map))
 		return PTR_ERR(map);
 
 	prog = bpf_prog_get(attr->attach_bpf_fd);
-	if (IS_ERR(prog)) {
-		ret = PTR_ERR(prog);
-		goto put_map;
-	}
+	if (IS_ERR(prog))
+		return PTR_ERR(prog);
 
 	if (prog->type != ptype) {
 		ret = -EINVAL;
 		goto put_prog;
 	}
 
-	ret = sock_map_prog_update(map, NULL, prog, attr->attach_type);
+	mutex_lock(&sockmap_mutex);
+	ret = sock_map_prog_update(map, NULL, prog, NULL, attr->attach_type);
+	mutex_unlock(&sockmap_mutex);
 put_prog:
 	bpf_prog_put(prog);
-put_map:
-	fdput(f);
 	return ret;
 }
 
@@ -122,7 +118,6 @@ static void sock_map_sk_acquire(struct sock *sk)
 	__acquires(&sk->sk_lock.slock)
 {
 	lock_sock(sk);
-	preempt_disable();
 	rcu_read_lock();
 }
 
@@ -130,7 +125,6 @@ static void sock_map_sk_release(struct sock *sk)
 	__releases(&sk->sk_lock.slock)
 {
 	rcu_read_unlock();
-	preempt_enable();
 	release_sock(sk);
 }
 
@@ -155,11 +149,13 @@ static void sock_map_del_link(struct sock *sk,
 	list_for_each_entry_safe(link, tmp, &psock->link, list) {
 		if (link->link_raw == link_raw) {
 			struct bpf_map *map = link->map;
-			struct bpf_stab *stab = container_of(map, struct bpf_stab,
-							     map);
-			if (psock->parser.enabled && stab->progs.skb_parser)
+			struct sk_psock_progs *progs = sock_map_progs(map);
+
+			if (psock->saved_data_ready && progs->stream_parser)
 				strp_stop = true;
-			if (psock->parser.enabled && stab->progs.skb_verdict)
+			if (psock->saved_data_ready && progs->stream_verdict)
+				verdict_stop = true;
+			if (psock->saved_data_ready && progs->skb_verdict)
 				verdict_stop = true;
 			list_del(&link->list);
 			sk_psock_free_link(link);
@@ -170,8 +166,11 @@ static void sock_map_del_link(struct sock *sk,
 		write_lock_bh(&sk->sk_callback_lock);
 		if (strp_stop)
 			sk_psock_stop_strp(sk, psock);
-		else
+		if (verdict_stop)
 			sk_psock_stop_verdict(sk, psock);
+
+		if (psock->psock_update_sk_prot)
+			psock->psock_update_sk_prot(sk, psock, false);
 		write_unlock_bh(&sk->sk_callback_lock);
 	}
 }
@@ -188,26 +187,10 @@ static void sock_map_unref(struct sock *sk, void *link_raw)
 
 static int sock_map_init_proto(struct sock *sk, struct sk_psock *psock)
 {
-	struct proto *prot;
-
-	switch (sk->sk_type) {
-	case SOCK_STREAM:
-		prot = tcp_bpf_get_proto(sk, psock);
-		break;
-
-	case SOCK_DGRAM:
-		prot = udp_bpf_get_proto(sk, psock);
-		break;
-
-	default:
+	if (!sk->sk_prot->psock_update_sk_prot)
 		return -EINVAL;
-	}
-
-	if (IS_ERR(prot))
-		return PTR_ERR(prot);
-
-	sk_psock_update_proto(sk, psock, prot);
-	return 0;
+	psock->psock_update_sk_prot = sk->sk_prot->psock_update_sk_prot;
+	return sk->sk_prot->psock_update_sk_prot(sk, psock, false);
 }
 
 static struct sk_psock *sock_map_psock_get_checked(struct sock *sk)
@@ -230,26 +213,29 @@ out:
 	return psock;
 }
 
-static int sock_map_link(struct bpf_map *map, struct sk_psock_progs *progs,
-			 struct sock *sk)
+static int sock_map_link(struct bpf_map *map, struct sock *sk)
 {
-	struct bpf_prog *msg_parser, *skb_parser, *skb_verdict;
+	struct sk_psock_progs *progs = sock_map_progs(map);
+	struct bpf_prog *stream_verdict = NULL;
+	struct bpf_prog *stream_parser = NULL;
+	struct bpf_prog *skb_verdict = NULL;
+	struct bpf_prog *msg_parser = NULL;
 	struct sk_psock *psock;
 	int ret;
 
-	skb_verdict = READ_ONCE(progs->skb_verdict);
-	if (skb_verdict) {
-		skb_verdict = bpf_prog_inc_not_zero(skb_verdict);
-		if (IS_ERR(skb_verdict))
-			return PTR_ERR(skb_verdict);
+	stream_verdict = READ_ONCE(progs->stream_verdict);
+	if (stream_verdict) {
+		stream_verdict = bpf_prog_inc_not_zero(stream_verdict);
+		if (IS_ERR(stream_verdict))
+			return PTR_ERR(stream_verdict);
 	}
 
-	skb_parser = READ_ONCE(progs->skb_parser);
-	if (skb_parser) {
-		skb_parser = bpf_prog_inc_not_zero(skb_parser);
-		if (IS_ERR(skb_parser)) {
-			ret = PTR_ERR(skb_parser);
-			goto out_put_skb_verdict;
+	stream_parser = READ_ONCE(progs->stream_parser);
+	if (stream_parser) {
+		stream_parser = bpf_prog_inc_not_zero(stream_parser);
+		if (IS_ERR(stream_parser)) {
+			ret = PTR_ERR(stream_parser);
+			goto out_put_stream_verdict;
 		}
 	}
 
@@ -258,7 +244,16 @@ static int sock_map_link(struct bpf_map *map, struct sk_psock_progs *progs,
 		msg_parser = bpf_prog_inc_not_zero(msg_parser);
 		if (IS_ERR(msg_parser)) {
 			ret = PTR_ERR(msg_parser);
-			goto out_put_skb_parser;
+			goto out_put_stream_parser;
+		}
+	}
+
+	skb_verdict = READ_ONCE(progs->skb_verdict);
+	if (skb_verdict) {
+		skb_verdict = bpf_prog_inc_not_zero(skb_verdict);
+		if (IS_ERR(skb_verdict)) {
+			ret = PTR_ERR(skb_verdict);
+			goto out_put_msg_parser;
 		}
 	}
 
@@ -270,8 +265,11 @@ static int sock_map_link(struct bpf_map *map, struct sk_psock_progs *progs,
 
 	if (psock) {
 		if ((msg_parser && READ_ONCE(psock->progs.msg_parser)) ||
-		    (skb_parser  && READ_ONCE(psock->progs.skb_parser)) ||
-		    (skb_verdict && READ_ONCE(psock->progs.skb_verdict))) {
+		    (stream_parser  && READ_ONCE(psock->progs.stream_parser)) ||
+		    (skb_verdict && READ_ONCE(psock->progs.skb_verdict)) ||
+		    (skb_verdict && READ_ONCE(psock->progs.stream_verdict)) ||
+		    (stream_verdict && READ_ONCE(psock->progs.skb_verdict)) ||
+		    (stream_verdict && READ_ONCE(psock->progs.stream_verdict))) {
 			sk_psock_put(sk, psock);
 			ret = -EBUSY;
 			goto out_progs;
@@ -286,59 +284,51 @@ static int sock_map_link(struct bpf_map *map, struct sk_psock_progs *progs,
 
 	if (msg_parser)
 		psock_set_prog(&psock->progs.msg_parser, msg_parser);
+	if (stream_parser)
+		psock_set_prog(&psock->progs.stream_parser, stream_parser);
+	if (stream_verdict)
+		psock_set_prog(&psock->progs.stream_verdict, stream_verdict);
+	if (skb_verdict)
+		psock_set_prog(&psock->progs.skb_verdict, skb_verdict);
 
+	/* msg_* and stream_* programs references tracked in psock after this
+	 * point. Reference dec and cleanup will occur through psock destructor
+	 */
 	ret = sock_map_init_proto(sk, psock);
-	if (ret < 0)
-		goto out_drop;
+	if (ret < 0) {
+		sk_psock_put(sk, psock);
+		goto out;
+	}
 
 	write_lock_bh(&sk->sk_callback_lock);
-	if (skb_parser && skb_verdict && !psock->parser.enabled) {
+	if (stream_parser && stream_verdict && !psock->saved_data_ready) {
 		ret = sk_psock_init_strp(sk, psock);
-		if (ret)
-			goto out_unlock_drop;
-		psock_set_prog(&psock->progs.skb_verdict, skb_verdict);
-		psock_set_prog(&psock->progs.skb_parser, skb_parser);
+		if (ret) {
+			write_unlock_bh(&sk->sk_callback_lock);
+			sk_psock_put(sk, psock);
+			goto out;
+		}
 		sk_psock_start_strp(sk, psock);
-	} else if (!skb_parser && skb_verdict && !psock->parser.enabled) {
-		psock_set_prog(&psock->progs.skb_verdict, skb_verdict);
+	} else if (!stream_parser && stream_verdict && !psock->saved_data_ready) {
 		sk_psock_start_verdict(sk,psock);
+	} else if (!stream_verdict && skb_verdict && !psock->saved_data_ready) {
+		sk_psock_start_verdict(sk, psock);
 	}
 	write_unlock_bh(&sk->sk_callback_lock);
 	return 0;
-out_unlock_drop:
-	write_unlock_bh(&sk->sk_callback_lock);
-out_drop:
-	sk_psock_put(sk, psock);
 out_progs:
-	if (msg_parser)
-		bpf_prog_put(msg_parser);
-out_put_skb_parser:
-	if (skb_parser)
-		bpf_prog_put(skb_parser);
-out_put_skb_verdict:
 	if (skb_verdict)
 		bpf_prog_put(skb_verdict);
-	return ret;
-}
-
-static int sock_map_link_no_progs(struct bpf_map *map, struct sock *sk)
-{
-	struct sk_psock *psock;
-	int ret;
-
-	psock = sock_map_psock_get_checked(sk);
-	if (IS_ERR(psock))
-		return PTR_ERR(psock);
-
-	if (!psock) {
-		psock = sk_psock_init(sk, map->numa_node);
-		if (IS_ERR(psock))
-			return PTR_ERR(psock);
-	}
-
-	ret = sock_map_init_proto(sk, psock);
-	if (ret < 0)
-		sk_psock_put(sk, psock);
+out_put_msg_parser:
+	if (msg_parser)
+		bpf_prog_put(msg_parser);
+out_put_stream_parser:
+	if (stream_parser)
+		bpf_prog_put(stream_parser);
+out_put_stream_verdict:
+	if (stream_verdict)
+		bpf_prog_put(stream_verdict);
+out:
 	return ret;
 }
 
@@ -358,11 +348,13 @@ static void sock_map_free(struct bpf_map *map)
 
 		sk = xchg(psk, NULL);
 		if (sk) {
+			sock_hold(sk);
 			lock_sock(sk);
 			rcu_read_lock();
 			sock_map_unref(sk, psk);
 			rcu_read_unlock();
 			release_sock(sk);
+			sock_put(sk);
 		}
 	}
 
@@ -370,7 +362,7 @@ static void sock_map_free(struct bpf_map *map)
 	synchronize_rcu();
 
 	bpf_map_area_free(stab->sks);
-	kfree(stab);
+	bpf_map_area_free(stab);
 }
 
 static void sock_map_release_progs(struct bpf_map *map)
@@ -422,7 +414,7 @@ static int __sock_map_delete(struct bpf_stab *stab, struct sock *sk_test,
 	struct sock *sk;
 	int err = 0;
 
-	raw_spin_lock_bh(&stab->lock);
+	spin_lock_bh(&stab->lock);
 	sk = *psk;
 	if (!sk_test || sk_test == sk)
 		sk = xchg(psk, NULL);
@@ -432,7 +424,7 @@ static int __sock_map_delete(struct bpf_stab *stab, struct sock *sk_test,
 	else
 		err = -EINVAL;
 
-	raw_spin_unlock_bh(&stab->lock);
+	spin_unlock_bh(&stab->lock);
 	return err;
 }
 
@@ -444,7 +436,7 @@ static void sock_map_delete_from_link(struct bpf_map *map, struct sock *sk,
 	__sock_map_delete(stab, sk, link_raw);
 }
 
-static int sock_map_delete_elem(struct bpf_map *map, void *key)
+static long sock_map_delete_elem(struct bpf_map *map, void *key)
 {
 	struct bpf_stab *stab = container_of(map, struct bpf_stab, map);
 	u32 i = *(u32 *)key;
@@ -472,8 +464,6 @@ static int sock_map_get_next_key(struct bpf_map *map, void *key, void *next)
 	return 0;
 }
 
-static bool sock_map_redirect_allowed(const struct sock *sk);
-
 static int sock_map_update_common(struct bpf_map *map, u32 idx,
 				  struct sock *sk, u64 flags)
 {
@@ -493,21 +483,14 @@ static int sock_map_update_common(struct bpf_map *map, u32 idx,
 	if (!link)
 		return -ENOMEM;
 
-	/* Only sockets we can redirect into/from in BPF need to hold
-	 * refs to parser/verdict progs and have their sk_data_ready
-	 * and sk_write_space callbacks overridden.
-	 */
-	if (sock_map_redirect_allowed(sk))
-		ret = sock_map_link(map, &stab->progs, sk);
-	else
-		ret = sock_map_link_no_progs(map, sk);
+	ret = sock_map_link(map, sk);
 	if (ret < 0)
 		goto out_free;
 
 	psock = sk_psock(sk);
 	WARN_ON_ONCE(!psock);
 
-	raw_spin_lock_bh(&stab->lock);
+	spin_lock_bh(&stab->lock);
 	osk = stab->sks[idx];
 	if (osk && flags == BPF_NOEXIST) {
 		ret = -EEXIST;
@@ -521,10 +504,10 @@ static int sock_map_update_common(struct bpf_map *map, u32 idx,
 	stab->sks[idx] = sk;
 	if (osk)
 		sock_map_unref(osk, &stab->sks[idx]);
-	raw_spin_unlock_bh(&stab->lock);
+	spin_unlock_bh(&stab->lock);
 	return 0;
 out_unlock:
-	raw_spin_unlock_bh(&stab->lock);
+	spin_unlock_bh(&stab->lock);
 	if (psock)
 		sk_psock_put(sk, psock);
 out_free:
@@ -539,36 +522,26 @@ static bool sock_map_op_okay(const struct bpf_sock_ops_kern *ops)
 	       ops->op == BPF_SOCK_OPS_TCP_LISTEN_CB;
 }
 
-static bool sk_is_tcp(const struct sock *sk)
-{
-	return sk->sk_type == SOCK_STREAM &&
-	       sk->sk_protocol == IPPROTO_TCP;
-}
-
-static bool sk_is_udp(const struct sock *sk)
-{
-	return sk->sk_type == SOCK_DGRAM &&
-	       sk->sk_protocol == IPPROTO_UDP;
-}
-
 static bool sock_map_redirect_allowed(const struct sock *sk)
 {
-	return sk_is_tcp(sk) && sk->sk_state != TCP_LISTEN;
+	if (sk_is_tcp(sk))
+		return sk->sk_state != TCP_LISTEN;
+	else
+		return sk->sk_state == TCP_ESTABLISHED;
 }
 
 static bool sock_map_sk_is_suitable(const struct sock *sk)
 {
-	return sk_is_tcp(sk) || sk_is_udp(sk);
+	return !!sk->sk_prot->psock_update_sk_prot;
 }
 
 static bool sock_map_sk_state_allowed(const struct sock *sk)
 {
 	if (sk_is_tcp(sk))
 		return (1 << sk->sk_state) & (TCPF_ESTABLISHED | TCPF_LISTEN);
-	else if (sk_is_udp(sk))
-		return sk_hashed(sk);
-
-	return false;
+	if (sk_is_stream_unix(sk))
+		return (1 << sk->sk_state) & TCPF_ESTABLISHED;
+	return true;
 }
 
 static int sock_hash_update_common(struct bpf_map *map, void *key,
@@ -611,12 +584,12 @@ int sock_map_update_elem_sys(struct bpf_map *map, void *key, void *value,
 		ret = sock_hash_update_common(map, key, sk, flags);
 	sock_map_sk_release(sk);
 out:
-	fput(sock->file);
+	sockfd_put(sock);
 	return ret;
 }
 
-static int sock_map_update_elem(struct bpf_map *map, void *key,
-				void *value, u64 flags)
+static long sock_map_update_elem(struct bpf_map *map, void *key,
+				 void *value, u64 flags)
 {
 	struct sock *sk = (struct sock *)value;
 	int ret;
@@ -666,7 +639,6 @@ const struct bpf_func_proto bpf_sock_map_update_proto = {
 BPF_CALL_4(bpf_sk_redirect_map, struct sk_buff *, skb,
 	   struct bpf_map *, map, u32, key, u64, flags)
 {
-	struct tcp_skb_cb *tcb = TCP_SKB_CB(skb);
 	struct sock *sk;
 
 	if (unlikely(flags & ~(BPF_F_INGRESS)))
@@ -675,9 +647,10 @@ BPF_CALL_4(bpf_sk_redirect_map, struct sk_buff *, skb,
 	sk = __sock_map_lookup_elem(map, key);
 	if (unlikely(!sk || !sock_map_redirect_allowed(sk)))
 		return SK_DROP;
+	if ((flags & BPF_F_INGRESS) && sk_is_vsock(sk))
+		return SK_DROP;
 
-	tcb->bpf.flags = flags;
-	tcb->bpf.sk_redir = sk;
+	skb_bpf_set_redir(skb, sk, flags & BPF_F_INGRESS);
 	return SK_PASS;
 }
 
@@ -701,6 +674,10 @@ BPF_CALL_4(bpf_msg_redirect_map, struct sk_msg *, msg,
 
 	sk = __sock_map_lookup_elem(map, key);
 	if (unlikely(!sk || !sock_map_redirect_allowed(sk)))
+		return SK_DROP;
+	if (!(flags & BPF_F_INGRESS) && !sk_is_tcp(sk))
+		return SK_DROP;
+	if (sk_is_vsock(sk))
 		return SK_DROP;
 
 	msg->flags = flags;
@@ -815,17 +792,34 @@ static int sock_map_init_seq_private(void *priv_data,
 {
 	struct sock_map_seq_info *info = priv_data;
 
+	bpf_map_inc_with_uref(aux->map);
 	info->map = aux->map;
 	return 0;
+}
+
+static void sock_map_fini_seq_private(void *priv_data)
+{
+	struct sock_map_seq_info *info = priv_data;
+
+	bpf_map_put_with_uref(info->map);
+}
+
+static u64 sock_map_mem_usage(const struct bpf_map *map)
+{
+	u64 usage = sizeof(struct bpf_stab);
+
+	usage += (u64)map->max_entries * sizeof(struct sock *);
+	return usage;
 }
 
 static const struct bpf_iter_seq_info sock_map_iter_seq_info = {
 	.seq_ops		= &sock_map_seq_ops,
 	.init_seq_private	= sock_map_init_seq_private,
+	.fini_seq_private	= sock_map_fini_seq_private,
 	.seq_priv_size		= sizeof(struct sock_map_seq_info),
 };
 
-static int sock_map_btf_id;
+BTF_ID_LIST_SINGLE(sock_map_btf_ids, struct, bpf_stab)
 const struct bpf_map_ops sock_map_ops = {
 	.map_meta_equal		= bpf_map_meta_equal,
 	.map_alloc		= sock_map_alloc,
@@ -837,8 +831,8 @@ const struct bpf_map_ops sock_map_ops = {
 	.map_lookup_elem	= sock_map_lookup,
 	.map_release_uref	= sock_map_release_progs,
 	.map_check_btf		= map_check_no_btf,
-	.map_btf_name		= "bpf_stab",
-	.map_btf_id		= &sock_map_btf_id,
+	.map_mem_usage		= sock_map_mem_usage,
+	.map_btf_id		= &sock_map_btf_ids[0],
 	.iter_seq_info		= &sock_map_iter_seq_info,
 };
 
@@ -852,7 +846,7 @@ struct bpf_shtab_elem {
 
 struct bpf_shtab_bucket {
 	struct hlist_head head;
-	raw_spinlock_t lock;
+	spinlock_t lock;
 };
 
 struct bpf_shtab {
@@ -927,7 +921,7 @@ static void sock_hash_delete_from_link(struct bpf_map *map, struct sock *sk,
 	 * is okay since it's going away only after RCU grace period.
 	 * However, we need to check whether it's still present.
 	 */
-	raw_spin_lock_bh(&bucket->lock);
+	spin_lock_bh(&bucket->lock);
 	elem_probe = sock_hash_lookup_elem_raw(&bucket->head, elem->hash,
 					       elem->key, map->key_size);
 	if (elem_probe && elem_probe == elem) {
@@ -935,10 +929,10 @@ static void sock_hash_delete_from_link(struct bpf_map *map, struct sock *sk,
 		sock_map_unref(elem->sk, elem);
 		sock_hash_free_elem(htab, elem);
 	}
-	raw_spin_unlock_bh(&bucket->lock);
+	spin_unlock_bh(&bucket->lock);
 }
 
-static int sock_hash_delete_elem(struct bpf_map *map, void *key)
+static long sock_hash_delete_elem(struct bpf_map *map, void *key)
 {
 	struct bpf_shtab *htab = container_of(map, struct bpf_shtab, map);
 	u32 hash, key_size = map->key_size;
@@ -949,7 +943,7 @@ static int sock_hash_delete_elem(struct bpf_map *map, void *key)
 	hash = sock_hash_bucket_hash(key, key_size);
 	bucket = sock_hash_select_bucket(htab, hash);
 
-	raw_spin_lock_bh(&bucket->lock);
+	spin_lock_bh(&bucket->lock);
 	elem = sock_hash_lookup_elem_raw(&bucket->head, hash, key, key_size);
 	if (elem) {
 		hlist_del_rcu(&elem->node);
@@ -957,7 +951,7 @@ static int sock_hash_delete_elem(struct bpf_map *map, void *key)
 		sock_hash_free_elem(htab, elem);
 		ret = 0;
 	}
-	raw_spin_unlock_bh(&bucket->lock);
+	spin_unlock_bh(&bucket->lock);
 	return ret;
 }
 
@@ -975,8 +969,9 @@ static struct bpf_shtab_elem *sock_hash_alloc_elem(struct bpf_shtab *htab,
 		}
 	}
 
-	new = kmalloc_node(htab->elem_size, GFP_ATOMIC | __GFP_NOWARN,
-			   htab->map.numa_node);
+	new = bpf_map_kmalloc_node(&htab->map, htab->elem_size,
+				   GFP_ATOMIC | __GFP_NOWARN,
+				   htab->map.numa_node);
 	if (!new) {
 		atomic_dec(&htab->count);
 		return ERR_PTR(-ENOMEM);
@@ -1006,14 +1001,7 @@ static int sock_hash_update_common(struct bpf_map *map, void *key,
 	if (!link)
 		return -ENOMEM;
 
-	/* Only sockets we can redirect into/from in BPF need to hold
-	 * refs to parser/verdict progs and have their sk_data_ready
-	 * and sk_write_space callbacks overridden.
-	 */
-	if (sock_map_redirect_allowed(sk))
-		ret = sock_map_link(map, &htab->progs, sk);
-	else
-		ret = sock_map_link_no_progs(map, sk);
+	ret = sock_map_link(map, sk);
 	if (ret < 0)
 		goto out_free;
 
@@ -1023,7 +1011,7 @@ static int sock_hash_update_common(struct bpf_map *map, void *key,
 	hash = sock_hash_bucket_hash(key, key_size);
 	bucket = sock_hash_select_bucket(htab, hash);
 
-	raw_spin_lock_bh(&bucket->lock);
+	spin_lock_bh(&bucket->lock);
 	elem = sock_hash_lookup_elem_raw(&bucket->head, hash, key, key_size);
 	if (elem && flags == BPF_NOEXIST) {
 		ret = -EEXIST;
@@ -1049,10 +1037,10 @@ static int sock_hash_update_common(struct bpf_map *map, void *key,
 		sock_map_unref(elem->sk, elem);
 		sock_hash_free_elem(htab, elem);
 	}
-	raw_spin_unlock_bh(&bucket->lock);
+	spin_unlock_bh(&bucket->lock);
 	return 0;
 out_unlock:
-	raw_spin_unlock_bh(&bucket->lock);
+	spin_unlock_bh(&bucket->lock);
 	sk_psock_put(sk, psock);
 out_free:
 	sk_psock_free_link(link);
@@ -1103,10 +1091,7 @@ static struct bpf_map *sock_hash_alloc(union bpf_attr *attr)
 {
 	struct bpf_shtab *htab;
 	int i, err;
-	u64 cost;
 
-	if (!capable(CAP_NET_ADMIN))
-		return ERR_PTR(-EPERM);
 	if (attr->max_entries == 0 ||
 	    attr->key_size    == 0 ||
 	    (attr->value_size != sizeof(u32) &&
@@ -1116,7 +1101,7 @@ static struct bpf_map *sock_hash_alloc(union bpf_attr *attr)
 	if (attr->key_size > MAX_BPF_STACK)
 		return ERR_PTR(-E2BIG);
 
-	htab = kzalloc(sizeof(*htab), GFP_USER);
+	htab = bpf_map_area_alloc(sizeof(*htab), NUMA_NO_NODE);
 	if (!htab)
 		return ERR_PTR(-ENOMEM);
 
@@ -1131,33 +1116,22 @@ static struct bpf_map *sock_hash_alloc(union bpf_attr *attr)
 		goto free_htab;
 	}
 
-	cost = (u64) htab->buckets_num * sizeof(struct bpf_shtab_bucket) +
-	       (u64) htab->elem_size * htab->map.max_entries;
-	if (cost >= U32_MAX - PAGE_SIZE) {
-		err = -EINVAL;
-		goto free_htab;
-	}
-	err = bpf_map_charge_init(&htab->map.memory, cost);
-	if (err)
-		goto free_htab;
-
 	htab->buckets = bpf_map_area_alloc(htab->buckets_num *
 					   sizeof(struct bpf_shtab_bucket),
 					   htab->map.numa_node);
 	if (!htab->buckets) {
-		bpf_map_charge_finish(&htab->map.memory);
 		err = -ENOMEM;
 		goto free_htab;
 	}
 
 	for (i = 0; i < htab->buckets_num; i++) {
 		INIT_HLIST_HEAD(&htab->buckets[i].head);
-		raw_spin_lock_init(&htab->buckets[i].lock);
+		spin_lock_init(&htab->buckets[i].lock);
 	}
 
 	return &htab->map;
 free_htab:
-	kfree(htab);
+	bpf_map_area_free(htab);
 	return ERR_PTR(err);
 }
 
@@ -1184,11 +1158,11 @@ static void sock_hash_free(struct bpf_map *map)
 		 * exists, psock exists and holds a ref to socket. That
 		 * lets us to grab a socket ref too.
 		 */
-		raw_spin_lock_bh(&bucket->lock);
+		spin_lock_bh(&bucket->lock);
 		hlist_for_each_entry(elem, &bucket->head, node)
 			sock_hold(elem->sk);
 		hlist_move_list(&bucket->head, &unlink_list);
-		raw_spin_unlock_bh(&bucket->lock);
+		spin_unlock_bh(&bucket->lock);
 
 		/* Process removed entries out of atomic context to
 		 * block for socket lock before deleting the psock's
@@ -1204,13 +1178,14 @@ static void sock_hash_free(struct bpf_map *map)
 			sock_put(elem->sk);
 			sock_hash_free_elem(htab, elem);
 		}
+		cond_resched();
 	}
 
 	/* wait for psock readers accessing its map link */
 	synchronize_rcu();
 
 	bpf_map_area_free(htab->buckets);
-	kfree(htab);
+	bpf_map_area_free(htab);
 }
 
 static void *sock_hash_lookup_sys(struct bpf_map *map, void *key)
@@ -1270,7 +1245,6 @@ const struct bpf_func_proto bpf_sock_hash_update_proto = {
 BPF_CALL_4(bpf_sk_redirect_hash, struct sk_buff *, skb,
 	   struct bpf_map *, map, void *, key, u64, flags)
 {
-	struct tcp_skb_cb *tcb = TCP_SKB_CB(skb);
 	struct sock *sk;
 
 	if (unlikely(flags & ~(BPF_F_INGRESS)))
@@ -1279,9 +1253,10 @@ BPF_CALL_4(bpf_sk_redirect_hash, struct sk_buff *, skb,
 	sk = __sock_hash_lookup_elem(map, key);
 	if (unlikely(!sk || !sock_map_redirect_allowed(sk)))
 		return SK_DROP;
+	if ((flags & BPF_F_INGRESS) && sk_is_vsock(sk))
+		return SK_DROP;
 
-	tcb->bpf.flags = flags;
-	tcb->bpf.sk_redir = sk;
+	skb_bpf_set_redir(skb, sk, flags & BPF_F_INGRESS);
 	return SK_PASS;
 }
 
@@ -1305,6 +1280,10 @@ BPF_CALL_4(bpf_msg_redirect_hash, struct sk_msg *, msg,
 
 	sk = __sock_hash_lookup_elem(map, key);
 	if (unlikely(!sk || !sock_map_redirect_allowed(sk)))
+		return SK_DROP;
+	if (!(flags & BPF_F_INGRESS) && !sk_is_tcp(sk))
+		return SK_DROP;
+	if (sk_is_vsock(sk))
 		return SK_DROP;
 
 	msg->flags = flags;
@@ -1422,22 +1401,41 @@ static const struct seq_operations sock_hash_seq_ops = {
 };
 
 static int sock_hash_init_seq_private(void *priv_data,
-				     struct bpf_iter_aux_info *aux)
+				      struct bpf_iter_aux_info *aux)
 {
 	struct sock_hash_seq_info *info = priv_data;
 
+	bpf_map_inc_with_uref(aux->map);
 	info->map = aux->map;
 	info->htab = container_of(aux->map, struct bpf_shtab, map);
 	return 0;
 }
 
+static void sock_hash_fini_seq_private(void *priv_data)
+{
+	struct sock_hash_seq_info *info = priv_data;
+
+	bpf_map_put_with_uref(info->map);
+}
+
+static u64 sock_hash_mem_usage(const struct bpf_map *map)
+{
+	struct bpf_shtab *htab = container_of(map, struct bpf_shtab, map);
+	u64 usage = sizeof(*htab);
+
+	usage += htab->buckets_num * sizeof(struct bpf_shtab_bucket);
+	usage += atomic_read(&htab->count) * (u64)htab->elem_size;
+	return usage;
+}
+
 static const struct bpf_iter_seq_info sock_hash_iter_seq_info = {
 	.seq_ops		= &sock_hash_seq_ops,
 	.init_seq_private	= sock_hash_init_seq_private,
+	.fini_seq_private	= sock_hash_fini_seq_private,
 	.seq_priv_size		= sizeof(struct sock_hash_seq_info),
 };
 
-static int sock_hash_map_btf_id;
+BTF_ID_LIST_SINGLE(sock_hash_map_btf_ids, struct, bpf_shtab)
 const struct bpf_map_ops sock_hash_ops = {
 	.map_meta_equal		= bpf_map_meta_equal,
 	.map_alloc		= sock_hash_alloc,
@@ -1449,8 +1447,8 @@ const struct bpf_map_ops sock_hash_ops = {
 	.map_lookup_elem_sys_only = sock_hash_lookup_sys,
 	.map_release_uref	= sock_hash_release_progs,
 	.map_check_btf		= map_check_no_btf,
-	.map_btf_name		= "bpf_shtab",
-	.map_btf_id		= &sock_hash_map_btf_id,
+	.map_mem_usage		= sock_hash_mem_usage,
+	.map_btf_id		= &sock_hash_map_btf_ids[0],
 	.iter_seq_info		= &sock_hash_iter_seq_info,
 };
 
@@ -1468,34 +1466,133 @@ static struct sk_psock_progs *sock_map_progs(struct bpf_map *map)
 	return NULL;
 }
 
-int sock_map_prog_update(struct bpf_map *map, struct bpf_prog *prog,
-			 struct bpf_prog *old, u32 which)
+static int sock_map_prog_link_lookup(struct bpf_map *map, struct bpf_prog ***pprog,
+				     struct bpf_link ***plink, u32 which)
 {
 	struct sk_psock_progs *progs = sock_map_progs(map);
-	struct bpf_prog **pprog;
+	struct bpf_prog **cur_pprog;
+	struct bpf_link **cur_plink;
 
 	if (!progs)
 		return -EOPNOTSUPP;
 
 	switch (which) {
 	case BPF_SK_MSG_VERDICT:
-		pprog = &progs->msg_parser;
+		cur_pprog = &progs->msg_parser;
+		cur_plink = &progs->msg_parser_link;
 		break;
+#if IS_ENABLED(CONFIG_BPF_STREAM_PARSER)
 	case BPF_SK_SKB_STREAM_PARSER:
-		pprog = &progs->skb_parser;
+		cur_pprog = &progs->stream_parser;
+		cur_plink = &progs->stream_parser_link;
 		break;
+#endif
 	case BPF_SK_SKB_STREAM_VERDICT:
-		pprog = &progs->skb_verdict;
+		if (progs->skb_verdict)
+			return -EBUSY;
+		cur_pprog = &progs->stream_verdict;
+		cur_plink = &progs->stream_verdict_link;
+		break;
+	case BPF_SK_SKB_VERDICT:
+		if (progs->stream_verdict)
+			return -EBUSY;
+		cur_pprog = &progs->skb_verdict;
+		cur_plink = &progs->skb_verdict_link;
 		break;
 	default:
 		return -EOPNOTSUPP;
 	}
 
-	if (old)
-		return psock_replace_prog(pprog, prog, old);
-
-	psock_set_prog(pprog, prog);
+	*pprog = cur_pprog;
+	if (plink)
+		*plink = cur_plink;
 	return 0;
+}
+
+/* Handle the following four cases:
+ * prog_attach: prog != NULL, old == NULL, link == NULL
+ * prog_detach: prog == NULL, old != NULL, link == NULL
+ * link_attach: prog != NULL, old == NULL, link != NULL
+ * link_detach: prog == NULL, old != NULL, link != NULL
+ */
+static int sock_map_prog_update(struct bpf_map *map, struct bpf_prog *prog,
+				struct bpf_prog *old, struct bpf_link *link,
+				u32 which)
+{
+	struct bpf_prog **pprog;
+	struct bpf_link **plink;
+	int ret;
+
+	ret = sock_map_prog_link_lookup(map, &pprog, &plink, which);
+	if (ret)
+		return ret;
+
+	/* for prog_attach/prog_detach/link_attach, return error if a bpf_link
+	 * exists for that prog.
+	 */
+	if ((!link || prog) && *plink)
+		return -EBUSY;
+
+	if (old) {
+		ret = psock_replace_prog(pprog, prog, old);
+		if (!ret)
+			*plink = NULL;
+	} else {
+		psock_set_prog(pprog, prog);
+		if (link)
+			*plink = link;
+	}
+
+	return ret;
+}
+
+int sock_map_bpf_prog_query(const union bpf_attr *attr,
+			    union bpf_attr __user *uattr)
+{
+	__u32 __user *prog_ids = u64_to_user_ptr(attr->query.prog_ids);
+	u32 prog_cnt = 0, flags = 0;
+	struct bpf_prog **pprog;
+	struct bpf_prog *prog;
+	struct bpf_map *map;
+	u32 id = 0;
+	int ret;
+
+	if (attr->query.query_flags)
+		return -EINVAL;
+
+	CLASS(fd, f)(attr->target_fd);
+	map = __bpf_map_get(f);
+	if (IS_ERR(map))
+		return PTR_ERR(map);
+
+	rcu_read_lock();
+
+	ret = sock_map_prog_link_lookup(map, &pprog, NULL, attr->query.attach_type);
+	if (ret)
+		goto end;
+
+	prog = *pprog;
+	prog_cnt = !prog ? 0 : 1;
+
+	if (!attr->query.prog_cnt || !prog_ids || !prog_cnt)
+		goto end;
+
+	/* we do not hold the refcnt, the bpf prog may be released
+	 * asynchronously and the id would be set to 0.
+	 */
+	id = data_race(prog->aux->id);
+	if (id == 0)
+		prog_cnt = 0;
+
+end:
+	rcu_read_unlock();
+
+	if (copy_to_user(&uattr->query.attach_flags, &flags, sizeof(flags)) ||
+	    (id != 0 && copy_to_user(prog_ids, &id, sizeof(u32))) ||
+	    copy_to_user(&uattr->query.prog_cnt, &prog_cnt, sizeof(prog_cnt)))
+		ret = -EFAULT;
+
+	return ret;
 }
 
 static void sock_map_unlink(struct sock *sk, struct sk_psock_link *link)
@@ -1531,16 +1628,42 @@ void sock_map_unhash(struct sock *sk)
 	psock = sk_psock(sk);
 	if (unlikely(!psock)) {
 		rcu_read_unlock();
-		if (sk->sk_prot->unhash)
-			sk->sk_prot->unhash(sk);
-		return;
+		saved_unhash = READ_ONCE(sk->sk_prot)->unhash;
+	} else {
+		saved_unhash = psock->saved_unhash;
+		sock_map_remove_links(sk, psock);
+		rcu_read_unlock();
 	}
-
-	saved_unhash = psock->saved_unhash;
-	sock_map_remove_links(sk, psock);
-	rcu_read_unlock();
-	saved_unhash(sk);
+	if (WARN_ON_ONCE(saved_unhash == sock_map_unhash))
+		return;
+	if (saved_unhash)
+		saved_unhash(sk);
 }
+EXPORT_SYMBOL_GPL(sock_map_unhash);
+
+void sock_map_destroy(struct sock *sk)
+{
+	void (*saved_destroy)(struct sock *sk);
+	struct sk_psock *psock;
+
+	rcu_read_lock();
+	psock = sk_psock_get(sk);
+	if (unlikely(!psock)) {
+		rcu_read_unlock();
+		saved_destroy = READ_ONCE(sk->sk_prot)->destroy;
+	} else {
+		saved_destroy = psock->saved_destroy;
+		sock_map_remove_links(sk, psock);
+		rcu_read_unlock();
+		sk_psock_stop(psock);
+		sk_psock_put(sk, psock);
+	}
+	if (WARN_ON_ONCE(saved_destroy == sock_map_destroy))
+		return;
+	if (saved_destroy)
+		saved_destroy(sk);
+}
+EXPORT_SYMBOL_GPL(sock_map_destroy);
 
 void sock_map_close(struct sock *sk, long timeout)
 {
@@ -1550,17 +1673,225 @@ void sock_map_close(struct sock *sk, long timeout)
 	lock_sock(sk);
 	rcu_read_lock();
 	psock = sk_psock(sk);
-	if (unlikely(!psock)) {
+	if (likely(psock)) {
+		saved_close = psock->saved_close;
+		sock_map_remove_links(sk, psock);
+		psock = sk_psock_get(sk);
+		if (unlikely(!psock))
+			goto no_psock;
+		rcu_read_unlock();
+		sk_psock_stop(psock);
+		release_sock(sk);
+		cancel_delayed_work_sync(&psock->work);
+		sk_psock_put(sk, psock);
+	} else {
+		saved_close = READ_ONCE(sk->sk_prot)->close;
+no_psock:
 		rcu_read_unlock();
 		release_sock(sk);
-		return sk->sk_prot->close(sk, timeout);
 	}
 
-	saved_close = psock->saved_close;
-	sock_map_remove_links(sk, psock);
-	rcu_read_unlock();
-	release_sock(sk);
+	/* Make sure we do not recurse. This is a bug.
+	 * Leak the socket instead of crashing on a stack overflow.
+	 */
+	if (WARN_ON_ONCE(saved_close == sock_map_close))
+		return;
 	saved_close(sk, timeout);
+}
+EXPORT_SYMBOL_GPL(sock_map_close);
+
+struct sockmap_link {
+	struct bpf_link link;
+	struct bpf_map *map;
+	enum bpf_attach_type attach_type;
+};
+
+static void sock_map_link_release(struct bpf_link *link)
+{
+	struct sockmap_link *sockmap_link = container_of(link, struct sockmap_link, link);
+
+	mutex_lock(&sockmap_mutex);
+	if (!sockmap_link->map)
+		goto out;
+
+	WARN_ON_ONCE(sock_map_prog_update(sockmap_link->map, NULL, link->prog, link,
+					  sockmap_link->attach_type));
+
+	bpf_map_put_with_uref(sockmap_link->map);
+	sockmap_link->map = NULL;
+out:
+	mutex_unlock(&sockmap_mutex);
+}
+
+static int sock_map_link_detach(struct bpf_link *link)
+{
+	sock_map_link_release(link);
+	return 0;
+}
+
+static void sock_map_link_dealloc(struct bpf_link *link)
+{
+	kfree(link);
+}
+
+/* Handle the following two cases:
+ * case 1: link != NULL, prog != NULL, old != NULL
+ * case 2: link != NULL, prog != NULL, old == NULL
+ */
+static int sock_map_link_update_prog(struct bpf_link *link,
+				     struct bpf_prog *prog,
+				     struct bpf_prog *old)
+{
+	const struct sockmap_link *sockmap_link = container_of(link, struct sockmap_link, link);
+	struct bpf_prog **pprog, *old_link_prog;
+	struct bpf_link **plink;
+	int ret = 0;
+
+	mutex_lock(&sockmap_mutex);
+
+	/* If old prog is not NULL, ensure old prog is the same as link->prog. */
+	if (old && link->prog != old) {
+		ret = -EPERM;
+		goto out;
+	}
+	/* Ensure link->prog has the same type/attach_type as the new prog. */
+	if (link->prog->type != prog->type ||
+	    link->prog->expected_attach_type != prog->expected_attach_type) {
+		ret = -EINVAL;
+		goto out;
+	}
+	if (!sockmap_link->map) {
+		ret = -ENOLINK;
+		goto out;
+	}
+
+	ret = sock_map_prog_link_lookup(sockmap_link->map, &pprog, &plink,
+					sockmap_link->attach_type);
+	if (ret)
+		goto out;
+
+	/* return error if the stored bpf_link does not match the incoming bpf_link. */
+	if (link != *plink) {
+		ret = -EBUSY;
+		goto out;
+	}
+
+	if (old) {
+		ret = psock_replace_prog(pprog, prog, old);
+		if (ret)
+			goto out;
+	} else {
+		psock_set_prog(pprog, prog);
+	}
+
+	bpf_prog_inc(prog);
+	old_link_prog = xchg(&link->prog, prog);
+	bpf_prog_put(old_link_prog);
+
+out:
+	mutex_unlock(&sockmap_mutex);
+	return ret;
+}
+
+static u32 sock_map_link_get_map_id(const struct sockmap_link *sockmap_link)
+{
+	u32 map_id = 0;
+
+	mutex_lock(&sockmap_mutex);
+	if (sockmap_link->map)
+		map_id = sockmap_link->map->id;
+	mutex_unlock(&sockmap_mutex);
+	return map_id;
+}
+
+static int sock_map_link_fill_info(const struct bpf_link *link,
+				   struct bpf_link_info *info)
+{
+	const struct sockmap_link *sockmap_link = container_of(link, struct sockmap_link, link);
+	u32 map_id = sock_map_link_get_map_id(sockmap_link);
+
+	info->sockmap.map_id = map_id;
+	info->sockmap.attach_type = sockmap_link->attach_type;
+	return 0;
+}
+
+static void sock_map_link_show_fdinfo(const struct bpf_link *link,
+				      struct seq_file *seq)
+{
+	const struct sockmap_link *sockmap_link = container_of(link, struct sockmap_link, link);
+	u32 map_id = sock_map_link_get_map_id(sockmap_link);
+
+	seq_printf(seq, "map_id:\t%u\n", map_id);
+	seq_printf(seq, "attach_type:\t%u\n", sockmap_link->attach_type);
+}
+
+static const struct bpf_link_ops sock_map_link_ops = {
+	.release = sock_map_link_release,
+	.dealloc = sock_map_link_dealloc,
+	.detach = sock_map_link_detach,
+	.update_prog = sock_map_link_update_prog,
+	.fill_link_info = sock_map_link_fill_info,
+	.show_fdinfo = sock_map_link_show_fdinfo,
+};
+
+int sock_map_link_create(const union bpf_attr *attr, struct bpf_prog *prog)
+{
+	struct bpf_link_primer link_primer;
+	struct sockmap_link *sockmap_link;
+	enum bpf_attach_type attach_type;
+	struct bpf_map *map;
+	int ret;
+
+	if (attr->link_create.flags)
+		return -EINVAL;
+
+	map = bpf_map_get_with_uref(attr->link_create.target_fd);
+	if (IS_ERR(map))
+		return PTR_ERR(map);
+	if (map->map_type != BPF_MAP_TYPE_SOCKMAP && map->map_type != BPF_MAP_TYPE_SOCKHASH) {
+		ret = -EINVAL;
+		goto out;
+	}
+
+	sockmap_link = kzalloc(sizeof(*sockmap_link), GFP_USER);
+	if (!sockmap_link) {
+		ret = -ENOMEM;
+		goto out;
+	}
+
+	attach_type = attr->link_create.attach_type;
+	bpf_link_init(&sockmap_link->link, BPF_LINK_TYPE_SOCKMAP, &sock_map_link_ops, prog);
+	sockmap_link->map = map;
+	sockmap_link->attach_type = attach_type;
+
+	ret = bpf_link_prime(&sockmap_link->link, &link_primer);
+	if (ret) {
+		kfree(sockmap_link);
+		goto out;
+	}
+
+	mutex_lock(&sockmap_mutex);
+	ret = sock_map_prog_update(map, prog, NULL, &sockmap_link->link, attach_type);
+	mutex_unlock(&sockmap_mutex);
+	if (ret) {
+		bpf_link_cleanup(&link_primer);
+		goto out;
+	}
+
+	/* Increase refcnt for the prog since when old prog is replaced with
+	 * psock_replace_prog() and psock_set_prog() its refcnt will be decreased.
+	 *
+	 * Actually, we do not need to increase refcnt for the prog since bpf_link
+	 * will hold a reference. But in order to have less complexity w.r.t.
+	 * replacing/setting prog, let us increase the refcnt to make things simpler.
+	 */
+	bpf_prog_inc(prog);
+
+	return bpf_link_settle(&link_primer);
+
+out:
+	bpf_map_put_with_uref(map);
+	return ret;
 }
 
 static int sock_map_iter_attach_target(struct bpf_prog *prog,
@@ -1608,7 +1939,7 @@ static struct bpf_iter_reg sock_map_iter_reg = {
 	.ctx_arg_info_size	= 2,
 	.ctx_arg_info		= {
 		{ offsetof(struct bpf_iter__sockmap, key),
-		  PTR_TO_RDONLY_BUF_OR_NULL },
+		  PTR_TO_BUF | PTR_MAYBE_NULL | MEM_RDONLY },
 		{ offsetof(struct bpf_iter__sockmap, sk),
 		  PTR_TO_BTF_ID_OR_NULL },
 	},

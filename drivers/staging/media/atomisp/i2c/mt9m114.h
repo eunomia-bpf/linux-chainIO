@@ -3,17 +3,6 @@
  * Support for mt9m114 Camera Sensor.
  *
  * Copyright (c) 2010 Intel Corporation. All Rights Reserved.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License version
- * 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- *
  */
 
 #ifndef __A1040_H__
@@ -136,9 +125,6 @@
 #define MT9M114_BPAT_BGBGGRGR	BIT(3)
 
 #define MT9M114_FOCAL_LENGTH_NUM	208	/*2.08mm*/
-#define MT9M114_FOCAL_LENGTH_DEM	100
-#define MT9M114_F_NUMBER_DEFAULT_NUM	24
-#define MT9M114_F_NUMBER_DEM	10
 #define MT9M114_WAIT_STAT_TIMEOUT	100
 #define MT9M114_FLICKER_MODE_50HZ	1
 #define MT9M114_FLICKER_MODE_60HZ	2
@@ -319,9 +305,6 @@ struct mt9m114_res_struct {
 	struct regval_list *regs;
 	u16 pixels_per_line;
 	u16 lines_per_frame;
-	u8 bin_factor_x;
-	u8 bin_factor_y;
-	u8 bin_mode;
 };
 
 /* 2 bytes used for address: 256 bytes total */
@@ -353,9 +336,6 @@ static struct mt9m114_res_struct mt9m114_res[] = {
 
 		.pixels_per_line = 0x0640,
 		.lines_per_frame = 0x0307,
-		.bin_factor_x = 1,
-		.bin_factor_y = 1,
-		.bin_mode = 0,
 	},
 	{
 		.desc	= "848P",
@@ -369,9 +349,6 @@ static struct mt9m114_res_struct mt9m114_res[] = {
 
 		.pixels_per_line = 0x0640,
 		.lines_per_frame = 0x03E8,
-		.bin_factor_x = 1,
-		.bin_factor_y = 1,
-		.bin_mode = 0,
 	},
 	{
 		.desc	= "960P",
@@ -385,9 +362,6 @@ static struct mt9m114_res_struct mt9m114_res[] = {
 
 		.pixels_per_line = 0x0644, /* consistent with regs arrays */
 		.lines_per_frame = 0x03E5, /* consistent with regs arrays */
-		.bin_factor_x = 1,
-		.bin_factor_y = 1,
-		.bin_mode = 0,
 	},
 };
 
@@ -764,8 +738,10 @@ static struct misensor_reg const mt9m114_common[] = {
 	{MISENSOR_8BIT, 0xC85C, 0x03},    /* cam_crop_cropmode = 3 */
 	{MISENSOR_16BIT, 0xC868, 0x0280}, /* cam_output_width = 952 */
 	{MISENSOR_16BIT, 0xC86A, 0x01E0}, /* cam_output_height = 538 */
-	/* LOAD = Step3-Recommended
-	 * Patch,Errata and Sensor optimization Setting */
+	/*
+	 * LOAD = Step3-Recommended
+	 * Patch, Errata and Sensor optimization Setting
+	 */
 	{MISENSOR_16BIT, 0x316A, 0x8270}, /* DAC_TXLO_ROW */
 	{MISENSOR_16BIT, 0x316C, 0x8270}, /* DAC_TXLO */
 	{MISENSOR_16BIT, 0x3ED0, 0x2305}, /* DAC_LD_4_5 */

@@ -1,17 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Texas Instrument's System Control Interface (TI-SCI) reset driver
  *
  * Copyright (C) 2015-2017 Texas Instruments Incorporated - https://www.ti.com/
  *	Andrew F. Davis <afd@ti.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed "as is" WITHOUT ANY WARRANTY of any
- * kind, whether express or implied; without even the implied warranty
- * of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #include <linux/idr.h>
@@ -243,20 +235,18 @@ static int ti_sci_reset_probe(struct platform_device *pdev)
 	return reset_controller_register(&data->rcdev);
 }
 
-static int ti_sci_reset_remove(struct platform_device *pdev)
+static void ti_sci_reset_remove(struct platform_device *pdev)
 {
 	struct ti_sci_reset_data *data = platform_get_drvdata(pdev);
 
 	reset_controller_unregister(&data->rcdev);
 
 	idr_destroy(&data->idr);
-
-	return 0;
 }
 
 static struct platform_driver ti_sci_reset_driver = {
 	.probe = ti_sci_reset_probe,
-	.remove = ti_sci_reset_remove,
+	.remove_new = ti_sci_reset_remove,
 	.driver = {
 		.name = "ti-sci-reset",
 		.of_match_table = ti_sci_reset_of_match,

@@ -139,21 +139,6 @@ chained skbs (skb->next/prev list).
 Features contained in NETIF_F_SOFT_FEATURES are features of networking
 stack. Driver should not change behaviour based on them.
 
- * LLTX driver (deprecated for hardware drivers)
-
-NETIF_F_LLTX is meant to be used by drivers that don't need locking at all,
-e.g. software tunnels.
-
-This is also used in a few legacy drivers that implement their
-own locking, don't use it for new (hardware) drivers.
-
- * netns-local device
-
-NETIF_F_NETNS_LOCAL is set for devices that are not allowed to move between
-network namespaces (e.g. loopback).
-
-Don't use it in drivers.
-
  * VLAN challenged
 
 NETIF_F_VLAN_CHALLENGED should be set for devices which can't cope with VLAN
@@ -182,3 +167,24 @@ stricter than Hardware LRO.  A packet stream merged by Hardware GRO must
 be re-segmentable by GSO or TSO back to the exact original packet stream.
 Hardware GRO is dependent on RXCSUM since every packet successfully merged
 by hardware must also have the checksum verified by hardware.
+
+* hsr-tag-ins-offload
+
+This should be set for devices which insert an HSR (High-availability Seamless
+Redundancy) or PRP (Parallel Redundancy Protocol) tag automatically.
+
+* hsr-tag-rm-offload
+
+This should be set for devices which remove HSR (High-availability Seamless
+Redundancy) or PRP (Parallel Redundancy Protocol) tags automatically.
+
+* hsr-fwd-offload
+
+This should be set for devices which forward HSR (High-availability Seamless
+Redundancy) frames from one port to another in hardware.
+
+* hsr-dup-offload
+
+This should be set for devices which duplicate outgoing HSR (High-availability
+Seamless Redundancy) or PRP (Parallel Redundancy Protocol) tags automatically
+frames in hardware.

@@ -66,6 +66,27 @@ static enum mac_mode hns_get_enet_interface(const struct hns_mac_cb *mac_cb)
 	}
 }
 
+static u32 hns_mac_link_anti_shake(struct mac_driver *mac_ctrl_drv)
+{
+#define HNS_MAC_LINK_WAIT_TIME 5
+#define HNS_MAC_LINK_WAIT_CNT 40
+
+	u32 link_status = 0;
+	int i;
+
+	if (!mac_ctrl_drv->get_link_status)
+		return link_status;
+
+	for (i = 0; i < HNS_MAC_LINK_WAIT_CNT; i++) {
+		msleep(HNS_MAC_LINK_WAIT_TIME);
+		mac_ctrl_drv->get_link_status(mac_ctrl_drv, &link_status);
+		if (!link_status)
+			break;
+	}
+
+	return link_status;
+}
+
 void hns_mac_get_link_status(struct hns_mac_cb *mac_cb, u32 *link_status)
 {
 	struct mac_driver *mac_ctrl_drv;
@@ -83,6 +104,14 @@ void hns_mac_get_link_status(struct hns_mac_cb *mac_cb, u32 *link_status)
 							       &sfp_prsnt);
 		if (!ret)
 			*link_status = *link_status && sfp_prsnt;
+
+		/* for FIBER port, it may have a fake link up.
+		 * when the link status changes from down to up, we need to do
+		 * anti-shake. the anti-shake time is base on tests.
+		 * only FIBER port need to do this.
+		 */
+		if (*link_status && !mac_cb->link)
+			*link_status = hns_mac_link_anti_shake(mac_ctrl_drv);
 	}
 
 	mac_cb->link = *link_status;
@@ -111,7 +140,7 @@ int hns_mac_get_port_info(struct hns_mac_cb *mac_cb,
 }
 
 /**
- *hns_mac_is_adjust_link - check is need change mac speed and duplex register
+ *hns_mac_need_adjust_link - check is need change mac speed and duplex register
  *@mac_cb: mac device
  *@speed: phy device speed
  *@duplex:phy device duplex
@@ -240,7 +269,7 @@ int hns_mac_get_inner_port_num(struct hns_mac_cb *mac_cb, u8 vmid, u8 *port_num)
  *@addr:mac address
  */
 int hns_mac_change_vf_addr(struct hns_mac_cb *mac_cb,
-			   u32 vmid, char *addr)
+			   u32 vmid, const char *addr)
 {
 	int ret;
 	struct mac_driver *mac_ctrl_drv = hns_mac_get_drv(mac_cb);
@@ -374,7 +403,7 @@ static void hns_mac_param_get(struct mac_params *param,
 }
 
 /**
- * hns_mac_queue_config_bc_en - set broadcast rx&tx enable
+ * hns_mac_port_config_bc_en - set broadcast rx&tx enable
  * @mac_cb: mac device
  * @port_num: queue number
  * @vlan_id: vlan id`
@@ -597,7 +626,7 @@ int hns_mac_set_autoneg(struct hns_mac_cb *mac_cb, u8 enable)
 }
 
 /**
- * hns_mac_set_autoneg - set rx & tx pause parameter
+ * hns_mac_set_pauseparam - set rx & tx pause parameter
  * @mac_cb: mac control block
  * @rx_en: rx enable or not
  * @tx_en: tx enable or not
@@ -705,7 +734,7 @@ hns_mac_register_phydev(struct mii_bus *mdio, struct hns_mac_cb *mac_cb,
 		return -ENODATA;
 
 	phy = get_phy_device(mdio, addr, is_c45);
-	if (!phy || IS_ERR(phy))
+	if (IS_ERR_OR_NULL(phy))
 		return -EIO;
 
 	phy->irq = mdio->irq[addr];
@@ -904,6 +933,7 @@ static int hns_mac_get_info(struct hns_mac_cb *mac_cb)
 			mac_cb->cpld_ctrl = NULL;
 		} else {
 			syscon = syscon_node_to_regmap(cpld_args.np);
+			of_node_put(cpld_args.np);
 			if (IS_ERR_OR_NULL(syscon)) {
 				dev_dbg(mac_cb->dev, "no cpld-syscon found!\n");
 				mac_cb->cpld_ctrl = NULL;
@@ -914,8 +944,7 @@ static int hns_mac_get_info(struct hns_mac_cb *mac_cb)
 		}
 	} else if (is_acpi_node(mac_cb->fw_port)) {
 		ret = hns_mac_register_phy(mac_cb);
-		/*
-		 * Mac can work well if there is phy or not.If the port don't
+		/* Mac can work well if there is phy or not.If the port don't
 		 * connect with phy, the return value will be ignored. Only
 		 * when there is phy but can't find mdio bus, the return value
 		 * will be handled.
@@ -1061,9 +1090,8 @@ int hns_mac_init(struct dsaf_device *dsaf_dev)
 	u32 port_id;
 	int max_port_num = hns_mac_get_max_port_num(dsaf_dev);
 	struct hns_mac_cb *mac_cb;
-	struct fwnode_handle *child;
 
-	device_for_each_child_node(dsaf_dev->dev, child) {
+	device_for_each_child_node_scoped(dsaf_dev->dev, child) {
 		ret = fwnode_property_read_u32(child, "reg", &port_id);
 		if (ret) {
 			dev_err(dsaf_dev->dev,
@@ -1079,6 +1107,7 @@ int hns_mac_init(struct dsaf_device *dsaf_dev)
 				      GFP_KERNEL);
 		if (!mac_cb)
 			return -ENOMEM;
+
 		mac_cb->fw_port = child;
 		mac_cb->mac_id = (u8)port_id;
 		dsaf_dev->mac_cb[port_id] = mac_cb;
@@ -1161,8 +1190,7 @@ void hns_mac_get_stats(struct hns_mac_cb *mac_cb, u64 *data)
 	mac_ctrl_drv->get_ethtool_stats(mac_ctrl_drv, data);
 }
 
-void hns_mac_get_strings(struct hns_mac_cb *mac_cb,
-			 int stringset, u8 *data)
+void hns_mac_get_strings(struct hns_mac_cb *mac_cb, int stringset, u8 **data)
 {
 	struct mac_driver *mac_ctrl_drv = hns_mac_get_drv(mac_cb);
 
@@ -1202,7 +1230,7 @@ void hns_mac_get_regs(struct hns_mac_cb *mac_cb, void *data)
 
 void hns_set_led_opt(struct hns_mac_cb *mac_cb)
 {
-	int nic_data = 0;
+	int nic_data;
 	int txpkts, rxpkts;
 
 	txpkts = mac_cb->txpkt_for_led - mac_cb->hw_stats.tx_good_pkts;

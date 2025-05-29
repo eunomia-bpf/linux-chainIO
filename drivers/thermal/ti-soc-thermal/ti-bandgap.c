@@ -9,28 +9,29 @@
  *   Eduardo Valentin <eduardo.valentin@ti.com>
  */
 
-#include <linux/module.h>
-#include <linux/export.h>
-#include <linux/init.h>
-#include <linux/kernel.h>
-#include <linux/interrupt.h>
 #include <linux/clk.h>
-#include <linux/gpio/consumer.h>
-#include <linux/platform_device.h>
-#include <linux/err.h>
-#include <linux/types.h>
-#include <linux/spinlock.h>
-#include <linux/reboot.h>
-#include <linux/of_device.h>
-#include <linux/of_platform.h>
-#include <linux/of_irq.h>
-#include <linux/io.h>
 #include <linux/cpu_pm.h>
 #include <linux/device.h>
-#include <linux/pm_runtime.h>
-#include <linux/pm.h>
+#include <linux/err.h>
+#include <linux/export.h>
+#include <linux/gpio/consumer.h>
+#include <linux/init.h>
+#include <linux/interrupt.h>
+#include <linux/io.h>
+#include <linux/iopoll.h>
+#include <linux/kernel.h>
+#include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
+#include <linux/of_irq.h>
+#include <linux/of_platform.h>
+#include <linux/platform_device.h>
+#include <linux/pm.h>
+#include <linux/pm_runtime.h>
+#include <linux/reboot.h>
+#include <linux/spinlock.h>
+#include <linux/sys_soc.h>
+#include <linux/types.h>
 
 #include "ti-bandgap.h"
 
@@ -225,7 +226,7 @@ static irqreturn_t ti_bandgap_talert_irq_handler(int irq, void *data)
 		/*
 		 * One TALERT interrupt: Two sources
 		 * If the interrupt is due to t_hot then mask t_hot and
-		 * and unmask t_cold else mask t_cold and unmask t_hot
+		 * unmask t_cold else mask t_cold and unmask t_hot
 		 */
 		if (t_hot) {
 			ctrl &= ~tsr->mask_hot_mask;
@@ -313,7 +314,7 @@ int ti_bandgap_adc_to_mcelsius(struct ti_bandgap *bgp, int adc_val, int *t)
  */
 static inline int ti_bandgap_validate(struct ti_bandgap *bgp, int id)
 {
-	if (!bgp || IS_ERR(bgp)) {
+	if (IS_ERR_OR_NULL(bgp)) {
 		pr_err("%s: invalid bandgap pointer\n", __func__);
 		return -EINVAL;
 	}
@@ -601,35 +602,40 @@ void *ti_bandgap_get_sensor_data(struct ti_bandgap *bgp, int id)
 static int
 ti_bandgap_force_single_read(struct ti_bandgap *bgp, int id)
 {
-	u32 counter = 1000;
-	struct temp_sensor_registers *tsr;
+	struct temp_sensor_registers *tsr = bgp->conf->sensors[id].registers;
+	void __iomem *temp_sensor_ctrl = bgp->base + tsr->temp_sensor_ctrl;
+	int error;
+	u32 val;
 
-	/* Select single conversion mode */
-	if (TI_BANDGAP_HAS(bgp, MODE_CONFIG))
-		RMW_BITS(bgp, id, bgap_mode_ctrl, mode_ctrl_mask, 0);
-
-	/* Start of Conversion = 1 */
-	RMW_BITS(bgp, id, temp_sensor_ctrl, bgap_soc_mask, 1);
-
-	/* Wait for EOCZ going up */
-	tsr = bgp->conf->sensors[id].registers;
-
-	while (--counter) {
-		if (ti_bandgap_readl(bgp, tsr->temp_sensor_ctrl) &
-		    tsr->bgap_eocz_mask)
-			break;
+	/* Select continuous or single conversion mode */
+	if (TI_BANDGAP_HAS(bgp, MODE_CONFIG)) {
+		if (TI_BANDGAP_HAS(bgp, CONT_MODE_ONLY))
+			RMW_BITS(bgp, id, bgap_mode_ctrl, mode_ctrl_mask, 1);
+		else
+			RMW_BITS(bgp, id, bgap_mode_ctrl, mode_ctrl_mask, 0);
 	}
 
-	/* Start of Conversion = 0 */
-	RMW_BITS(bgp, id, temp_sensor_ctrl, bgap_soc_mask, 0);
+	/* Set Start of Conversion if available */
+	if (tsr->bgap_soc_mask) {
+		RMW_BITS(bgp, id, temp_sensor_ctrl, bgap_soc_mask, 1);
 
-	/* Wait for EOCZ going down */
-	counter = 1000;
-	while (--counter) {
-		if (!(ti_bandgap_readl(bgp, tsr->temp_sensor_ctrl) &
-		      tsr->bgap_eocz_mask))
-			break;
+		/* Wait for EOCZ going up */
+		error = readl_poll_timeout_atomic(temp_sensor_ctrl, val,
+						  val & tsr->bgap_eocz_mask,
+						  1, 1000);
+		if (error)
+			dev_warn(bgp->dev, "eocz timed out waiting high\n");
+
+		/* Clear Start of Conversion if available */
+		RMW_BITS(bgp, id, temp_sensor_ctrl, bgap_soc_mask, 0);
 	}
+
+	/* Wait for EOCZ going down, always needed even if no bgap_soc_mask */
+	error = readl_poll_timeout_atomic(temp_sensor_ctrl, val,
+					  !(val & tsr->bgap_eocz_mask),
+					  1, 1500);
+	if (error)
+		dev_warn(bgp->dev, "eocz timed out waiting low\n");
 
 	return 0;
 }
@@ -764,7 +770,7 @@ static int ti_bandgap_tshut_init(struct ti_bandgap *bgp,
 }
 
 /**
- * ti_bandgap_alert_init() - setup and initialize talert handling
+ * ti_bandgap_talert_init() - setup and initialize talert handling
  * @bgp: pointer to struct ti_bandgap
  * @pdev: pointer to device struct platform_device
  *
@@ -863,6 +869,17 @@ static struct ti_bandgap *ti_bandgap_build(struct platform_device *pdev)
 
 	return bgp;
 }
+
+/*
+ * List of SoCs on which the CPU PM notifier can cause erros on the DTEMP
+ * readout.
+ * Enabled notifier on these machines results in erroneous, random values which
+ * could trigger unexpected thermal shutdown.
+ */
+static const struct soc_device_attribute soc_no_cpu_notifier[] = {
+	{ .machine = "OMAP4430" },
+	{ /* sentinel */ }
+};
 
 /***   Device driver call backs   ***/
 
@@ -1020,7 +1037,8 @@ int ti_bandgap_probe(struct platform_device *pdev)
 
 #ifdef CONFIG_PM_SLEEP
 	bgp->nb.notifier_call = bandgap_omap_cpu_notifier;
-	cpu_pm_register_notifier(&bgp->nb);
+	if (!soc_device_match(soc_no_cpu_notifier))
+		cpu_pm_register_notifier(&bgp->nb);
 #endif
 
 	return 0;
@@ -1051,12 +1069,13 @@ free_irqs:
 }
 
 static
-int ti_bandgap_remove(struct platform_device *pdev)
+void ti_bandgap_remove(struct platform_device *pdev)
 {
 	struct ti_bandgap *bgp = platform_get_drvdata(pdev);
 	int i;
 
-	cpu_pm_unregister_notifier(&bgp->nb);
+	if (!soc_device_match(soc_no_cpu_notifier))
+		cpu_pm_unregister_notifier(&bgp->nb);
 
 	/* Remove sensor interfaces */
 	for (i = 0; i < bgp->conf->sensor_count; i++) {
@@ -1079,8 +1098,6 @@ int ti_bandgap_remove(struct platform_device *pdev)
 
 	if (TI_BANDGAP_HAS(bgp, TSHUT))
 		free_irq(gpiod_to_irq(bgp->tshut_gpiod), NULL);
-
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -1123,13 +1140,9 @@ static int ti_bandgap_restore_ctxt(struct ti_bandgap *bgp)
 	for (i = 0; i < bgp->conf->sensor_count; i++) {
 		struct temp_sensor_registers *tsr;
 		struct temp_sensor_regval *rval;
-		u32 val = 0;
 
 		rval = &bgp->regval[i];
 		tsr = bgp->conf->sensors[i].registers;
-
-		if (TI_BANDGAP_HAS(bgp, COUNTER))
-			val = ti_bandgap_readl(bgp, tsr->bgap_counter);
 
 		if (TI_BANDGAP_HAS(bgp, TSHUT_CONFIG))
 			ti_bandgap_writel(bgp, rval->tshut_threshold,

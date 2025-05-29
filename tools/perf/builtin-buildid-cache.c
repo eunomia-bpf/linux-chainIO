@@ -27,6 +27,7 @@
 #include "util/time-utils.h"
 #include "util/util.h"
 #include "util/probe-file.h"
+#include "util/config.h"
 #include <linux/string.h>
 #include <linux/err.h>
 
@@ -276,14 +277,16 @@ static bool dso__missing_buildid_cache(struct dso *dso, int parm __maybe_unused)
 	char filename[PATH_MAX];
 	struct build_id bid;
 
-	if (dso__build_id_filename(dso, filename, sizeof(filename), false) &&
-	    filename__read_build_id(filename, &bid) == -1) {
+	if (!dso__build_id_filename(dso, filename, sizeof(filename), false))
+		return true;
+
+	if (filename__read_build_id(filename, &bid) == -1) {
 		if (errno == ENOENT)
 			return false;
 
 		pr_warning("Problems with %s file, consider removing it from the cache\n",
 			   filename);
-	} else if (memcmp(dso->bid.data, bid.data, bid.size)) {
+	} else if (memcmp(dso__bid(dso)->data, bid.data, bid.size)) {
 		pr_warning("Problems with %s file, consider removing it from the cache\n",
 			   filename);
 	}
@@ -348,12 +351,25 @@ static int build_id_cache__show_all(void)
 	return 0;
 }
 
+static int perf_buildid_cache_config(const char *var, const char *value, void *cb)
+{
+	struct perf_debuginfod *di = cb;
+
+	if (!strcmp(var, "buildid-cache.debuginfod")) {
+		di->urls = strdup(value);
+		if (!di->urls)
+			return -ENOMEM;
+		di->set = true;
+	}
+
+	return 0;
+}
+
 int cmd_buildid_cache(int argc, const char **argv)
 {
 	struct strlist *list;
 	struct str_node *pos;
-	int ret = 0;
-	int ns_id = -1;
+	int ret, ns_id = -1;
 	bool force = false;
 	bool list_files = false;
 	bool opts_flag = false;
@@ -364,6 +380,7 @@ int cmd_buildid_cache(int argc, const char **argv)
 		   *missing_filename = NULL,
 		   *update_name_list_str = NULL,
 		   *kcore_filename = NULL;
+	struct perf_debuginfod debuginfod = { };
 	char sbuf[STRERR_BUFSIZE];
 
 	struct perf_data data = {
@@ -388,6 +405,10 @@ int cmd_buildid_cache(int argc, const char **argv)
 	OPT_BOOLEAN('f', "force", &force, "don't complain, do it"),
 	OPT_STRING('u', "update", &update_name_list_str, "file list",
 		    "file(s) to update"),
+	OPT_STRING_OPTARG_SET(0, "debuginfod", &debuginfod.urls,
+			&debuginfod.set, "debuginfod urls",
+			"Enable debuginfod data retrieval from DEBUGINFOD_URLS or specified urls",
+			"system"),
 	OPT_INCR('v', "verbose", &verbose, "be more verbose"),
 	OPT_INTEGER(0, "target-ns", &ns_id, "target pid for namespace context"),
 	OPT_END()
@@ -396,6 +417,10 @@ int cmd_buildid_cache(int argc, const char **argv)
 		"perf buildid-cache [<options>]",
 		NULL
 	};
+
+	ret = perf_config(perf_buildid_cache_config, &debuginfod);
+	if (ret)
+		return ret;
 
 	argc = parse_options(argc, argv, buildid_cache_options,
 			     buildid_cache_usage, 0);
@@ -407,6 +432,8 @@ int cmd_buildid_cache(int argc, const char **argv)
 
 	if (argc || !(list_files || opts_flag))
 		usage_with_options(buildid_cache_usage, buildid_cache_options);
+
+	perf_debuginfod_setup(&debuginfod);
 
 	/* -l is exclusive. It can not be used with other options. */
 	if (list_files && opts_flag) {
@@ -421,7 +448,7 @@ int cmd_buildid_cache(int argc, const char **argv)
 		data.path  = missing_filename;
 		data.force = force;
 
-		session = perf_session__new(&data, false, NULL);
+		session = perf_session__new(&data, NULL);
 		if (IS_ERR(session))
 			return PTR_ERR(session);
 	}

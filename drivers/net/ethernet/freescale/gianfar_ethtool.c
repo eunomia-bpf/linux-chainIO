@@ -38,7 +38,9 @@
 #include <linux/phy.h>
 #include <linux/sort.h>
 #include <linux/if_vlan.h>
+#include <linux/of.h>
 #include <linux/of_platform.h>
+#include <linux/platform_device.h>
 #include <linux/fsl/ptp_qoriq.h>
 
 #include "gianfar.h"
@@ -113,12 +115,14 @@ static const char stat_gstrings[][ETH_GSTRING_LEN] = {
 static void gfar_gstrings(struct net_device *dev, u32 stringset, u8 * buf)
 {
 	struct gfar_private *priv = netdev_priv(dev);
+	int i;
 
 	if (priv->device_flags & FSL_GIANFAR_DEV_HAS_RMON)
-		memcpy(buf, stat_gstrings, GFAR_STATS_LEN * ETH_GSTRING_LEN);
+		for (i = 0; i < GFAR_STATS_LEN; i++)
+			ethtool_puts(&buf, stat_gstrings[i]);
 	else
-		memcpy(buf, stat_gstrings,
-		       GFAR_EXTRA_STATS_LEN * ETH_GSTRING_LEN);
+		for (i = 0; i < GFAR_EXTRA_STATS_LEN; i++)
+			ethtool_puts(&buf, stat_gstrings[i]);
 }
 
 /* Fill in an array of 64-bit statistics from various sources.
@@ -163,7 +167,7 @@ static int gfar_sset_count(struct net_device *dev, int sset)
 static void gfar_gdrvinfo(struct net_device *dev,
 			  struct ethtool_drvinfo *drvinfo)
 {
-	strlcpy(drvinfo->driver, DRV_NAME, sizeof(drvinfo->driver));
+	strscpy(drvinfo->driver, DRV_NAME, sizeof(drvinfo->driver));
 }
 
 /* Return the length of the register structure */
@@ -243,7 +247,9 @@ static unsigned int gfar_ticks2usecs(struct gfar_private *priv,
 /* Get the coalescing parameters, and put them in the cvals
  * structure.  */
 static int gfar_gcoalesce(struct net_device *dev,
-			  struct ethtool_coalesce *cvals)
+			  struct ethtool_coalesce *cvals,
+			  struct kernel_ethtool_coalesce *kernel_coal,
+			  struct netlink_ext_ack *extack)
 {
 	struct gfar_private *priv = netdev_priv(dev);
 	struct gfar_priv_rx_q *rx_queue = NULL;
@@ -280,7 +286,9 @@ static int gfar_gcoalesce(struct net_device *dev,
  * in order for coalescing to be active
  */
 static int gfar_scoalesce(struct net_device *dev,
-			  struct ethtool_coalesce *cvals)
+			  struct ethtool_coalesce *cvals,
+			  struct kernel_ethtool_coalesce *kernel_coal,
+			  struct netlink_ext_ack *extack)
 {
 	struct gfar_private *priv = netdev_priv(dev);
 	int i, err = 0;
@@ -368,7 +376,9 @@ static int gfar_scoalesce(struct net_device *dev,
  * rx, rx_mini, and rx_jumbo rings are the same size, as mini and
  * jumbo are ignored by the driver */
 static void gfar_gringparam(struct net_device *dev,
-			    struct ethtool_ringparam *rvals)
+			    struct ethtool_ringparam *rvals,
+			    struct kernel_ethtool_ringparam *kernel_rvals,
+			    struct netlink_ext_ack *extack)
 {
 	struct gfar_private *priv = netdev_priv(dev);
 	struct gfar_priv_tx_q *tx_queue = NULL;
@@ -395,7 +405,9 @@ static void gfar_gringparam(struct net_device *dev,
  * necessary so that we don't mess things up while we're in motion.
  */
 static int gfar_sringparam(struct net_device *dev,
-			   struct ethtool_ringparam *rvals)
+			   struct ethtool_ringparam *rvals,
+			   struct kernel_ethtool_ringparam *kernel_rvals,
+			   struct netlink_ext_ack *extack)
 {
 	struct gfar_private *priv = netdev_priv(dev);
 	int err = 0, i;
@@ -1438,24 +1450,22 @@ static int gfar_get_nfc(struct net_device *dev, struct ethtool_rxnfc *cmd,
 }
 
 static int gfar_get_ts_info(struct net_device *dev,
-			    struct ethtool_ts_info *info)
+			    struct kernel_ethtool_ts_info *info)
 {
 	struct gfar_private *priv = netdev_priv(dev);
 	struct platform_device *ptp_dev;
 	struct device_node *ptp_node;
 	struct ptp_qoriq *ptp = NULL;
 
-	info->phc_index = -1;
-
 	if (!(priv->device_flags & FSL_GIANFAR_DEV_HAS_TIMER)) {
-		info->so_timestamping = SOF_TIMESTAMPING_RX_SOFTWARE |
-					SOF_TIMESTAMPING_SOFTWARE;
+		info->so_timestamping = SOF_TIMESTAMPING_TX_SOFTWARE;
 		return 0;
 	}
 
 	ptp_node = of_find_compatible_node(NULL, NULL, "fsl,etsec-ptp");
 	if (ptp_node) {
 		ptp_dev = of_find_device_by_node(ptp_node);
+		of_node_put(ptp_node);
 		if (ptp_dev)
 			ptp = platform_get_drvdata(ptp_dev);
 	}
@@ -1465,7 +1475,8 @@ static int gfar_get_ts_info(struct net_device *dev,
 
 	info->so_timestamping = SOF_TIMESTAMPING_TX_HARDWARE |
 				SOF_TIMESTAMPING_RX_HARDWARE |
-				SOF_TIMESTAMPING_RAW_HARDWARE;
+				SOF_TIMESTAMPING_RAW_HARDWARE |
+				SOF_TIMESTAMPING_TX_SOFTWARE;
 	info->tx_types = (1 << HWTSTAMP_TX_OFF) |
 			 (1 << HWTSTAMP_TX_ON);
 	info->rx_filters = (1 << HWTSTAMP_FILTER_NONE) |

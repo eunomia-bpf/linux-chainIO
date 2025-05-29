@@ -58,7 +58,6 @@
 
 struct adc108s102_state {
 	struct spi_device		*spi;
-	struct regulator		*reg;
 	u32				va_millivolt;
 	/* SPI transfer used by triggered buffer handler*/
 	struct spi_transfer		ring_xfer;
@@ -75,10 +74,10 @@ struct adc108s102_state {
 	 *  rx_buf: |XX|R0|R1|R2|R3|R4|R5|R6|R7|tt|tt|tt|tt|
 	 *
 	 *  tx_buf: 8 channel read commands, plus 1 dummy command
-	 *  rx_buf: 1 dummy response, 8 channel responses, plus 64-bit timestamp
+	 *  rx_buf: 1 dummy response, 8 channel responses
 	 */
-	__be16				rx_buf[13] ____cacheline_aligned;
-	__be16				tx_buf[9] ____cacheline_aligned;
+	__be16				rx_buf[9] __aligned(IIO_DMA_MINALIGN);
+	__be16				tx_buf[9] __aligned(IIO_DMA_MINALIGN);
 };
 
 #define ADC108S102_V_CHAN(index)					\
@@ -149,9 +148,10 @@ static irqreturn_t adc108s102_trigger_handler(int irq, void *p)
 		goto out_notify;
 
 	/* Skip the dummy response in the first slot */
-	iio_push_to_buffers_with_timestamp(indio_dev,
-					   (u8 *)&st->rx_buf[1],
-					   iio_get_time_ns(indio_dev));
+	iio_push_to_buffers_with_ts_unaligned(indio_dev,
+					      &st->rx_buf[1],
+					      st->ring_xfer.len - sizeof(st->rx_buf[1]),
+					      iio_get_time_ns(indio_dev));
 
 out_notify:
 	iio_trigger_notify_done(indio_dev->trig);
@@ -230,26 +230,13 @@ static int adc108s102_probe(struct spi_device *spi)
 	if (ACPI_COMPANION(&spi->dev)) {
 		st->va_millivolt = ADC108S102_VA_MV_ACPI_DEFAULT;
 	} else {
-		st->reg = devm_regulator_get(&spi->dev, "vref");
-		if (IS_ERR(st->reg))
-			return PTR_ERR(st->reg);
-
-		ret = regulator_enable(st->reg);
-		if (ret < 0) {
-			dev_err(&spi->dev, "Cannot enable vref regulator\n");
-			return ret;
-		}
-
-		ret = regulator_get_voltage(st->reg);
-		if (ret < 0) {
-			dev_err(&spi->dev, "vref get voltage failed\n");
-			return ret;
-		}
+		ret = devm_regulator_get_enable_read_voltage(&spi->dev, "vref");
+		if (ret < 0)
+			return dev_err_probe(&spi->dev, ret, "failed get vref voltage\n");
 
 		st->va_millivolt = ret / 1000;
 	}
 
-	spi_set_drvdata(spi, indio_dev);
 	st->spi = spi;
 
 	indio_dev->name = spi->modalias;
@@ -266,38 +253,16 @@ static int adc108s102_probe(struct spi_device *spi)
 	spi_message_init_with_transfers(&st->scan_single_msg,
 					&st->scan_single_xfer, 1);
 
-	ret = iio_triggered_buffer_setup(indio_dev, NULL,
-					 &adc108s102_trigger_handler, NULL);
+	ret = devm_iio_triggered_buffer_setup(&spi->dev, indio_dev, NULL,
+					      &adc108s102_trigger_handler,
+					      NULL);
 	if (ret)
-		goto error_disable_reg;
+		return ret;
 
-	ret = iio_device_register(indio_dev);
-	if (ret) {
+	ret = devm_iio_device_register(&spi->dev, indio_dev);
+	if (ret)
 		dev_err(&spi->dev, "Failed to register IIO device\n");
-		goto error_cleanup_triggered_buffer;
-	}
-	return 0;
-
-error_cleanup_triggered_buffer:
-	iio_triggered_buffer_cleanup(indio_dev);
-
-error_disable_reg:
-	regulator_disable(st->reg);
-
 	return ret;
-}
-
-static int adc108s102_remove(struct spi_device *spi)
-{
-	struct iio_dev *indio_dev = spi_get_drvdata(spi);
-	struct adc108s102_state *st = iio_priv(indio_dev);
-
-	iio_device_unregister(indio_dev);
-	iio_triggered_buffer_cleanup(indio_dev);
-
-	regulator_disable(st->reg);
-
-	return 0;
 }
 
 static const struct of_device_id adc108s102_of_match[] = {
@@ -306,13 +271,11 @@ static const struct of_device_id adc108s102_of_match[] = {
 };
 MODULE_DEVICE_TABLE(of, adc108s102_of_match);
 
-#ifdef CONFIG_ACPI
 static const struct acpi_device_id adc108s102_acpi_ids[] = {
 	{ "INT3495", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(acpi, adc108s102_acpi_ids);
-#endif
 
 static const struct spi_device_id adc108s102_id[] = {
 	{ "adc108s102", 0 },
@@ -324,10 +287,9 @@ static struct spi_driver adc108s102_driver = {
 	.driver = {
 		.name   = "adc108s102",
 		.of_match_table = adc108s102_of_match,
-		.acpi_match_table = ACPI_PTR(adc108s102_acpi_ids),
+		.acpi_match_table = adc108s102_acpi_ids,
 	},
 	.probe		= adc108s102_probe,
-	.remove		= adc108s102_remove,
 	.id_table	= adc108s102_id,
 };
 module_spi_driver(adc108s102_driver);

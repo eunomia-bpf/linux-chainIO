@@ -8,12 +8,14 @@
 #include <linux/clk.h>
 #include <linux/fpga/adi-axi-common.h>
 #include <linux/hwmon.h>
+#include <linux/hwmon-sysfs.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/of.h>
+#include <linux/mod_devicetable.h>
 #include <linux/platform_device.h>
+#include <linux/property.h>
 
 /* register map */
 #define ADI_REG_RSTN		0x0080
@@ -23,6 +25,14 @@
 #define ADI_REG_PWM_PERIOD	0x00c0
 #define ADI_REG_TACH_MEASUR	0x00c4
 #define ADI_REG_TEMPERATURE	0x00c8
+#define ADI_REG_TEMP_00_H	0x0100
+#define ADI_REG_TEMP_25_L	0x0104
+#define ADI_REG_TEMP_25_H	0x0108
+#define ADI_REG_TEMP_50_L	0x010c
+#define ADI_REG_TEMP_50_H	0x0110
+#define ADI_REG_TEMP_75_L	0x0114
+#define ADI_REG_TEMP_75_H	0x0118
+#define ADI_REG_TEMP_100_L	0x011c
 
 #define ADI_REG_IRQ_MASK	0x0040
 #define ADI_REG_IRQ_PENDING	0x0044
@@ -60,6 +70,39 @@ static inline u32 axi_ioread(const u32 reg,
 			     const struct axi_fan_control_data *ctl)
 {
 	return ioread32(ctl->base + reg);
+}
+
+/*
+ * The core calculates the temperature as:
+ *	T = /raw * 509.3140064 / 65535) - 280.2308787
+ */
+static ssize_t axi_fan_control_show(struct device *dev, struct device_attribute *da, char *buf)
+{
+	struct axi_fan_control_data *ctl = dev_get_drvdata(dev);
+	struct sensor_device_attribute *attr = to_sensor_dev_attr(da);
+	u32 temp = axi_ioread(attr->index, ctl);
+
+	temp = DIV_ROUND_CLOSEST_ULL(temp * 509314ULL, 65535) - 280230;
+
+	return sysfs_emit(buf, "%u\n", temp);
+}
+
+static ssize_t axi_fan_control_store(struct device *dev, struct device_attribute *da,
+				     const char *buf, size_t count)
+{
+	struct axi_fan_control_data *ctl = dev_get_drvdata(dev);
+	struct sensor_device_attribute *attr = to_sensor_dev_attr(da);
+	u32 temp;
+	int ret;
+
+	ret = kstrtou32(buf, 10, &temp);
+	if (ret)
+		return ret;
+
+	temp = DIV_ROUND_CLOSEST_ULL((temp + 280230) * 65535ULL, 509314);
+	axi_iowrite(temp, attr->index, ctl);
+
+	return count;
 }
 
 static long axi_fan_control_get_pwm_duty(const struct axi_fan_control_data *ctl)
@@ -283,18 +326,9 @@ static irqreturn_t axi_fan_control_irq_handler(int irq, void *data)
 	u32 irq_pending = axi_ioread(ADI_REG_IRQ_PENDING, ctl);
 	u32 clear_mask;
 
-	if (irq_pending & ADI_IRQ_SRC_NEW_MEASUR) {
-		if (ctl->update_tacho_params) {
-			u32 new_tach = axi_ioread(ADI_REG_TACH_MEASUR, ctl);
-
-			/* get 25% tolerance */
-			u32 tach_tol = DIV_ROUND_CLOSEST(new_tach * 25, 100);
-			/* set new tacho parameters */
-			axi_iowrite(new_tach, ADI_REG_TACH_PERIOD, ctl);
-			axi_iowrite(tach_tol, ADI_REG_TACH_TOLERANCE, ctl);
-			ctl->update_tacho_params = false;
-		}
-	}
+	if (irq_pending & ADI_IRQ_SRC_TEMP_INCREASE)
+		/* hardware requested a new pwm */
+		ctl->hw_pwm_req = true;
 
 	if (irq_pending & ADI_IRQ_SRC_PWM_CHANGED) {
 		/*
@@ -306,13 +340,23 @@ static irqreturn_t axi_fan_control_irq_handler(int irq, void *data)
 			ctl->update_tacho_params = true;
 		} else {
 			ctl->hw_pwm_req = false;
-			sysfs_notify(&ctl->hdev->kobj, NULL, "pwm1");
+			hwmon_notify_event(ctl->hdev, hwmon_pwm,
+					   hwmon_pwm_input, 0);
 		}
 	}
 
-	if (irq_pending & ADI_IRQ_SRC_TEMP_INCREASE)
-		/* hardware requested a new pwm */
-		ctl->hw_pwm_req = true;
+	if (irq_pending & ADI_IRQ_SRC_NEW_MEASUR) {
+		if (ctl->update_tacho_params) {
+			u32 new_tach = axi_ioread(ADI_REG_TACH_MEASUR, ctl);
+			/* get 25% tolerance */
+			u32 tach_tol = DIV_ROUND_CLOSEST(new_tach * 25, 100);
+
+			/* set new tacho parameters */
+			axi_iowrite(new_tach, ADI_REG_TACH_PERIOD, ctl);
+			axi_iowrite(tach_tol, ADI_REG_TACH_TOLERANCE, ctl);
+			ctl->update_tacho_params = false;
+		}
+	}
 
 	if (irq_pending & ADI_IRQ_SRC_TACH_ERR)
 		ctl->fan_fault = 1;
@@ -325,12 +369,12 @@ static irqreturn_t axi_fan_control_irq_handler(int irq, void *data)
 }
 
 static int axi_fan_control_init(struct axi_fan_control_data *ctl,
-				const struct device_node *np)
+				const struct device *dev)
 {
 	int ret;
 
 	/* get fan pulses per revolution */
-	ret = of_property_read_u32(np, "pulses-per-revolution", &ctl->ppr);
+	ret = device_property_read_u32(dev, "pulses-per-revolution", &ctl->ppr);
 	if (ret)
 		return ret;
 
@@ -351,7 +395,7 @@ static int axi_fan_control_init(struct axi_fan_control_data *ctl,
 	return ret;
 }
 
-static const struct hwmon_channel_info *axi_fan_control_info[] = {
+static const struct hwmon_channel_info * const axi_fan_control_info[] = {
 	HWMON_CHANNEL_INFO(pwm, HWMON_PWM_INPUT),
 	HWMON_CHANNEL_INFO(fan, HWMON_F_INPUT | HWMON_F_FAULT | HWMON_F_LABEL),
 	HWMON_CHANNEL_INFO(temp, HWMON_T_INPUT | HWMON_T_LABEL),
@@ -370,25 +414,46 @@ static const struct hwmon_chip_info axi_chip_info = {
 	.info = axi_fan_control_info,
 };
 
-static const u32 version_1_0_0 = ADI_AXI_PCORE_VER(1, 0, 'a');
+/* temperature threshold below which PWM should be 0% */
+static SENSOR_DEVICE_ATTR_RW(pwm1_auto_point1_temp_hyst, axi_fan_control, ADI_REG_TEMP_00_H);
+/* temperature threshold above which PWM should be 25% */
+static SENSOR_DEVICE_ATTR_RW(pwm1_auto_point1_temp, axi_fan_control, ADI_REG_TEMP_25_L);
+/* temperature threshold below which PWM should be 25% */
+static SENSOR_DEVICE_ATTR_RW(pwm1_auto_point2_temp_hyst, axi_fan_control, ADI_REG_TEMP_25_H);
+/* temperature threshold above which PWM should be 50% */
+static SENSOR_DEVICE_ATTR_RW(pwm1_auto_point2_temp, axi_fan_control, ADI_REG_TEMP_50_L);
+/* temperature threshold below which PWM should be 50% */
+static SENSOR_DEVICE_ATTR_RW(pwm1_auto_point3_temp_hyst, axi_fan_control, ADI_REG_TEMP_50_H);
+/* temperature threshold above which PWM should be 75% */
+static SENSOR_DEVICE_ATTR_RW(pwm1_auto_point3_temp, axi_fan_control, ADI_REG_TEMP_75_L);
+/* temperature threshold below which PWM should be 75% */
+static SENSOR_DEVICE_ATTR_RW(pwm1_auto_point4_temp_hyst, axi_fan_control, ADI_REG_TEMP_75_H);
+/* temperature threshold above which PWM should be 100% */
+static SENSOR_DEVICE_ATTR_RW(pwm1_auto_point4_temp, axi_fan_control, ADI_REG_TEMP_100_L);
 
-static const struct of_device_id axi_fan_control_of_match[] = {
-	{ .compatible = "adi,axi-fan-control-1.00.a",
-		.data = (void *)&version_1_0_0},
-	{},
+static struct attribute *axi_fan_control_attrs[] = {
+	&sensor_dev_attr_pwm1_auto_point1_temp_hyst.dev_attr.attr,
+	&sensor_dev_attr_pwm1_auto_point1_temp.dev_attr.attr,
+	&sensor_dev_attr_pwm1_auto_point2_temp_hyst.dev_attr.attr,
+	&sensor_dev_attr_pwm1_auto_point2_temp.dev_attr.attr,
+	&sensor_dev_attr_pwm1_auto_point3_temp_hyst.dev_attr.attr,
+	&sensor_dev_attr_pwm1_auto_point3_temp.dev_attr.attr,
+	&sensor_dev_attr_pwm1_auto_point4_temp_hyst.dev_attr.attr,
+	&sensor_dev_attr_pwm1_auto_point4_temp.dev_attr.attr,
+	NULL,
 };
-MODULE_DEVICE_TABLE(of, axi_fan_control_of_match);
+ATTRIBUTE_GROUPS(axi_fan_control);
 
 static int axi_fan_control_probe(struct platform_device *pdev)
 {
 	struct axi_fan_control_data *ctl;
 	struct clk *clk;
-	const struct of_device_id *id;
+	const unsigned int *id;
 	const char *name = "axi_fan_control";
 	u32 version;
 	int ret;
 
-	id = of_match_node(axi_fan_control_of_match, pdev->dev.of_node);
+	id = device_get_match_data(&pdev->dev);
 	if (!id)
 		return -EINVAL;
 
@@ -400,11 +465,10 @@ static int axi_fan_control_probe(struct platform_device *pdev)
 	if (IS_ERR(ctl->base))
 		return PTR_ERR(ctl->base);
 
-	clk = devm_clk_get(&pdev->dev, NULL);
-	if (IS_ERR(clk)) {
-		dev_err(&pdev->dev, "clk_get failed with %ld\n", PTR_ERR(clk));
-		return PTR_ERR(clk);
-	}
+	clk = devm_clk_get_enabled(&pdev->dev, NULL);
+	if (IS_ERR(clk))
+		return dev_err_probe(&pdev->dev, PTR_ERR(clk),
+				     "clk_get failed\n");
 
 	ctl->clk_rate = clk_get_rate(clk);
 	if (!ctl->clk_rate)
@@ -412,16 +476,29 @@ static int axi_fan_control_probe(struct platform_device *pdev)
 
 	version = axi_ioread(ADI_AXI_REG_VERSION, ctl);
 	if (ADI_AXI_PCORE_VER_MAJOR(version) !=
-	    ADI_AXI_PCORE_VER_MAJOR((*(u32 *)id->data))) {
-		dev_err(&pdev->dev, "Major version mismatch. Expected %d.%.2d.%c, Reported %d.%.2d.%c\n",
-			ADI_AXI_PCORE_VER_MAJOR((*(u32 *)id->data)),
-			ADI_AXI_PCORE_VER_MINOR((*(u32 *)id->data)),
-			ADI_AXI_PCORE_VER_PATCH((*(u32 *)id->data)),
-			ADI_AXI_PCORE_VER_MAJOR(version),
-			ADI_AXI_PCORE_VER_MINOR(version),
-			ADI_AXI_PCORE_VER_PATCH(version));
-		return -ENODEV;
-	}
+	    ADI_AXI_PCORE_VER_MAJOR((*id)))
+		return dev_err_probe(&pdev->dev, -ENODEV,
+				     "Major version mismatch. Expected %d.%.2d.%c, Reported %d.%.2d.%c\n",
+				     ADI_AXI_PCORE_VER_MAJOR(*id),
+				     ADI_AXI_PCORE_VER_MINOR(*id),
+				     ADI_AXI_PCORE_VER_PATCH(*id),
+				     ADI_AXI_PCORE_VER_MAJOR(version),
+				     ADI_AXI_PCORE_VER_MINOR(version),
+				     ADI_AXI_PCORE_VER_PATCH(version));
+
+	ret = axi_fan_control_init(ctl, &pdev->dev);
+	if (ret)
+		return dev_err_probe(&pdev->dev, ret,
+				     "Failed to initialize device\n");
+
+	ctl->hdev = devm_hwmon_device_register_with_info(&pdev->dev,
+							 name,
+							 ctl,
+							 &axi_chip_info,
+							 axi_fan_control_groups);
+
+	if (IS_ERR(ctl->hdev))
+		return PTR_ERR(ctl->hdev);
 
 	ctl->irq = platform_get_irq(pdev, 0);
 	if (ctl->irq < 0)
@@ -431,25 +508,21 @@ static int axi_fan_control_probe(struct platform_device *pdev)
 					axi_fan_control_irq_handler,
 					IRQF_ONESHOT | IRQF_TRIGGER_HIGH,
 					pdev->driver_override, ctl);
-	if (ret) {
-		dev_err(&pdev->dev, "failed to request an irq, %d", ret);
-		return ret;
-	}
+	if (ret)
+		return dev_err_probe(&pdev->dev, ret,
+				     "failed to request an irq\n");
 
-	ret = axi_fan_control_init(ctl, pdev->dev.of_node);
-	if (ret) {
-		dev_err(&pdev->dev, "Failed to initialize device\n");
-		return ret;
-	}
-
-	ctl->hdev = devm_hwmon_device_register_with_info(&pdev->dev,
-							 name,
-							 ctl,
-							 &axi_chip_info,
-							 NULL);
-
-	return PTR_ERR_OR_ZERO(ctl->hdev);
+	return 0;
 }
+
+static const u32 version_1_0_0 = ADI_AXI_PCORE_VER(1, 0, 'a');
+
+static const struct of_device_id axi_fan_control_of_match[] = {
+	{ .compatible = "adi,axi-fan-control-1.00.a",
+		.data = (void *)&version_1_0_0},
+	{},
+};
+MODULE_DEVICE_TABLE(of, axi_fan_control_of_match);
 
 static struct platform_driver axi_fan_control_driver = {
 	.driver = {

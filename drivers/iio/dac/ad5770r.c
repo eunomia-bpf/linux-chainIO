@@ -17,6 +17,7 @@
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
 #include <linux/spi/spi.h>
+#include <linux/unaligned.h>
 
 #define ADI_SPI_IF_CONFIG_A		0x00
 #define ADI_SPI_IF_CONFIG_B		0x01
@@ -118,10 +119,9 @@ struct ad5770r_out_range {
 };
 
 /**
- * struct ad5770R_state - driver instance specific data
+ * struct ad5770r_state - driver instance specific data
  * @spi:		spi_device
  * @regmap:		regmap
- * @vref_reg:		fixed regulator for reference configuration
  * @gpio_reset:		gpio descriptor
  * @output_mode:	array contains channels output ranges
  * @vref:		reference value
@@ -133,14 +133,13 @@ struct ad5770r_out_range {
 struct ad5770r_state {
 	struct spi_device		*spi;
 	struct regmap			*regmap;
-	struct regulator		*vref_reg;
 	struct gpio_desc		*gpio_reset;
 	struct ad5770r_out_range	output_mode[AD5770R_MAX_CHANNELS];
 	int				vref;
 	bool				ch_pwr_down[AD5770R_MAX_CHANNELS];
 	bool				internal_ref;
 	bool				external_res;
-	u8				transf_buf[2] ____cacheline_aligned;
+	u8				transf_buf[2] __aligned(IIO_DMA_MINALIGN);
 };
 
 static const struct regmap_config ad5770r_spi_regmap_config = {
@@ -325,7 +324,7 @@ static int ad5770r_read_raw(struct iio_dev *indio_dev,
 		if (ret)
 			return 0;
 
-		buf16 = st->transf_buf[0] + (st->transf_buf[1] << 8);
+		buf16 = get_unaligned_le16(st->transf_buf);
 		*val = buf16 >> 2;
 		return IIO_VAL_INT;
 	case IIO_CHAN_INFO_SCALE:
@@ -433,7 +432,7 @@ static ssize_t ad5770r_read_dac_powerdown(struct iio_dev *indio_dev,
 {
 	struct ad5770r_state *st = iio_priv(indio_dev);
 
-	return sprintf(buf, "%d\n", st->ch_pwr_down[chan->channel]);
+	return sysfs_emit(buf, "%d\n", st->ch_pwr_down[chan->channel]);
 }
 
 static ssize_t ad5770r_write_dac_powerdown(struct iio_dev *indio_dev,
@@ -515,14 +514,13 @@ static int ad5770r_channel_config(struct ad5770r_state *st)
 {
 	int ret, tmp[2], min, max;
 	unsigned int num;
-	struct fwnode_handle *child;
 
 	num = device_get_child_node_count(&st->spi->dev);
 	if (num != AD5770R_MAX_CHANNELS)
 		return -EINVAL;
 
-	device_for_each_child_node(&st->spi->dev, child) {
-		ret = fwnode_property_read_u32(child, "num", &num);
+	device_for_each_child_node_scoped(&st->spi->dev, child) {
+		ret = fwnode_property_read_u32(child, "reg", &num);
 		if (ret)
 			return ret;
 		if (num >= AD5770R_MAX_CHANNELS)
@@ -541,7 +539,7 @@ static int ad5770r_channel_config(struct ad5770r_state *st)
 			return ret;
 	}
 
-	return ret;
+	return 0;
 }
 
 static int ad5770r_init(struct ad5770r_state *st)
@@ -591,13 +589,6 @@ static int ad5770r_init(struct ad5770r_state *st)
 	return ret;
 }
 
-static void ad5770r_disable_regulator(void *data)
-{
-	struct ad5770r_state *st = data;
-
-	regulator_disable(st->vref_reg);
-}
-
 static int ad5770r_probe(struct spi_device *spi)
 {
 	struct ad5770r_state *st;
@@ -622,34 +613,12 @@ static int ad5770r_probe(struct spi_device *spi)
 	}
 	st->regmap = regmap;
 
-	st->vref_reg = devm_regulator_get_optional(&spi->dev, "vref");
-	if (!IS_ERR(st->vref_reg)) {
-		ret = regulator_enable(st->vref_reg);
-		if (ret) {
-			dev_err(&spi->dev,
-				"Failed to enable vref regulators: %d\n", ret);
-			return ret;
-		}
+	ret = devm_regulator_get_enable_read_voltage(&spi->dev, "vref");
+	if (ret < 0 && ret != -ENODEV)
+		return dev_err_probe(&spi->dev, ret, "Failed to get vref voltage\n");
 
-		ret = devm_add_action_or_reset(&spi->dev,
-					       ad5770r_disable_regulator,
-					       st);
-		if (ret < 0)
-			return ret;
-
-		ret = regulator_get_voltage(st->vref_reg);
-		if (ret < 0)
-			return ret;
-
-		st->vref = ret / 1000;
-	} else {
-		if (PTR_ERR(st->vref_reg) == -ENODEV) {
-			st->vref = AD5770R_LOW_VREF_mV;
-			st->internal_ref = true;
-		} else {
-			return PTR_ERR(st->vref_reg);
-		}
-	}
+	st->internal_ref = ret == -ENODEV;
+	st->vref = st->internal_ref ? AD5770R_LOW_VREF_mV : ret / 1000;
 
 	indio_dev->name = spi_get_device_id(spi)->name;
 	indio_dev->info = &ad5770r_info;

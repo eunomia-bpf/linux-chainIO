@@ -501,12 +501,6 @@ static int mt7622_pwm_ch6_2_pins[] = { 81, };
 static int mt7622_pwm_ch6_2_funcs[] = { 4, };
 static int mt7622_pwm_ch6_3_pins[] = { 100, };
 static int mt7622_pwm_ch6_3_funcs[] = { 0, };
-static int mt7622_pwm_ch7_0_pins[] = { 70, };
-static int mt7622_pwm_ch7_0_funcs[] = { 3, };
-static int mt7622_pwm_ch7_1_pins[] = { 82, };
-static int mt7622_pwm_ch7_1_funcs[] = { 4, };
-static int mt7622_pwm_ch7_2_pins[] = { 101, };
-static int mt7622_pwm_ch7_2_funcs[] = { 0, };
 
 /* SD */
 static int mt7622_sd_0_pins[] = { 16, 17, 18, 19, 20, 21, };
@@ -703,9 +697,6 @@ static const struct group_desc mt7622_groups[] = {
 	PINCTRL_PIN_GROUP("pwm_ch6_1", mt7622_pwm_ch6_1),
 	PINCTRL_PIN_GROUP("pwm_ch6_2", mt7622_pwm_ch6_2),
 	PINCTRL_PIN_GROUP("pwm_ch6_3", mt7622_pwm_ch6_3),
-	PINCTRL_PIN_GROUP("pwm_ch7_0", mt7622_pwm_ch7_0),
-	PINCTRL_PIN_GROUP("pwm_ch7_1", mt7622_pwm_ch7_1),
-	PINCTRL_PIN_GROUP("pwm_ch7_2", mt7622_pwm_ch7_2),
 	PINCTRL_PIN_GROUP("sd_0", mt7622_sd_0),
 	PINCTRL_PIN_GROUP("sd_1", mt7622_sd_1),
 	PINCTRL_PIN_GROUP("snfi", mt7622_snfi),
@@ -802,9 +793,7 @@ static const char *mt7622_pwm_groups[] = { "pwm_ch1_0", "pwm_ch1_1",
 					   "pwm_ch4_3", "pwm_ch5_0",
 					   "pwm_ch5_1", "pwm_ch5_2",
 					   "pwm_ch6_0", "pwm_ch6_1",
-					   "pwm_ch6_2", "pwm_ch6_3",
-					   "pwm_ch7_0", "pwm_ch7_1",
-					   "pwm_ch7_2", };
+					   "pwm_ch6_2", "pwm_ch6_3", };
 static const char *mt7622_sd_groups[] = { "sd_0", "sd_1", };
 static const char *mt7622_spic_groups[] = { "spic0_0", "spic0_1", "spic1_0",
 					    "spic1_1", "spic2_0",
@@ -834,22 +823,22 @@ static const char *mt7622_uart_groups[] = { "uart0_0_tx_rx",
 static const char *mt7622_wdt_groups[] = { "watchdog", };
 
 static const struct function_desc mt7622_functions[] = {
-	{"antsel", mt7622_antsel_groups, ARRAY_SIZE(mt7622_antsel_groups)},
-	{"emmc", mt7622_emmc_groups, ARRAY_SIZE(mt7622_emmc_groups)},
-	{"eth",	mt7622_ethernet_groups, ARRAY_SIZE(mt7622_ethernet_groups)},
-	{"i2c", mt7622_i2c_groups, ARRAY_SIZE(mt7622_i2c_groups)},
-	{"i2s",	mt7622_i2s_groups, ARRAY_SIZE(mt7622_i2s_groups)},
-	{"ir", mt7622_ir_groups, ARRAY_SIZE(mt7622_ir_groups)},
-	{"led",	mt7622_led_groups, ARRAY_SIZE(mt7622_led_groups)},
-	{"flash", mt7622_flash_groups, ARRAY_SIZE(mt7622_flash_groups)},
-	{"pcie", mt7622_pcie_groups, ARRAY_SIZE(mt7622_pcie_groups)},
-	{"pmic", mt7622_pmic_bus_groups, ARRAY_SIZE(mt7622_pmic_bus_groups)},
-	{"pwm",	mt7622_pwm_groups, ARRAY_SIZE(mt7622_pwm_groups)},
-	{"sd", mt7622_sd_groups, ARRAY_SIZE(mt7622_sd_groups)},
-	{"spi",	mt7622_spic_groups, ARRAY_SIZE(mt7622_spic_groups)},
-	{"tdm",	mt7622_tdm_groups, ARRAY_SIZE(mt7622_tdm_groups)},
-	{"uart", mt7622_uart_groups, ARRAY_SIZE(mt7622_uart_groups)},
-	{"watchdog", mt7622_wdt_groups, ARRAY_SIZE(mt7622_wdt_groups)},
+	PINCTRL_PIN_FUNCTION("antsel", mt7622_antsel),
+	PINCTRL_PIN_FUNCTION("emmc", mt7622_emmc),
+	PINCTRL_PIN_FUNCTION("eth", mt7622_ethernet),
+	PINCTRL_PIN_FUNCTION("i2c", mt7622_i2c),
+	PINCTRL_PIN_FUNCTION("i2s", mt7622_i2s),
+	PINCTRL_PIN_FUNCTION("ir", mt7622_ir),
+	PINCTRL_PIN_FUNCTION("led", mt7622_led),
+	PINCTRL_PIN_FUNCTION("flash", mt7622_flash),
+	PINCTRL_PIN_FUNCTION("pcie", mt7622_pcie),
+	PINCTRL_PIN_FUNCTION("pmic", mt7622_pmic_bus),
+	PINCTRL_PIN_FUNCTION("pwm", mt7622_pwm),
+	PINCTRL_PIN_FUNCTION("sd", mt7622_sd),
+	PINCTRL_PIN_FUNCTION("spi", mt7622_spic),
+	PINCTRL_PIN_FUNCTION("tdm", mt7622_tdm),
+	PINCTRL_PIN_FUNCTION("uart", mt7622_uart),
+	PINCTRL_PIN_FUNCTION("watchdog", mt7622_wdt),
 };
 
 static const struct mtk_eint_hw mt7622_eint_hw = {
@@ -857,6 +846,7 @@ static const struct mtk_eint_hw mt7622_eint_hw = {
 	.ports     = 7,
 	.ap_num    = ARRAY_SIZE(mt7622_pins),
 	.db_cnt    = 20,
+	.db_time   = debounce_time_mt6765,
 };
 
 static const struct mtk_pin_soc mt7622_data = {

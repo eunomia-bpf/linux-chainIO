@@ -19,10 +19,11 @@ typedef int (*dbg_znode_callback)(struct ubifs_info *c,
 
 /*
  * The UBIFS debugfs directory name pattern and maximum name length (3 for "ubi"
- * + 1 for "_" and plus 2x2 for 2 UBI numbers and 1 for the trailing zero byte.
+ * + 1 for "_" and 2 for UBI device numbers and 3 for volume number and 1 for
+ * the trailing zero byte.
  */
 #define UBIFS_DFS_DIR_NAME "ubi%d_%d"
-#define UBIFS_DFS_DIR_LEN  (3 + 1 + 2*2 + 1)
+#define UBIFS_DFS_DIR_LEN  (3 + 1 + 2 + 3 + 1)
 
 /**
  * ubifs_debug_info - per-FS debugging information.
@@ -103,7 +104,7 @@ struct ubifs_debug_info {
 	unsigned int chk_fs:1;
 	unsigned int tst_rcvry:1;
 
-	char dfs_dir_name[UBIFS_DFS_DIR_LEN + 1];
+	char dfs_dir_name[UBIFS_DFS_DIR_LEN];
 	struct dentry *dfs_dir;
 	struct dentry *dfs_dump_lprops;
 	struct dentry *dfs_dump_budg;
@@ -242,7 +243,8 @@ const char *dbg_get_key_dump(const struct ubifs_info *c,
 const char *dbg_snprintf_key(const struct ubifs_info *c,
 			     const union ubifs_key *key, char *buffer, int len);
 void ubifs_dump_inode(struct ubifs_info *c, const struct inode *inode);
-void ubifs_dump_node(const struct ubifs_info *c, const void *node);
+void ubifs_dump_node(const struct ubifs_info *c, const void *node,
+		     int node_len);
 void ubifs_dump_budget_req(const struct ubifs_budget_req *req);
 void ubifs_dump_lstats(const struct ubifs_lp_stats *lst);
 void ubifs_dump_budg(struct ubifs_info *c, const struct ubifs_budg_info *bi);
@@ -251,8 +253,6 @@ void ubifs_dump_lprop(const struct ubifs_info *c,
 void ubifs_dump_lprops(struct ubifs_info *c);
 void ubifs_dump_lpt_info(struct ubifs_info *c);
 void ubifs_dump_leb(const struct ubifs_info *c, int lnum);
-void ubifs_dump_sleb(const struct ubifs_info *c,
-		     const struct ubifs_scan_leb *sleb, int offs);
 void ubifs_dump_znode(const struct ubifs_info *c,
 		      const struct ubifs_znode *znode);
 void ubifs_dump_heap(struct ubifs_info *c, struct ubifs_lpt_heap *heap,

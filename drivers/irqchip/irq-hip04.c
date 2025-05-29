@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Hisilicon HiP04 INTC
+ * HiSilicon HiP04 INTC
  *
  * Copyright (C) 2002-2014 ARM Limited.
- * Copyright (c) 2013-2014 Hisilicon Ltd.
+ * Copyright (c) 2013-2014 HiSilicon Ltd.
  * Copyright (c) 2013-2014 Linaro Ltd.
  *
  * Interrupt architecture for the HIP04 INTC:
@@ -130,7 +130,7 @@ static int hip04_irq_set_type(struct irq_data *d, unsigned int type)
 
 	raw_spin_lock(&irq_controller_lock);
 
-	ret = gic_configure_irq(irq, type, base + GIC_DIST_CONFIG, NULL);
+	ret = gic_configure_irq(irq, type, base + GIC_DIST_CONFIG);
 	if (ret && irq < 32) {
 		/* Misconfigured PPIs are usually not fatal */
 		pr_warn("GIC: PPI%d is secure or misconfigured\n", irq - 16);
@@ -206,7 +206,7 @@ static void __exception_irq_entry hip04_handle_irq(struct pt_regs *regs)
 		irqnr = irqstat & GICC_IAR_INT_ID_MASK;
 
 		if (irqnr <= HIP04_MAX_IRQS)
-			handle_domain_irq(hip04_data.domain, irqnr, regs);
+			generic_handle_domain_irq(hip04_data.domain, irqnr);
 	} while (irqnr > HIP04_MAX_IRQS);
 }
 
@@ -260,7 +260,7 @@ static void __init hip04_irq_dist_init(struct hip04_irq_data *intc)
 	for (i = 32; i < nr_irqs; i += 2)
 		writel_relaxed(cpumask, base + GIC_DIST_TARGET + ((i * 2) & ~3));
 
-	gic_dist_config(base, nr_irqs, NULL);
+	gic_dist_config(base, nr_irqs, GICD_INT_DEF_PRI);
 
 	writel_relaxed(1, base + GIC_DIST_CTRL);
 }
@@ -287,7 +287,7 @@ static void hip04_irq_cpu_init(struct hip04_irq_data *intc)
 		if (i != cpu)
 			hip04_cpu_map[i] &= ~cpu_mask;
 
-	gic_cpu_config(dist_base, 32, NULL);
+	gic_cpu_config(dist_base, 32, GICD_INT_DEF_PRI);
 
 	writel_relaxed(0xf0, base + GIC_CPU_PRIMASK);
 	writel_relaxed(1, base + GIC_CPU_CTRL);
@@ -296,11 +296,7 @@ static void hip04_irq_cpu_init(struct hip04_irq_data *intc)
 static int hip04_irq_domain_map(struct irq_domain *d, unsigned int irq,
 				irq_hw_number_t hw)
 {
-	if (hw < 16) {
-		irq_set_percpu_devid(irq);
-		irq_set_chip_and_handler(irq, &hip04_irq_chip,
-					 handle_percpu_devid_fasteoi_ipi);
-	} else if (hw < 32) {
+	if (hw < 32) {
 		irq_set_percpu_devid(irq);
 		irq_set_chip_and_handler(irq, &hip04_irq_chip,
 					 handle_percpu_devid_irq);

@@ -85,7 +85,8 @@ typedef void (*w1_slave_found_callback)(struct w1_master *, u64);
  *
  * @data: the first parameter in all the functions below
  *
- * @read_bit: Sample the line level @return the level read (0 or 1)
+ * @read_bit: Sample the line level
+ * @return the level read (0 or 1)
  *
  * @write_bit: Sets the line level
  *
@@ -95,7 +96,7 @@ typedef void (*w1_slave_found_callback)(struct w1_master *, u64);
  * touch_bit(1) = write-1 / read cycle
  * @return the bit read (0 or 1)
  *
- * @read_byte: Reads a bytes. Same as 8 touch_bit(1) calls.
+ * @read_byte: Reads a byte. Same as 8 touch_bit(1) calls.
  * @return the byte read
  *
  * @write_byte: Writes a byte. Same as 8 touch_bit(x) calls.
@@ -114,7 +115,7 @@ typedef void (*w1_slave_found_callback)(struct w1_master *, u64);
  * @set_pullup: Put out a strong pull-up pulse of the specified duration.
  * @return -1=Error, 0=completed
  *
- * @search: Really nice hardware can handles the different types of ROM search
+ * @search: Really nice hardware can handle the different types of ROM search
  * w1_master* is passed to the slave found callback.
  * u8 is search_type, W1_SEARCH or W1_ALARM_SEARCH
  *
@@ -280,7 +281,7 @@ int w1_register_family(struct w1_family *family);
 void w1_unregister_family(struct w1_family *family);
 
 /**
- * module_w1_driver() - Helper macro for registering a 1-Wire families
+ * module_w1_family() - Helper macro for registering a 1-Wire families
  * @__w1_family: w1_family struct
  *
  * Helper macro for 1-Wire families which do not do anything special in module

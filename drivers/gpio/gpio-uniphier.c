@@ -9,9 +9,9 @@
 #include <linux/irqdomain.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/of_irq.h>
 #include <linux/platform_device.h>
+#include <linux/property.h>
 #include <linux/spinlock.h>
 #include <dt-bindings/gpio/uniphier-gpio.h>
 
@@ -165,7 +165,7 @@ static int uniphier_gpio_to_irq(struct gpio_chip *chip, unsigned int offset)
 	if (offset < UNIPHIER_GPIO_IRQ_OFFSET)
 		return -ENXIO;
 
-	fwspec.fwnode = of_node_to_fwnode(chip->parent->of_node);
+	fwspec.fwnode = dev_fwnode(chip->parent);
 	fwspec.param_count = 2;
 	fwspec.param[0] = offset - UNIPHIER_GPIO_IRQ_OFFSET;
 	/*
@@ -179,28 +179,28 @@ static int uniphier_gpio_to_irq(struct gpio_chip *chip, unsigned int offset)
 
 static void uniphier_gpio_irq_mask(struct irq_data *data)
 {
-	struct uniphier_gpio_priv *priv = data->chip_data;
-	u32 mask = BIT(data->hwirq);
+	struct uniphier_gpio_priv *priv = irq_data_get_irq_chip_data(data);
+	u32 mask = BIT(irqd_to_hwirq(data));
 
 	uniphier_gpio_reg_update(priv, UNIPHIER_GPIO_IRQ_EN, mask, 0);
 
-	return irq_chip_mask_parent(data);
+	irq_chip_mask_parent(data);
 }
 
 static void uniphier_gpio_irq_unmask(struct irq_data *data)
 {
-	struct uniphier_gpio_priv *priv = data->chip_data;
-	u32 mask = BIT(data->hwirq);
+	struct uniphier_gpio_priv *priv = irq_data_get_irq_chip_data(data);
+	u32 mask = BIT(irqd_to_hwirq(data));
 
 	uniphier_gpio_reg_update(priv, UNIPHIER_GPIO_IRQ_EN, mask, mask);
 
-	return irq_chip_unmask_parent(data);
+	irq_chip_unmask_parent(data);
 }
 
 static int uniphier_gpio_irq_set_type(struct irq_data *data, unsigned int type)
 {
-	struct uniphier_gpio_priv *priv = data->chip_data;
-	u32 mask = BIT(data->hwirq);
+	struct uniphier_gpio_priv *priv = irq_data_get_irq_chip_data(data);
+	u32 mask = BIT(irqd_to_hwirq(data));
 	u32 val = 0;
 
 	if (type == IRQ_TYPE_EDGE_BOTH) {
@@ -297,7 +297,8 @@ static int uniphier_gpio_irq_domain_activate(struct irq_domain *domain,
 	struct uniphier_gpio_priv *priv = domain->host_data;
 	struct gpio_chip *chip = &priv->chip;
 
-	return gpiochip_lock_as_irq(chip, data->hwirq + UNIPHIER_GPIO_IRQ_OFFSET);
+	return gpiochip_lock_as_irq(chip,
+			irqd_to_hwirq(data) + UNIPHIER_GPIO_IRQ_OFFSET);
 }
 
 static void uniphier_gpio_irq_domain_deactivate(struct irq_domain *domain,
@@ -306,7 +307,8 @@ static void uniphier_gpio_irq_domain_deactivate(struct irq_domain *domain,
 	struct uniphier_gpio_priv *priv = domain->host_data;
 	struct gpio_chip *chip = &priv->chip;
 
-	gpiochip_unlock_as_irq(chip, data->hwirq + UNIPHIER_GPIO_IRQ_OFFSET);
+	gpiochip_unlock_as_irq(chip,
+			irqd_to_hwirq(data) + UNIPHIER_GPIO_IRQ_OFFSET);
 }
 
 static const struct irq_domain_ops uniphier_gpio_irq_domain_ops = {
@@ -403,7 +405,7 @@ static int uniphier_gpio_probe(struct platform_device *pdev)
 	priv->domain = irq_domain_create_hierarchy(
 					parent_domain, 0,
 					UNIPHIER_GPIO_IRQ_MAX_NUM,
-					of_node_to_fwnode(dev->of_node),
+					dev_fwnode(dev),
 					&uniphier_gpio_irq_domain_ops, priv);
 	if (!priv->domain)
 		return -ENOMEM;
@@ -413,13 +415,11 @@ static int uniphier_gpio_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int uniphier_gpio_remove(struct platform_device *pdev)
+static void uniphier_gpio_remove(struct platform_device *pdev)
 {
 	struct uniphier_gpio_priv *priv = platform_get_drvdata(pdev);
 
 	irq_domain_remove(priv->domain);
-
-	return 0;
 }
 
 static int __maybe_unused uniphier_gpio_suspend(struct device *dev)

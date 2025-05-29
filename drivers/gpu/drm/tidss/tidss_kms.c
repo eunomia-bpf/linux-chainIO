@@ -7,9 +7,6 @@
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_bridge.h>
-#include <drm/drm_crtc_helper.h>
-#include <drm/drm_fb_cma_helper.h>
-#include <drm/drm_fb_helper.h>
 #include <drm/drm_gem_framebuffer_helper.h>
 #include <drm/drm_of.h>
 #include <drm/drm_panel.h>
@@ -32,7 +29,7 @@ static void tidss_atomic_commit_tail(struct drm_atomic_state *old_state)
 	tidss_runtime_get(tidss);
 
 	drm_atomic_helper_commit_modeset_disables(ddev, old_state);
-	drm_atomic_helper_commit_planes(ddev, old_state, 0);
+	drm_atomic_helper_commit_planes(ddev, old_state, DRM_PLANE_COMMIT_ACTIVE_ONLY);
 	drm_atomic_helper_commit_modeset_enables(ddev, old_state);
 
 	drm_atomic_helper_commit_hw_done(old_state);
@@ -67,7 +64,7 @@ static int tidss_atomic_check(struct drm_device *ddev,
 	 * changes. This is needed for updating the plane positions in
 	 * tidss_crtc_position_planes() which is called from
 	 * crtc_atomic_enable() and crtc_atomic_flush(). We have an
-	 * extra flag to to mark x,y-position changes and together
+	 * extra flag to mark x,y-position changes and together
 	 * with zpos_changed the condition recognizes all the above
 	 * cases.
 	 */
@@ -138,8 +135,7 @@ static int tidss_dispc_modeset_init(struct tidss_device *tidss)
 			dev_dbg(dev, "no panel/bridge for port %d\n", i);
 			continue;
 		} else if (ret) {
-			dev_dbg(dev, "port %d probe returned %d\n", i, ret);
-			return ret;
+			return dev_err_probe(dev, ret, "port %d probe failed\n", i);
 		}
 
 		if (panel) {
@@ -192,7 +188,6 @@ static int tidss_dispc_modeset_init(struct tidss_device *tidss)
 	for (i = 0; i < num_pipes; ++i) {
 		struct tidss_plane *tplane;
 		struct tidss_crtc *tcrtc;
-		struct drm_encoder *enc;
 		u32 hw_plane_id = feat->vid_order[tidss->num_planes];
 		int ret;
 
@@ -215,16 +210,11 @@ static int tidss_dispc_modeset_init(struct tidss_device *tidss)
 
 		tidss->crtcs[tidss->num_crtcs++] = &tcrtc->crtc;
 
-		enc = tidss_encoder_create(tidss, pipes[i].enc_type,
+		ret = tidss_encoder_create(tidss, pipes[i].bridge,
+					   pipes[i].enc_type,
 					   1 << tcrtc->crtc.index);
-		if (IS_ERR(enc)) {
-			dev_err(tidss->dev, "encoder create failed\n");
-			return PTR_ERR(enc);
-		}
-
-		ret = drm_bridge_attach(enc, pipes[i].bridge, NULL, 0);
 		if (ret) {
-			dev_err(tidss->dev, "bridge attach failed: %d\n", ret);
+			dev_err(tidss->dev, "encoder create failed\n");
 			return ret;
 		}
 	}

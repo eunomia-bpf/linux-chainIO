@@ -23,6 +23,10 @@
  */
 
 #include <linux/kernel.h>
+#include <linux/string.h>
+#include <linux/cpufeature.h>
+#include <linux/bug.h>
+#include <linux/build_bug.h>
 #include <asm/fpu/api.h>
 
 #include "i915_memcpy.h"
@@ -135,7 +139,7 @@ bool i915_memcpy_from_wc(void *dst, const void *src, unsigned long len)
  * accepts that its arguments may not be aligned, but are valid for the
  * potential 16-byte read past the end.
  */
-void i915_unaligned_memcpy_from_wc(void *dst, void *src, unsigned long len)
+void i915_unaligned_memcpy_from_wc(void *dst, const void *src, unsigned long len)
 {
 	unsigned long addr;
 

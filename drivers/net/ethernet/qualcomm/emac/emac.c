@@ -11,7 +11,6 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_net.h>
-#include <linux/of_device.h>
 #include <linux/phy.h>
 #include <linux/platform_device.h>
 #include <linux/acpi.h>
@@ -217,7 +216,7 @@ static int emac_change_mtu(struct net_device *netdev, int new_mtu)
 	netif_dbg(adpt, hw, adpt->netdev,
 		  "changing MTU from %d to %d\n", netdev->mtu,
 		  new_mtu);
-	netdev->mtu = new_mtu;
+	WRITE_ONCE(netdev->mtu, new_mtu);
 
 	if (netif_running(netdev))
 		return emac_reinit_locked(adpt);
@@ -377,7 +376,7 @@ static const struct net_device_ops emac_netdev_ops = {
 	.ndo_start_xmit		= emac_start_xmit,
 	.ndo_set_mac_address	= eth_mac_addr,
 	.ndo_change_mtu		= emac_change_mtu,
-	.ndo_do_ioctl		= phy_do_ioctl_running,
+	.ndo_eth_ioctl		= phy_do_ioctl_running,
 	.ndo_tx_timeout		= emac_tx_timeout,
 	.ndo_get_stats64	= emac_get_stats64,
 	.ndo_set_features       = emac_set_features,
@@ -545,13 +544,10 @@ static int emac_probe_resources(struct platform_device *pdev,
 				struct emac_adapter *adpt)
 {
 	struct net_device *netdev = adpt->netdev;
-	char maddr[ETH_ALEN];
 	int ret = 0;
 
 	/* get mac address */
-	if (device_get_mac_address(&pdev->dev, maddr, ETH_ALEN))
-		ether_addr_copy(netdev->dev_addr, maddr);
-	else
+	if (device_get_ethdev_address(&pdev->dev, netdev))
 		eth_hw_addr_random(netdev);
 
 	/* Core 0 interrupt */
@@ -687,8 +683,7 @@ static int emac_probe(struct platform_device *pdev)
 	/* Initialize queues */
 	emac_mac_rx_tx_ring_init_all(pdev, adpt);
 
-	netif_napi_add(netdev, &adpt->rx_q.napi, emac_napi_rtx,
-		       NAPI_POLL_WEIGHT);
+	netif_napi_add(netdev, &adpt->rx_q.napi, emac_napi_rtx);
 
 	ret = register_netdev(netdev);
 	if (ret) {
@@ -723,25 +718,30 @@ err_undo_netdev:
 	return ret;
 }
 
-static int emac_remove(struct platform_device *pdev)
+static void emac_remove(struct platform_device *pdev)
 {
 	struct net_device *netdev = dev_get_drvdata(&pdev->dev);
 	struct emac_adapter *adpt = netdev_priv(netdev);
 
+	netif_carrier_off(netdev);
+	netif_tx_disable(netdev);
+
 	unregister_netdev(netdev);
 	netif_napi_del(&adpt->rx_q.napi);
+
+	free_irq(adpt->irq.irq, &adpt->irq);
+	cancel_work_sync(&adpt->work_thread);
 
 	emac_clks_teardown(adpt);
 
 	put_device(&adpt->phydev->mdio.dev);
 	mdiobus_unregister(adpt->mii_bus);
-	free_netdev(netdev);
 
 	if (adpt->phy.digital)
 		iounmap(adpt->phy.digital);
 	iounmap(adpt->phy.base);
 
-	return 0;
+	free_netdev(netdev);
 }
 
 static void emac_shutdown(struct platform_device *pdev)
@@ -760,7 +760,7 @@ static void emac_shutdown(struct platform_device *pdev)
 
 static struct platform_driver emac_platform_driver = {
 	.probe	= emac_probe,
-	.remove	= emac_remove,
+	.remove = emac_remove,
 	.driver = {
 		.name		= "qcom-emac",
 		.of_match_table = emac_dt_match,
@@ -771,5 +771,6 @@ static struct platform_driver emac_platform_driver = {
 
 module_platform_driver(emac_platform_driver);
 
+MODULE_DESCRIPTION("Qualcomm EMAC Gigabit Ethernet driver");
 MODULE_LICENSE("GPL v2");
 MODULE_ALIAS("platform:qcom-emac");

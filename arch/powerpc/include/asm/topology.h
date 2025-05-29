@@ -6,6 +6,7 @@
 
 struct device;
 struct device_node;
+struct drmem_lmb;
 
 #ifdef CONFIG_NUMA
 
@@ -35,7 +36,7 @@ static inline int pcibus_to_node(struct pci_bus *bus)
 				 cpu_all_mask :				\
 				 cpumask_of_node(pcibus_to_node(bus)))
 
-extern int cpu_distance(__be32 *cpu1_assoc, __be32 *cpu2_assoc);
+int cpu_relative_distance(__be32 *cpu1_assoc, __be32 *cpu2_assoc);
 extern int __node_distance(int, int);
 #define node_distance(a, b) __node_distance(a, b)
 
@@ -61,6 +62,15 @@ static inline int early_cpu_to_node(int cpu)
 	 */
 	return (nid < 0) ? 0 : nid;
 }
+
+int of_drconf_to_nid_single(struct drmem_lmb *lmb);
+void update_numa_distance(struct device_node *node);
+
+extern void map_cpu_to_node(int cpu, int node);
+#ifdef CONFIG_HOTPLUG_CPU
+extern void unmap_cpu_from_node(unsigned long cpu);
+#endif /* CONFIG_HOTPLUG_CPU */
+
 #else
 
 static inline int early_cpu_to_node(int cpu) { return 0; }
@@ -79,25 +89,32 @@ static inline void sysfs_remove_device_from_node(struct device *dev,
 
 static inline void update_numa_cpu_lookup_table(unsigned int cpu, int node) {}
 
-static inline int cpu_distance(__be32 *cpu1_assoc, __be32 *cpu2_assoc)
+static inline int cpu_relative_distance(__be32 *cpu1_assoc, __be32 *cpu2_assoc)
 {
 	return 0;
 }
+
+static inline int of_drconf_to_nid_single(struct drmem_lmb *lmb)
+{
+	return first_online_node;
+}
+
+static inline void update_numa_distance(struct device_node *node) {}
+
+#ifdef CONFIG_SMP
+static inline void map_cpu_to_node(int cpu, int node) {}
+#ifdef CONFIG_HOTPLUG_CPU
+static inline void unmap_cpu_from_node(unsigned long cpu) {}
+#endif /* CONFIG_HOTPLUG_CPU */
+#endif /* CONFIG_SMP */
 
 #endif /* CONFIG_NUMA */
 
-struct drmem_lmb;
-int of_drconf_to_nid_single(struct drmem_lmb *lmb);
-
 #if defined(CONFIG_NUMA) && defined(CONFIG_PPC_SPLPAR)
-extern int find_and_online_cpu_nid(int cpu);
+void find_and_update_cpu_nid(int cpu);
 extern int cpu_to_coregroup_id(int cpu);
 #else
-static inline int find_and_online_cpu_nid(int cpu)
-{
-	return 0;
-}
-
+static inline void find_and_update_cpu_nid(int cpu) {}
 static inline int cpu_to_coregroup_id(int cpu)
 {
 #ifdef CONFIG_SMP
@@ -120,10 +137,38 @@ static inline int cpu_to_coregroup_id(int cpu)
 #define topology_physical_package_id(cpu)	(cpu_to_chip_id(cpu))
 
 #define topology_sibling_cpumask(cpu)	(per_cpu(cpu_sibling_map, cpu))
-#define topology_core_cpumask(cpu)	(cpu_cpu_mask(cpu))
+#define topology_core_cpumask(cpu)	(per_cpu(cpu_core_map, cpu))
 #define topology_core_id(cpu)		(cpu_to_core_id(cpu))
 
 #endif
+#endif
+
+#ifdef CONFIG_HOTPLUG_SMT
+#include <linux/cpu_smt.h>
+#include <linux/cpumask.h>
+#include <asm/cputhreads.h>
+
+static inline bool topology_is_primary_thread(unsigned int cpu)
+{
+	return cpu == cpu_first_thread_sibling(cpu);
+}
+
+static inline bool topology_smt_thread_allowed(unsigned int cpu)
+{
+	return cpu_thread_in_core(cpu) < cpu_smt_num_threads;
+}
+
+#define topology_is_core_online topology_is_core_online
+static inline bool topology_is_core_online(unsigned int cpu)
+{
+	int i, first_cpu = cpu_first_thread_sibling(cpu);
+
+	for (i = first_cpu; i < first_cpu + threads_per_core; ++i) {
+		if (cpu_online(i))
+			return true;
+	}
+	return false;
+}
 #endif
 
 #endif /* __KERNEL__ */

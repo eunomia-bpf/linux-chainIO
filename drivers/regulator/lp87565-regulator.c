@@ -5,11 +5,23 @@
  * Copyright (C) 2017 Texas Instruments Incorporated - https://www.ti.com/
  */
 
+#include <linux/bitfield.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
 
 #include <linux/mfd/lp87565.h>
+
+enum LP87565_regulator_id {
+	/* BUCK's */
+	LP87565_BUCK_0,
+	LP87565_BUCK_1,
+	LP87565_BUCK_2,
+	LP87565_BUCK_3,
+	LP87565_BUCK_10,
+	LP87565_BUCK_23,
+	LP87565_BUCK_3210,
+};
 
 #define LP87565_REGULATOR(_name, _id, _of, _ops, _n, _vr, _vm,		\
 			  _er, _em, _ev, _delay, _lr, _cr)		\
@@ -18,8 +30,8 @@
 			.name			= _name,		\
 			.supply_name		= _of "-in",		\
 			.id			= _id,			\
-			.of_match		= of_match_ptr(_of),	\
-			.regulators_node	= of_match_ptr("regulators"),\
+			.of_match		= _of,			\
+			.regulators_node	= "regulators",		\
 			.ops			= &_ops,		\
 			.n_voltages		= _n,			\
 			.type			= REGULATOR_VOLTAGE,	\
@@ -88,7 +100,7 @@ static int lp87565_buck_set_ramp_delay(struct regulator_dev *rdev,
 
 	ret = regmap_update_bits(rdev->regmap, regulators[id].ctrl2_reg,
 				 LP87565_BUCK_CTRL_2_SLEW_RATE,
-				 reg << __ffs(LP87565_BUCK_CTRL_2_SLEW_RATE));
+				 FIELD_PREP(LP87565_BUCK_CTRL_2_SLEW_RATE, reg));
 	if (ret) {
 		dev_err(&rdev->dev, "SLEW RATE write failed: %d\n", ret);
 		return ret;
@@ -226,6 +238,7 @@ MODULE_DEVICE_TABLE(platform, lp87565_regulator_id_table);
 static struct platform_driver lp87565_regulator_driver = {
 	.driver = {
 		.name = "lp87565-pmic",
+		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 	},
 	.probe = lp87565_regulator_probe,
 	.id_table = lp87565_regulator_id_table,

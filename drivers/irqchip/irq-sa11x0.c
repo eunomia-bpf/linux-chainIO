@@ -127,8 +127,7 @@ static int __init sa1100irq_init_devicefs(void)
 
 device_initcall(sa1100irq_init_devicefs);
 
-static asmlinkage void __exception_irq_entry
-sa1100_handle_irq(struct pt_regs *regs)
+static void __exception_irq_entry sa1100_handle_irq(struct pt_regs *regs)
 {
 	uint32_t icip, icmr, mask;
 
@@ -140,8 +139,8 @@ sa1100_handle_irq(struct pt_regs *regs)
 		if (mask == 0)
 			break;
 
-		handle_domain_irq(sa1100_normal_irqdomain,
-				ffs(mask) - 1, regs);
+		generic_handle_domain_irq(sa1100_normal_irqdomain,
+					  ffs(mask) - 1);
 	} while (1);
 }
 

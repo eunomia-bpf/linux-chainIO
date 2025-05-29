@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
+// SPDX-FileCopyrightText: Copyright (c) 2020-2024 NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
 //
 // tegra210_admaif.c - Tegra ADMAIF driver
-//
-// Copyright (c) 2020 NVIDIA CORPORATION.  All rights reserved.
 
 #include <linux/clk.h>
 #include <linux/device.h>
@@ -285,6 +285,11 @@ static int tegra_admaif_hw_params(struct snd_pcm_substream *substream,
 		cif_conf.client_bits = TEGRA_ACIF_BITS_16;
 		valid_bit = DATA_16BIT;
 		break;
+	case SNDRV_PCM_FORMAT_S24_LE:
+		cif_conf.audio_bits = TEGRA_ACIF_BITS_32;
+		cif_conf.client_bits = TEGRA_ACIF_BITS_24;
+		valid_bit = DATA_32BIT;
+		break;
 	case SNDRV_PCM_FORMAT_S32_LE:
 		cif_conf.audio_bits = TEGRA_ACIF_BITS_32;
 		cif_conf.client_bits = TEGRA_ACIF_BITS_32;
@@ -419,65 +424,141 @@ static int tegra_admaif_trigger(struct snd_pcm_substream *substream, int cmd,
 	}
 }
 
-static const struct snd_soc_dai_ops tegra_admaif_dai_ops = {
-	.hw_params	= tegra_admaif_hw_params,
-	.trigger	= tegra_admaif_trigger,
-};
-
-static int tegra_admaif_get_control(struct snd_kcontrol *kcontrol,
-				    struct snd_ctl_elem_value *ucontrol)
+static int tegra210_admaif_pget_mono_to_stereo(struct snd_kcontrol *kcontrol,
+	struct snd_ctl_elem_value *ucontrol)
 {
 	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
-	struct soc_enum *ec = (struct soc_enum *)kcontrol->private_value;
 	struct tegra_admaif *admaif = snd_soc_component_get_drvdata(cmpnt);
-	long *uctl_val = &ucontrol->value.integer.value[0];
+	struct soc_enum *ec = (struct soc_enum *)kcontrol->private_value;
 
-	if (strstr(kcontrol->id.name, "Playback Mono To Stereo"))
-		*uctl_val = admaif->mono_to_stereo[ADMAIF_TX_PATH][ec->reg];
-	else if (strstr(kcontrol->id.name, "Capture Mono To Stereo"))
-		*uctl_val = admaif->mono_to_stereo[ADMAIF_RX_PATH][ec->reg];
-	else if (strstr(kcontrol->id.name, "Playback Stereo To Mono"))
-		*uctl_val = admaif->stereo_to_mono[ADMAIF_TX_PATH][ec->reg];
-	else if (strstr(kcontrol->id.name, "Capture Stereo To Mono"))
-		*uctl_val = admaif->stereo_to_mono[ADMAIF_RX_PATH][ec->reg];
+	ucontrol->value.enumerated.item[0] =
+		admaif->mono_to_stereo[ADMAIF_TX_PATH][ec->reg];
 
 	return 0;
 }
 
-static int tegra_admaif_put_control(struct snd_kcontrol *kcontrol,
-				    struct snd_ctl_elem_value *ucontrol)
+static int tegra210_admaif_pput_mono_to_stereo(struct snd_kcontrol *kcontrol,
+	struct snd_ctl_elem_value *ucontrol)
 {
 	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
-	struct soc_enum *ec = (struct soc_enum *)kcontrol->private_value;
 	struct tegra_admaif *admaif = snd_soc_component_get_drvdata(cmpnt);
-	int value = ucontrol->value.integer.value[0];
+	struct soc_enum *ec = (struct soc_enum *)kcontrol->private_value;
+	unsigned int value = ucontrol->value.enumerated.item[0];
 
-	if (strstr(kcontrol->id.name, "Playback Mono To Stereo"))
-		admaif->mono_to_stereo[ADMAIF_TX_PATH][ec->reg] = value;
-	else if (strstr(kcontrol->id.name, "Capture Mono To Stereo"))
-		admaif->mono_to_stereo[ADMAIF_RX_PATH][ec->reg] = value;
-	else if (strstr(kcontrol->id.name, "Playback Stereo To Mono"))
-		admaif->stereo_to_mono[ADMAIF_TX_PATH][ec->reg] = value;
-	else if (strstr(kcontrol->id.name, "Capture Stereo To Mono"))
-		admaif->stereo_to_mono[ADMAIF_RX_PATH][ec->reg] = value;
+	if (value == admaif->mono_to_stereo[ADMAIF_TX_PATH][ec->reg])
+		return 0;
+
+	admaif->mono_to_stereo[ADMAIF_TX_PATH][ec->reg] = value;
+
+	return 1;
+}
+
+static int tegra210_admaif_cget_mono_to_stereo(struct snd_kcontrol *kcontrol,
+	struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
+	struct tegra_admaif *admaif = snd_soc_component_get_drvdata(cmpnt);
+	struct soc_enum *ec = (struct soc_enum *)kcontrol->private_value;
+
+	ucontrol->value.enumerated.item[0] =
+		admaif->mono_to_stereo[ADMAIF_RX_PATH][ec->reg];
 
 	return 0;
+}
+
+static int tegra210_admaif_cput_mono_to_stereo(struct snd_kcontrol *kcontrol,
+	struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
+	struct tegra_admaif *admaif = snd_soc_component_get_drvdata(cmpnt);
+	struct soc_enum *ec = (struct soc_enum *)kcontrol->private_value;
+	unsigned int value = ucontrol->value.enumerated.item[0];
+
+	if (value == admaif->mono_to_stereo[ADMAIF_RX_PATH][ec->reg])
+		return 0;
+
+	admaif->mono_to_stereo[ADMAIF_RX_PATH][ec->reg] = value;
+
+	return 1;
+}
+
+static int tegra210_admaif_pget_stereo_to_mono(struct snd_kcontrol *kcontrol,
+	struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
+	struct tegra_admaif *admaif = snd_soc_component_get_drvdata(cmpnt);
+	struct soc_enum *ec = (struct soc_enum *)kcontrol->private_value;
+
+	ucontrol->value.enumerated.item[0] =
+		admaif->stereo_to_mono[ADMAIF_TX_PATH][ec->reg];
+
+	return 0;
+}
+
+static int tegra210_admaif_pput_stereo_to_mono(struct snd_kcontrol *kcontrol,
+	struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
+	struct tegra_admaif *admaif = snd_soc_component_get_drvdata(cmpnt);
+	struct soc_enum *ec = (struct soc_enum *)kcontrol->private_value;
+	unsigned int value = ucontrol->value.enumerated.item[0];
+
+	if (value == admaif->stereo_to_mono[ADMAIF_TX_PATH][ec->reg])
+		return 0;
+
+	admaif->stereo_to_mono[ADMAIF_TX_PATH][ec->reg] = value;
+
+	return 1;
+}
+
+static int tegra210_admaif_cget_stereo_to_mono(struct snd_kcontrol *kcontrol,
+	struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
+	struct tegra_admaif *admaif = snd_soc_component_get_drvdata(cmpnt);
+	struct soc_enum *ec = (struct soc_enum *)kcontrol->private_value;
+
+	ucontrol->value.enumerated.item[0] =
+		admaif->stereo_to_mono[ADMAIF_RX_PATH][ec->reg];
+
+	return 0;
+}
+
+static int tegra210_admaif_cput_stereo_to_mono(struct snd_kcontrol *kcontrol,
+	struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
+	struct tegra_admaif *admaif = snd_soc_component_get_drvdata(cmpnt);
+	struct soc_enum *ec = (struct soc_enum *)kcontrol->private_value;
+	unsigned int value = ucontrol->value.enumerated.item[0];
+
+	if (value == admaif->stereo_to_mono[ADMAIF_RX_PATH][ec->reg])
+		return 0;
+
+	admaif->stereo_to_mono[ADMAIF_RX_PATH][ec->reg] = value;
+
+	return 1;
 }
 
 static int tegra_admaif_dai_probe(struct snd_soc_dai *dai)
 {
 	struct tegra_admaif *admaif = snd_soc_dai_get_drvdata(dai);
 
-	dai->capture_dma_data = &admaif->capture_dma_data[dai->id];
-	dai->playback_dma_data = &admaif->playback_dma_data[dai->id];
+	snd_soc_dai_init_dma_data(dai,	&admaif->playback_dma_data[dai->id],
+					&admaif->capture_dma_data[dai->id]);
 
 	return 0;
 }
 
+static const struct snd_soc_dai_ops tegra_admaif_dai_ops = {
+	.probe		= tegra_admaif_dai_probe,
+	.hw_params	= tegra_admaif_hw_params,
+	.trigger	= tegra_admaif_trigger,
+};
+
 #define DAI(dai_name)					\
 	{							\
 		.name = dai_name,				\
-		.probe = tegra_admaif_dai_probe,		\
 		.playback = {					\
 			.stream_name = dai_name " Playback",	\
 			.channels_min = 1,			\
@@ -485,6 +566,7 @@ static int tegra_admaif_dai_probe(struct snd_soc_dai *dai)
 			.rates = SNDRV_PCM_RATE_8000_192000,	\
 			.formats = SNDRV_PCM_FMTBIT_S8 |	\
 				SNDRV_PCM_FMTBIT_S16_LE |	\
+				SNDRV_PCM_FMTBIT_S24_LE |	\
 				SNDRV_PCM_FMTBIT_S32_LE,	\
 		},						\
 		.capture = {					\
@@ -494,6 +576,7 @@ static int tegra_admaif_dai_probe(struct snd_soc_dai *dai)
 			.rates = SNDRV_PCM_RATE_8000_192000,	\
 			.formats = SNDRV_PCM_FMTBIT_S8 |	\
 				SNDRV_PCM_FMTBIT_S16_LE |	\
+				SNDRV_PCM_FMTBIT_S24_LE |	\
 				SNDRV_PCM_FMTBIT_S32_LE,	\
 		},						\
 		.ops = &tegra_admaif_dai_ops,			\
@@ -559,17 +642,21 @@ static const char * const tegra_admaif_mono_conv_text[] = {
 }
 
 #define TEGRA_ADMAIF_CIF_CTRL(reg)					       \
-	NV_SOC_ENUM_EXT("ADMAIF" #reg " Playback Mono To Stereo", reg - 1,\
-			tegra_admaif_get_control, tegra_admaif_put_control,    \
+	NV_SOC_ENUM_EXT("ADMAIF" #reg " Playback Mono To Stereo", reg - 1,     \
+			tegra210_admaif_pget_mono_to_stereo,		       \
+			tegra210_admaif_pput_mono_to_stereo,		       \
 			tegra_admaif_mono_conv_text),			       \
-	NV_SOC_ENUM_EXT("ADMAIF" #reg " Playback Stereo To Mono", reg - 1,\
-			tegra_admaif_get_control, tegra_admaif_put_control,    \
+	NV_SOC_ENUM_EXT("ADMAIF" #reg " Playback Stereo To Mono", reg - 1,     \
+			tegra210_admaif_pget_stereo_to_mono,		       \
+			tegra210_admaif_pput_stereo_to_mono,		       \
 			tegra_admaif_stereo_conv_text),			       \
-	NV_SOC_ENUM_EXT("ADMAIF" #reg " Capture Mono To Stereo", reg - 1, \
-			tegra_admaif_get_control, tegra_admaif_put_control,    \
+	NV_SOC_ENUM_EXT("ADMAIF" #reg " Capture Mono To Stereo", reg - 1,      \
+			tegra210_admaif_cget_mono_to_stereo,		       \
+			tegra210_admaif_cput_mono_to_stereo,		       \
 			tegra_admaif_mono_conv_text),			       \
-	NV_SOC_ENUM_EXT("ADMAIF" #reg " Capture Stereo To Mono", reg - 1, \
-			tegra_admaif_get_control, tegra_admaif_put_control,    \
+	NV_SOC_ENUM_EXT("ADMAIF" #reg " Capture Stereo To Mono", reg - 1,      \
+			tegra210_admaif_cget_stereo_to_mono,		       \
+			tegra210_admaif_cput_stereo_to_mono,		       \
 			tegra_admaif_stereo_conv_text)
 
 static struct snd_kcontrol_new tegra210_admaif_controls[] = {
@@ -612,12 +699,9 @@ static const struct snd_soc_component_driver tegra210_admaif_cmpnt = {
 	.controls		= tegra210_admaif_controls,
 	.num_controls		= ARRAY_SIZE(tegra210_admaif_controls),
 	.pcm_construct		= tegra_pcm_construct,
-	.pcm_destruct		= tegra_pcm_destruct,
 	.open			= tegra_pcm_open,
 	.close			= tegra_pcm_close,
 	.hw_params		= tegra_pcm_hw_params,
-	.hw_free		= tegra_pcm_hw_free,
-	.mmap			= tegra_pcm_mmap,
 	.pointer		= tegra_pcm_pointer,
 };
 
@@ -625,12 +709,9 @@ static const struct snd_soc_component_driver tegra186_admaif_cmpnt = {
 	.controls		= tegra186_admaif_controls,
 	.num_controls		= ARRAY_SIZE(tegra186_admaif_controls),
 	.pcm_construct		= tegra_pcm_construct,
-	.pcm_destruct		= tegra_pcm_destruct,
 	.open			= tegra_pcm_open,
 	.close			= tegra_pcm_close,
 	.hw_params		= tegra_pcm_hw_params,
-	.hw_free		= tegra_pcm_hw_free,
-	.mmap			= tegra_pcm_mmap,
 	.pointer		= tegra_pcm_pointer,
 };
 
@@ -706,9 +787,7 @@ static int tegra_admaif_probe(struct platform_device *pdev)
 			return -ENOMEM;
 	}
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-
-	regs = devm_ioremap_resource(&pdev->dev, res);
+	regs = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
 	if (IS_ERR(regs))
 		return PTR_ERR(regs);
 
@@ -770,11 +849,9 @@ static int tegra_admaif_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int tegra_admaif_remove(struct platform_device *pdev)
+static void tegra_admaif_remove(struct platform_device *pdev)
 {
 	pm_runtime_disable(&pdev->dev);
-
-	return 0;
 }
 
 static const struct dev_pm_ops tegra_admaif_pm_ops = {

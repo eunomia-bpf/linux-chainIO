@@ -35,7 +35,7 @@ device information, applications call the ioctl with a pointer to a
 struct :c:type:`cec_caps`. The driver fills the structure and
 returns the information to the application. The ioctl never fails.
 
-.. tabularcolumns:: |p{1.2cm}|p{2.5cm}|p{13.8cm}|
+.. tabularcolumns:: |p{1.2cm}|p{2.5cm}|p{13.6cm}|
 
 .. c:type:: cec_caps
 
@@ -63,7 +63,7 @@ returns the information to the application. The ioctl never fails.
       - CEC Framework API version, formatted with the ``KERNEL_VERSION()``
 	macro.
 
-.. tabularcolumns:: |p{4.4cm}|p{2.5cm}|p{10.6cm}|
+.. tabularcolumns:: |p{4.4cm}|p{2.5cm}|p{10.4cm}|
 
 .. _cec-capabilities:
 
@@ -137,6 +137,12 @@ returns the information to the application. The ioctl never fails.
       - 0x00000100
       - If this capability is set, then :ref:`CEC_ADAP_G_CONNECTOR_INFO` can
         be used.
+    * .. _`CEC-CAP-REPLY-VENDOR-ID`:
+
+      - ``CEC_CAP_REPLY_VENDOR_ID``
+      - 0x00000200
+      - If this capability is set, then
+        :ref:`CEC_MSG_FL_REPLY_VENDOR_ID <cec-msg-flags>` can be used.
 
 Return Value
 ============

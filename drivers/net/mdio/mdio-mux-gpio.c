@@ -3,13 +3,13 @@
  * Copyright (C) 2011, 2012 Cavium, Inc.
  */
 
-#include <linux/platform_device.h>
 #include <linux/device.h>
-#include <linux/of_mdio.h>
-#include <linux/module.h>
-#include <linux/phy.h>
-#include <linux/mdio-mux.h>
 #include <linux/gpio/consumer.h>
+#include <linux/mdio-mux.h>
+#include <linux/module.h>
+#include <linux/of_mdio.h>
+#include <linux/phy.h>
+#include <linux/platform_device.h>
 
 #define DRV_VERSION "1.1"
 #define DRV_DESCRIPTION "GPIO controlled MDIO bus multiplexer driver"
@@ -62,11 +62,10 @@ static int mdio_mux_gpio_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int mdio_mux_gpio_remove(struct platform_device *pdev)
+static void mdio_mux_gpio_remove(struct platform_device *pdev)
 {
 	struct mdio_mux_gpio_state *s = dev_get_platdata(&pdev->dev);
 	mdio_mux_uninit(s->mux_handle);
-	return 0;
 }
 
 static const struct of_device_id mdio_mux_gpio_match[] = {

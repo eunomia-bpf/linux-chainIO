@@ -67,14 +67,14 @@ EXPORT_SYMBOL(bt878);
 static void bt878_mem_free(struct bt878 *bt)
 {
 	if (bt->buf_cpu) {
-		pci_free_consistent(bt->dev, bt->buf_size, bt->buf_cpu,
-				    bt->buf_dma);
+		dma_free_coherent(&bt->dev->dev, bt->buf_size, bt->buf_cpu,
+				  bt->buf_dma);
 		bt->buf_cpu = NULL;
 	}
 
 	if (bt->risc_cpu) {
-		pci_free_consistent(bt->dev, bt->risc_size, bt->risc_cpu,
-				    bt->risc_dma);
+		dma_free_coherent(&bt->dev->dev, bt->risc_size, bt->risc_cpu,
+				  bt->risc_dma);
 		bt->risc_cpu = NULL;
 	}
 }
@@ -84,16 +84,16 @@ static int bt878_mem_alloc(struct bt878 *bt)
 	if (!bt->buf_cpu) {
 		bt->buf_size = 128 * 1024;
 
-		bt->buf_cpu = pci_zalloc_consistent(bt->dev, bt->buf_size,
-						    &bt->buf_dma);
+		bt->buf_cpu = dma_alloc_coherent(&bt->dev->dev, bt->buf_size,
+						 &bt->buf_dma, GFP_KERNEL);
 		if (!bt->buf_cpu)
 			return -ENOMEM;
 	}
 
 	if (!bt->risc_cpu) {
 		bt->risc_size = PAGE_SIZE;
-		bt->risc_cpu = pci_zalloc_consistent(bt->dev, bt->risc_size,
-						     &bt->risc_dma);
+		bt->risc_cpu = dma_alloc_coherent(&bt->dev->dev, bt->risc_size,
+						  &bt->risc_dma, GFP_KERNEL);
 		if (!bt->risc_cpu) {
 			bt878_mem_free(bt);
 			return -ENOMEM;
@@ -300,7 +300,8 @@ static irqreturn_t bt878_irq(int irq, void *dev_id)
 		}
 		if (astat & BT878_ARISCI) {
 			bt->finished_block = (stat & BT878_ARISCS) >> 28;
-			tasklet_schedule(&bt->tasklet);
+			if (bt->bh_work.func)
+				queue_work(system_bh_wq, &bt->bh_work);
 			break;
 		}
 		count++;
@@ -477,6 +478,9 @@ static int bt878_probe(struct pci_dev *dev, const struct pci_device_id *pci_id)
 	btwrite(0, BT878_AINT_MASK);
 	bt878_num++;
 
+	if (!bt->bh_work.func)
+		disable_work_sync(&bt->bh_work);
+
 	return 0;
 
       fail2:
@@ -559,4 +563,5 @@ static void __exit bt878_cleanup_module(void)
 module_init(bt878_init_module);
 module_exit(bt878_cleanup_module);
 
+MODULE_DESCRIPTION("DVB/ATSC Support for bt878 based TV cards");
 MODULE_LICENSE("GPL");

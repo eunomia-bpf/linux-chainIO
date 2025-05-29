@@ -2,7 +2,7 @@
 /*
  * Turris Mox module configuration bus driver
  *
- * Copyright (C) 2019 Marek Behun <marek.behun@nic.cz>
+ * Copyright (C) 2019 Marek Behún <kabel@kernel.org>
  */
 
 #include <dt-bindings/bus/moxtet.h>
@@ -83,10 +83,10 @@ static const struct attribute_group *moxtet_dev_groups[] = {
 	NULL,
 };
 
-static int moxtet_match(struct device *dev, struct device_driver *drv)
+static int moxtet_match(struct device *dev, const struct device_driver *drv)
 {
 	struct moxtet_device *mdev = to_moxtet_device(dev);
-	struct moxtet_driver *tdrv = to_moxtet_driver(drv);
+	const struct moxtet_driver *tdrv = to_moxtet_driver(drv);
 	const enum turris_mox_module_id *t;
 
 	if (of_driver_match_device(dev, drv))
@@ -102,7 +102,7 @@ static int moxtet_match(struct device *dev, struct device_driver *drv)
 	return 0;
 }
 
-static struct bus_type moxtet_bus_type = {
+static const struct bus_type moxtet_bus_type = {
 	.name		= "moxtet",
 	.dev_groups	= moxtet_dev_groups,
 	.match		= moxtet_match,
@@ -484,7 +484,6 @@ static const struct file_operations input_fops = {
 	.owner	= THIS_MODULE,
 	.open	= moxtet_debug_open,
 	.read	= input_read,
-	.llseek	= no_llseek,
 };
 
 static ssize_t output_read(struct file *file, char __user *buf, size_t len,
@@ -549,7 +548,6 @@ static const struct file_operations output_fops = {
 	.open	= moxtet_debug_open,
 	.read	= output_read,
 	.write	= output_write,
-	.llseek	= no_llseek,
 };
 
 static int moxtet_register_debugfs(struct moxtet *moxtet)
@@ -755,7 +753,7 @@ static int moxtet_irq_setup(struct moxtet *moxtet)
 	moxtet->irq.masked = ~0;
 
 	ret = request_threaded_irq(moxtet->dev_irq, NULL, moxtet_irq_thread_fn,
-				   IRQF_ONESHOT, "moxtet", moxtet);
+				   IRQF_SHARED | IRQF_ONESHOT, "moxtet", moxtet);
 	if (ret < 0)
 		goto err_free;
 
@@ -815,7 +813,7 @@ static int moxtet_probe(struct spi_device *spi)
 	return 0;
 }
 
-static int moxtet_remove(struct spi_device *spi)
+static void moxtet_remove(struct spi_device *spi)
 {
 	struct moxtet *moxtet = spi_get_drvdata(spi);
 
@@ -828,9 +826,13 @@ static int moxtet_remove(struct spi_device *spi)
 	device_for_each_child(moxtet->dev, NULL, __unregister);
 
 	mutex_destroy(&moxtet->lock);
-
-	return 0;
 }
+
+static const struct spi_device_id moxtet_spi_ids[] = {
+	{ "moxtet" },
+	{ },
+};
+MODULE_DEVICE_TABLE(spi, moxtet_spi_ids);
 
 static const struct of_device_id moxtet_dt_ids[] = {
 	{ .compatible = "cznic,moxtet" },
@@ -843,6 +845,7 @@ static struct spi_driver moxtet_spi_driver = {
 		.name		= "moxtet",
 		.of_match_table = moxtet_dt_ids,
 	},
+	.id_table	= moxtet_spi_ids,
 	.probe		= moxtet_probe,
 	.remove		= moxtet_remove,
 };
@@ -879,6 +882,6 @@ static void __exit moxtet_exit(void)
 }
 module_exit(moxtet_exit);
 
-MODULE_AUTHOR("Marek Behun <marek.behun@nic.cz>");
+MODULE_AUTHOR("Marek Behun <kabel@kernel.org>");
 MODULE_DESCRIPTION("CZ.NIC's Turris Mox module configuration bus");
 MODULE_LICENSE("GPL v2");

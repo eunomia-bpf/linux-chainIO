@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-// Copyright (C) 2018 Hangzhou C-SKY Microsystems co.,ltd.
 
 #include <uapi/asm/unistd.h>
+
+#define __ARCH_WANT_STAT64
+#define __ARCH_WANT_SYS_CLONE
 
 #define NR_syscalls (__NR_syscalls)

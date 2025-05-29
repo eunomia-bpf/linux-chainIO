@@ -114,6 +114,7 @@ set_debug(const char *val, const struct kernel_param *kp)
 }
 
 MODULE_AUTHOR("Karsten Keil");
+MODULE_DESCRIPTION("mISDN driver for NETJet cards");
 MODULE_LICENSE("GPL v2");
 MODULE_VERSION(NETJET_REV);
 module_param_call(debug, set_debug, param_get_uint, &debug, S_IRUGO | S_IWUSR);
@@ -949,14 +950,14 @@ nj_release(struct tiger_hw *card)
 		nj_disable_hwirq(card);
 		mode_tiger(&card->bc[0], ISDN_P_NONE);
 		mode_tiger(&card->bc[1], ISDN_P_NONE);
-		card->isac.release(&card->isac);
 		spin_unlock_irqrestore(&card->lock, flags);
+		card->isac.release(&card->isac);
 		release_region(card->base, card->base_s);
 		card->base_s = 0;
 	}
 	if (card->irq > 0)
 		free_irq(card->irq, card);
-	if (card->isac.dch.dev.dev.class)
+	if (device_is_registered(&card->isac.dch.dev.dev))
 		mISDN_unregister_device(&card->isac.dch.dev);
 
 	for (i = 0; i < 2; i++) {
@@ -970,7 +971,6 @@ nj_release(struct tiger_hw *card)
 	write_lock_irqsave(&card_lock, flags);
 	list_del(&card->list);
 	write_unlock_irqrestore(&card_lock, flags);
-	pci_clear_master(card->pdev);
 	pci_disable_device(card->pdev);
 	pci_set_drvdata(card->pdev, NULL);
 	kfree(card);
@@ -1100,7 +1100,6 @@ nj_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		card->typ = NETJET_S_TJ300;
 
 	card->base = pci_resource_start(pdev, 0);
-	card->irq = pdev->irq;
 	pci_set_drvdata(pdev, card);
 	err = setup_instance(card);
 	if (err)

@@ -26,11 +26,9 @@
 #include <linux/clk.h>
 #include <linux/cpufreq.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/rawnand.h>
-#include <linux/mtd/nand_ecc.h>
 #include <linux/mtd/partitions.h>
 
 #include <linux/platform_data/mtd-nand-s3c2410.h>
@@ -107,7 +105,6 @@ struct s3c2410_nand_info;
 
 /**
  * struct s3c2410_nand_mtd - driver MTD structure
- * @mtd: The MTD instance to pass to the MTD layer.
  * @chip: The NAND chip information.
  * @set: The platform information supplied for this set of NAND chips.
  * @info: Link back to the hardware information.
@@ -134,7 +131,8 @@ enum s3c_nand_clk_state {
 
 /**
  * struct s3c2410_nand_info - NAND controller state.
- * @mtds: An array of MTD instances on this controoler.
+ * @controller: Base controller structure.
+ * @mtds: An array of MTD instances on this controller.
  * @platform: The platform data for this board.
  * @device: The platform device we bound to.
  * @clk: The clock resource for this controller.
@@ -165,10 +163,6 @@ struct s3c2410_nand_info {
 	enum s3c_nand_clk_state		clk_state;
 
 	enum s3c_cpu_type		cpu_type;
-
-#ifdef CONFIG_ARM_S3C24XX_CPUFREQ
-	struct notifier_block	freq_transition;
-#endif
 };
 
 struct s3c24XX_nand_devtype_data {
@@ -710,64 +704,14 @@ static void s3c2440_nand_write_buf(struct nand_chip *this, const u_char *buf,
 	}
 }
 
-/* cpufreq driver support */
-
-#ifdef CONFIG_ARM_S3C24XX_CPUFREQ
-
-static int s3c2410_nand_cpufreq_transition(struct notifier_block *nb,
-					  unsigned long val, void *data)
-{
-	struct s3c2410_nand_info *info;
-	unsigned long newclk;
-
-	info = container_of(nb, struct s3c2410_nand_info, freq_transition);
-	newclk = clk_get_rate(info->clk);
-
-	if ((val == CPUFREQ_POSTCHANGE && newclk < info->clk_rate) ||
-	    (val == CPUFREQ_PRECHANGE && newclk > info->clk_rate)) {
-		s3c2410_nand_setrate(info);
-	}
-
-	return 0;
-}
-
-static inline int s3c2410_nand_cpufreq_register(struct s3c2410_nand_info *info)
-{
-	info->freq_transition.notifier_call = s3c2410_nand_cpufreq_transition;
-
-	return cpufreq_register_notifier(&info->freq_transition,
-					 CPUFREQ_TRANSITION_NOTIFIER);
-}
-
-static inline void
-s3c2410_nand_cpufreq_deregister(struct s3c2410_nand_info *info)
-{
-	cpufreq_unregister_notifier(&info->freq_transition,
-				    CPUFREQ_TRANSITION_NOTIFIER);
-}
-
-#else
-static inline int s3c2410_nand_cpufreq_register(struct s3c2410_nand_info *info)
-{
-	return 0;
-}
-
-static inline void
-s3c2410_nand_cpufreq_deregister(struct s3c2410_nand_info *info)
-{
-}
-#endif
-
 /* device management functions */
 
-static int s3c24xx_nand_remove(struct platform_device *pdev)
+static void s3c24xx_nand_remove(struct platform_device *pdev)
 {
 	struct s3c2410_nand_info *info = to_nand_info(pdev);
 
 	if (info == NULL)
-		return 0;
-
-	s3c2410_nand_cpufreq_deregister(info);
+		return;
 
 	/* Release all our mtds  and their partitions, then go through
 	 * freeing the resources used
@@ -788,8 +732,6 @@ static int s3c24xx_nand_remove(struct platform_device *pdev)
 
 	if (!IS_ERR(info->clk))
 		s3c2410_nand_clk_set_state(info, CLOCK_DISABLE);
-
-	return 0;
 }
 
 static int s3c2410_nand_add_partition(struct s3c2410_nand_info *info,
@@ -1182,12 +1124,6 @@ static int s3c24xx_nand_probe(struct platform_device *pdev)
 	err = s3c2410_nand_inithw(info);
 	if (err != 0)
 		goto exit_error;
-
-	err = s3c2410_nand_cpufreq_register(info);
-	if (err < 0) {
-		dev_err(&pdev->dev, "failed to init cpufreq support\n");
-		goto exit_error;
-	}
 
 	if (allow_clk_suspend(info)) {
 		dev_info(&pdev->dev, "clock idle support enabled\n");

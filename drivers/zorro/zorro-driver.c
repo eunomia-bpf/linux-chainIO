@@ -47,32 +47,26 @@ static int zorro_device_probe(struct device *dev)
 	struct zorro_driver *drv = to_zorro_driver(dev->driver);
 	struct zorro_dev *z = to_zorro_dev(dev);
 
-	if (!z->driver && drv->probe) {
+	if (drv->probe) {
 		const struct zorro_device_id *id;
 
 		id = zorro_match_device(drv->id_table, z);
 		if (id)
 			error = drv->probe(z, id);
-		if (error >= 0) {
-			z->driver = drv;
+		if (error >= 0)
 			error = 0;
-		}
 	}
 	return error;
 }
 
 
-static int zorro_device_remove(struct device *dev)
+static void zorro_device_remove(struct device *dev)
 {
 	struct zorro_dev *z = to_zorro_dev(dev);
 	struct zorro_driver *drv = to_zorro_driver(dev->driver);
 
-	if (drv) {
-		if (drv->remove)
-			drv->remove(z);
-		z->driver = NULL;
-	}
-	return 0;
+	if (drv->remove)
+		drv->remove(z);
 }
 
 
@@ -124,10 +118,10 @@ EXPORT_SYMBOL(zorro_unregister_driver);
      *  supported, and 0 if there is no match.
      */
 
-static int zorro_bus_match(struct device *dev, struct device_driver *drv)
+static int zorro_bus_match(struct device *dev, const struct device_driver *drv)
 {
 	struct zorro_dev *z = to_zorro_dev(dev);
-	struct zorro_driver *zorro_drv = to_zorro_driver(drv);
+	const struct zorro_driver *zorro_drv = to_zorro_driver(drv);
 	const struct zorro_device_id *ids = zorro_drv->id_table;
 
 	if (!ids)
@@ -136,9 +130,9 @@ static int zorro_bus_match(struct device *dev, struct device_driver *drv)
 	return !!zorro_match_device(ids, z);
 }
 
-static int zorro_uevent(struct device *dev, struct kobj_uevent_env *env)
+static int zorro_uevent(const struct device *dev, struct kobj_uevent_env *env)
 {
-	struct zorro_dev *z;
+	const struct zorro_dev *z;
 
 	if (!dev)
 		return -ENODEV;
@@ -156,7 +150,7 @@ static int zorro_uevent(struct device *dev, struct kobj_uevent_env *env)
 	return 0;
 }
 
-struct bus_type zorro_bus_type = {
+const struct bus_type zorro_bus_type = {
 	.name		= "zorro",
 	.dev_name	= "zorro",
 	.dev_groups	= zorro_device_attribute_groups,

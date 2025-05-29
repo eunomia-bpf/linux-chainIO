@@ -33,11 +33,12 @@ nvkm_nvdec_dtor(struct nvkm_engine *engine)
 static const struct nvkm_engine_func
 nvkm_nvdec = {
 	.dtor = nvkm_nvdec_dtor,
+	.sclass = { {} },
 };
 
 int
 nvkm_nvdec_new_(const struct nvkm_nvdec_fwif *fwif, struct nvkm_device *device,
-		int index, struct nvkm_nvdec **pnvdec)
+		enum nvkm_subdev_type type, int inst, u32 addr, struct nvkm_nvdec **pnvdec)
 {
 	struct nvkm_nvdec *nvdec;
 	int ret;
@@ -45,7 +46,7 @@ nvkm_nvdec_new_(const struct nvkm_nvdec_fwif *fwif, struct nvkm_device *device,
 	if (!(nvdec = *pnvdec = kzalloc(sizeof(*nvdec), GFP_KERNEL)))
 		return -ENOMEM;
 
-	ret = nvkm_engine_ctor(&nvkm_nvdec, device, index, true,
+	ret = nvkm_engine_ctor(&nvkm_nvdec, device, type, inst, true,
 			       &nvdec->engine);
 	if (ret)
 		return ret;
@@ -57,5 +58,5 @@ nvkm_nvdec_new_(const struct nvkm_nvdec_fwif *fwif, struct nvkm_device *device,
 	nvdec->func = fwif->func;
 
 	return nvkm_falcon_ctor(nvdec->func->flcn, &nvdec->engine.subdev,
-				nvkm_subdev_name[index], 0, &nvdec->falcon);
-};
+				nvdec->engine.subdev.name, addr, &nvdec->falcon);
+}

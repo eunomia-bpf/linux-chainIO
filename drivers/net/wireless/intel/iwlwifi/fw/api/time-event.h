@@ -1,67 +1,9 @@
-/******************************************************************************
- *
- * This file is provided under a dual BSD/GPLv2 license.  When using or
- * redistributing this file, you may do so under either license.
- *
- * GPL LICENSE SUMMARY
- *
- * Copyright(c) 2012 - 2014 Intel Corporation. All rights reserved.
- * Copyright(c) 2013 - 2015 Intel Mobile Communications GmbH
- * Copyright(c) 2016 - 2017 Intel Deutschland GmbH
- * Copyright(c) 2018 - 2019 Intel Corporation
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of version 2 of the GNU General Public License as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * The full GNU General Public License is included in this distribution
- * in the file called COPYING.
- *
- * Contact Information:
- *  Intel Linux Wireless <linuxwifi@intel.com>
- * Intel Corporation, 5200 N.E. Elam Young Parkway, Hillsboro, OR 97124-6497
- *
- * BSD LICENSE
- *
- * Copyright(c) 2012 - 2014 Intel Corporation. All rights reserved.
- * Copyright(c) 2013 - 2015 Intel Mobile Communications GmbH
- * Copyright(c) 2016 - 2017 Intel Deutschland GmbH
- * Copyright(c) 2018 - 2019 Intel Corporation
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- *  * Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *  * Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *  * Neither the name Intel Corporation nor the names of its
- *    contributors may be used to endorse or promote products derived
- *    from this software without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- * OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- *****************************************************************************/
-
+/* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
+/*
+ * Copyright (C) 2012-2014, 2018-2020, 2022-2024 Intel Corporation
+ * Copyright (C) 2013-2015 Intel Mobile Communications GmbH
+ * Copyright (C) 2016-2017 Intel Deutschland GmbH
+ */
 #ifndef __iwl_fw_api_time_event_h__
 #define __iwl_fw_api_time_event_h__
 
@@ -350,7 +292,7 @@ struct iwl_hs20_roc_req_tail {
  * ( HOT_SPOT_CMD 0x53 )
  *
  * @id_and_color: ID and color of the MAC
- * @action: action to perform, one of FW_CTXT_ACTION_*
+ * @action: action to perform, see &enum iwl_ctxt_action
  * @event_unique_id: If the action FW_CTXT_ACTION_REMOVE then the
  *	event_unique_id should be the id of the time event assigned by ucode.
  *	Otherwise ignore the event_unique_id.
@@ -393,6 +335,65 @@ struct iwl_hs20_roc_res {
 	__le32 status;
 } __packed; /* HOT_SPOT_RSP_API_S_VER_1 */
 
+/*
+ * Activity types for the ROC command
+ * @ROC_ACTIVITY_HOTSPOT: ROC for hs20 activity
+ * @ROC_ACTIVITY_P2P_DISC: ROC for p2p discoverability activity
+ * @ROC_ACTIVITY_P2P_TXRX: ROC for p2p action frames activity
+ * @ROC_ACTIVITY_P2P_NEG: ROC for p2p negotiation (used also for TX)
+ */
+enum iwl_roc_activity {
+	ROC_ACTIVITY_HOTSPOT,
+	ROC_ACTIVITY_P2P_DISC,
+	ROC_ACTIVITY_P2P_TXRX,
+	ROC_ACTIVITY_P2P_NEG,
+	ROC_NUM_ACTIVITIES
+}; /* ROC_ACTIVITY_API_E_VER_1 */
+
+/*
+ * ROC command
+ *
+ * Command requests the firmware to remain on a channel for a certain duration.
+ *
+ * ( MAC_CONF_GROUP 0x3, ROC_CMD 0xE )
+ *
+ * @action: action to perform, see &enum iwl_ctxt_action
+ * @activity: type of activity, see &enum iwl_roc_activity
+ * @sta_id: station id, resumed during "Remain On Channel" activity.
+ * @channel_info: &struct iwl_fw_channel_info
+ * @node_addr: node MAC address for Rx filtering
+ * @reserved: align to a dword
+ * @max_delay: max delay the ROC can start in TU
+ * @duration: remain on channel duration in TU
+ */
+struct iwl_roc_req {
+	__le32 action;
+	__le32 activity;
+	__le32 sta_id;
+	struct iwl_fw_channel_info channel_info;
+	u8 node_addr[ETH_ALEN];
+	__le16 reserved;
+	__le32 max_delay;
+	__le32 duration;
+} __packed; /* ROC_CMD_API_S_VER_3 */
+
+/*
+ * ROC notification
+ *
+ * Notification when ROC startes and when ROC ended.
+ *
+ * ( MAC_CONF_GROUP 0x3, ROC_NOTIF 0xf8 )
+ *
+ * @status: true if ROC succeeded to start
+ * @start_end: true if ROC started, false if ROC ended
+ * @activity: notification to which activity - &enum iwl_roc_activity
+ */
+struct iwl_roc_notif {
+	__le32 success;
+	__le32 started;
+	__le32 activity;
+} __packed; /* ROC_NOTIF_API_S_VER_1 */
+
 /**
  * enum iwl_mvm_session_prot_conf_id - session protection's configurations
  * @SESSION_PROTECT_CONF_ASSOC: Start a session protection for association.
@@ -421,19 +422,22 @@ struct iwl_hs20_roc_res {
  *	able to run the GO Negotiation. Will not be fragmented and not
  *	repetitive. Valid only on the P2P Device MAC. Only the duration will
  *	be taken into account.
+ * @SESSION_PROTECT_CONF_MAX_ID: not used
  */
 enum iwl_mvm_session_prot_conf_id {
 	SESSION_PROTECT_CONF_ASSOC,
 	SESSION_PROTECT_CONF_GO_CLIENT_ASSOC,
 	SESSION_PROTECT_CONF_P2P_DEVICE_DISCOV,
 	SESSION_PROTECT_CONF_P2P_GO_NEGOTIATION,
+	SESSION_PROTECT_CONF_MAX_ID,
 }; /* SESSION_PROTECTION_CONF_ID_E_VER_1 */
 
 /**
  * struct iwl_mvm_session_prot_cmd - configure a session protection
- * @id_and_color: the id and color of the mac for which this session protection
- *	is sent
- * @action: can be either FW_CTXT_ACTION_ADD or FW_CTXT_ACTION_REMOVE
+ * @id_and_color: the id and color of the link (or mac, for command version 1)
+ *	for which this session protection is sent
+ * @action: can be either FW_CTXT_ACTION_ADD or FW_CTXT_ACTION_REMOVE,
+ *	see &enum iwl_ctxt_action
  * @conf_id: see &enum iwl_mvm_session_prot_conf_id
  * @duration_tu: the duration of the whole protection in TUs.
  * @repetition_count: not used
@@ -452,23 +456,30 @@ struct iwl_mvm_session_prot_cmd {
 	__le32 duration_tu;
 	__le32 repetition_count;
 	__le32 interval;
-} __packed; /* SESSION_PROTECTION_CMD_API_S_VER_1 */
+} __packed;
+/* SESSION_PROTECTION_CMD_API_S_VER_1 and
+ * SESSION_PROTECTION_CMD_API_S_VER_2
+ */
 
 /**
  * struct iwl_mvm_session_prot_notif - session protection started / ended
- * @mac_id: the mac id for which the session protection started / ended
+ * @mac_link_id: the mac id (or link id, for notif ver > 2) for which the
+ *	session protection started / ended
  * @status: 1 means success, 0 means failure
  * @start: 1 means the session protection started, 0 means it ended
- * @conf_id: the configuration id of the session that started / eneded
+ * @conf_id: see &enum iwl_mvm_session_prot_conf_id
  *
  * Note that any session protection will always get two notifications: start
  * and end even the firmware could not schedule it.
  */
 struct iwl_mvm_session_prot_notif {
-	__le32 mac_id;
+	__le32 mac_link_id;
 	__le32 status;
 	__le32 start;
 	__le32 conf_id;
-} __packed; /* SESSION_PROTECTION_NOTIFICATION_API_S_VER_2 */
+} __packed;
+/* SESSION_PROTECTION_NOTIFICATION_API_S_VER_2 and
+ * SESSION_PROTECTION_NOTIFICATION_API_S_VER_3
+ */
 
 #endif /* __iwl_fw_api_time_event_h__ */

@@ -263,10 +263,6 @@ int main(int argc, char **argv)
 	fprintf(out_file, "	const struct vm_special_mapping *sm,\n");
 	fprintf(out_file, "	struct vm_area_struct *new_vma)\n");
 	fprintf(out_file, "{\n");
-	fprintf(out_file, "	unsigned long new_size =\n");
-	fprintf(out_file, "	new_vma->vm_end - new_vma->vm_start;\n");
-	fprintf(out_file, "	if (vdso_image.size != new_size)\n");
-	fprintf(out_file, "		return -EINVAL;\n");
 	fprintf(out_file, "	current->mm->context.vdso =\n");
 	fprintf(out_file, "	(void *)(new_vma->vm_start);\n");
 	fprintf(out_file, "	return 0;\n");
@@ -274,7 +270,7 @@ int main(int argc, char **argv)
 
 	/* Write out the stripped VDSO data. */
 	fprintf(out_file,
-		"static unsigned char vdso_data[PAGE_ALIGN(%zu)] __page_aligned_data = {\n\t",
+		"static unsigned char vdso_image_data[PAGE_ALIGN(%zu)] __page_aligned_data = {\n\t",
 		vdso_size);
 	for (i = 0; i < vdso_size; i++) {
 		if (!(i % 10))
@@ -290,7 +286,7 @@ int main(int argc, char **argv)
 
 	fprintf(out_file, "struct mips_vdso_image vdso_image%s%s = {\n",
 		(vdso_name[0]) ? "_" : "", vdso_name);
-	fprintf(out_file, "\t.data = vdso_data,\n");
+	fprintf(out_file, "\t.data = vdso_image_data,\n");
 	fprintf(out_file, "\t.size = PAGE_ALIGN(%zu),\n", vdso_size);
 	fprintf(out_file, "\t.mapping = {\n");
 	fprintf(out_file, "\t\t.name = \"[vdso]\",\n");

@@ -30,11 +30,20 @@
 #include <nvhw/class/cl507e.h>
 #include <nvhw/class/clc37e.h>
 
+#include <linux/iosys-map.h>
+
+#include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
+#include <drm/drm_blend.h>
 #include <drm/drm_fourcc.h>
+#include <drm/drm_framebuffer.h>
+#include <drm/drm_gem_atomic_helper.h>
+#include <drm/drm_panic.h>
+#include <drm/ttm/ttm_bo.h>
 
 #include "nouveau_bo.h"
 #include "nouveau_gem.h"
+#include "tile.h"
 
 static void
 nv50_wndw_ctxdma_del(struct nv50_wndw_ctxdma *ctxdma)
@@ -402,10 +411,7 @@ nv50_wndw_atomic_check_lut(struct nv50_wndw *wndw,
 	/* Recalculate LUT state. */
 	memset(&asyw->xlut, 0x00, sizeof(asyw->xlut));
 	if ((asyw->ilut = wndw->func->ilut ? ilut : NULL)) {
-		if (!wndw->func->ilut(wndw, asyw, drm_color_lut_size(ilut))) {
-			DRM_DEBUG_KMS("Invalid ilut\n");
-			return -EINVAL;
-		}
+		wndw->func->ilut(wndw, asyw, drm_color_lut_size(ilut));
 		asyw->xlut.handle = wndw->wndw.vram.handle;
 		asyw->xlut.i.buffer = !asyw->xlut.i.buffer;
 		asyw->set.xlut = true;
@@ -434,12 +440,15 @@ nv50_wndw_atomic_check_lut(struct nv50_wndw *wndw,
 }
 
 static int
-nv50_wndw_atomic_check(struct drm_plane *plane, struct drm_plane_state *state)
+nv50_wndw_atomic_check(struct drm_plane *plane,
+		       struct drm_atomic_state *state)
 {
+	struct drm_plane_state *new_plane_state = drm_atomic_get_new_plane_state(state,
+										 plane);
 	struct nouveau_drm *drm = nouveau_drm(plane->dev);
 	struct nv50_wndw *wndw = nv50_wndw(plane);
 	struct nv50_wndw_atom *armw = nv50_wndw_atom(wndw->plane.state);
-	struct nv50_wndw_atom *asyw = nv50_wndw_atom(state);
+	struct nv50_wndw_atom *asyw = nv50_wndw_atom(new_plane_state);
 	struct nv50_head_atom *harm = NULL, *asyh = NULL;
 	bool modeset = false;
 	int ret;
@@ -557,7 +566,10 @@ nv50_wndw_prepare_fb(struct drm_plane *plane, struct drm_plane_state *state)
 			asyw->image.handle[0] = ctxdma->object.handle;
 	}
 
-	asyw->state.fence = dma_resv_get_excl_rcu(nvbo->bo.base.resv);
+	ret = drm_gem_plane_helper_prepare_fb(plane, state);
+	if (ret)
+		return ret;
+
 	asyw->image.offset[0] = nvbo->offset;
 
 	if (wndw->func->prepare) {
@@ -571,11 +583,127 @@ nv50_wndw_prepare_fb(struct drm_plane *plane, struct drm_plane_state *state)
 	return 0;
 }
 
+/* Only used by drm_panic get_scanout_buffer() and set_pixel(), so it is
+ * protected by the drm panic spinlock
+ */
+static u32 nv50_panic_blk_h;
+
+/* Return the framebuffer offset of the start of the block where pixel(x,y) is */
+static u32
+nv50_get_block_off(unsigned int x, unsigned int y, unsigned int pitch)
+{
+	u32 blk_x, blk_y, blk_columns;
+
+	blk_columns = nouveau_get_width_in_blocks(pitch);
+	blk_x = (x * 4) / NV_TILE_GOB_WIDTH_BYTES;
+	blk_y = y / nv50_panic_blk_h;
+
+	return ((blk_y * blk_columns) + blk_x) * NV_TILE_GOB_WIDTH_BYTES * nv50_panic_blk_h;
+}
+
+/* Turing and later have 2 level of tiles inside the block */
+static void
+nv50_set_pixel_swizzle(struct drm_scanout_buffer *sb, unsigned int x,
+		       unsigned int y, u32 color)
+{
+	u32 blk_off, off, swizzle;
+
+	blk_off = nv50_get_block_off(x, y, sb->pitch[0]);
+
+	y = y % nv50_panic_blk_h;
+
+	/* Inside the block, use the fast address swizzle to compute the offset
+	 * For nvidia blocklinear, bit order is yn..y3 x3 y2 x2 y1 y0 x1 x0
+	 */
+	swizzle = (x & 3) | (y & 3) << 2 | (x & 4) << 2 | (y & 4) << 3;
+	swizzle |= (x & 8) << 3 | (y >> 3) << 7;
+	off = blk_off + swizzle * 4;
+
+	iosys_map_wr(&sb->map[0], off, u32, color);
+}
+
+static void
+nv50_set_pixel(struct drm_scanout_buffer *sb, unsigned int x, unsigned int y,
+	       u32 color)
+{
+	u32 blk_off, off;
+
+	blk_off = nv50_get_block_off(x, y, sb->width);
+
+	x = x % (NV_TILE_GOB_WIDTH_BYTES / 4);
+	y = y % nv50_panic_blk_h;
+	off = blk_off + x * 4 + y * NV_TILE_GOB_WIDTH_BYTES;
+
+	iosys_map_wr(&sb->map[0], off, u32, color);
+}
+
+static int
+nv50_wndw_get_scanout_buffer(struct drm_plane *plane, struct drm_scanout_buffer *sb)
+{
+	struct drm_framebuffer *fb;
+	struct nouveau_bo *nvbo;
+	struct nouveau_drm *drm = nouveau_drm(plane->dev);
+	u16 chipset = drm->client.device.info.chipset;
+	u8 family = drm->client.device.info.family;
+	u32 tile_mode;
+	u8 kind;
+
+	if (!plane->state || !plane->state->fb)
+		return -EINVAL;
+
+	fb = plane->state->fb;
+	nvbo = nouveau_gem_object(fb->obj[0]);
+
+	/* Don't support compressed format, or multiplane yet. */
+	if (nvbo->comp || fb->format->num_planes != 1)
+		return -EOPNOTSUPP;
+
+	if (nouveau_bo_map(nvbo)) {
+		drm_warn(plane->dev, "nouveau bo map failed, panic won't be displayed\n");
+		return -ENOMEM;
+	}
+
+	if (nvbo->kmap.bo_kmap_type & TTM_BO_MAP_IOMEM_MASK)
+		iosys_map_set_vaddr_iomem(&sb->map[0], (void __iomem *)nvbo->kmap.virtual);
+	else
+		iosys_map_set_vaddr(&sb->map[0], nvbo->kmap.virtual);
+
+	sb->height = fb->height;
+	sb->width = fb->width;
+	sb->pitch[0] = fb->pitches[0];
+	sb->format = fb->format;
+
+	nouveau_framebuffer_get_layout(fb, &tile_mode, &kind);
+	if (kind) {
+		/* If tiling is enabled, use set_pixel() to display correctly.
+		 * Only handle 32bits format for now.
+		 */
+		if (fb->format->cpp[0] != 4)
+			return -EOPNOTSUPP;
+		nv50_panic_blk_h = nouveau_get_gob_height(family) *
+				   nouveau_get_gobs_in_block(tile_mode, chipset);
+
+		if (chipset >= 0x160)
+			sb->set_pixel = nv50_set_pixel_swizzle;
+		else
+			sb->set_pixel = nv50_set_pixel;
+	}
+	return 0;
+}
+
 static const struct drm_plane_helper_funcs
 nv50_wndw_helper = {
 	.prepare_fb = nv50_wndw_prepare_fb,
 	.cleanup_fb = nv50_wndw_cleanup_fb,
 	.atomic_check = nv50_wndw_atomic_check,
+};
+
+static const struct drm_plane_helper_funcs
+nv50_wndw_primary_helper = {
+	.prepare_fb = nv50_wndw_prepare_fb,
+	.cleanup_fb = nv50_wndw_cleanup_fb,
+	.atomic_check = nv50_wndw_atomic_check,
+	.get_scanout_buffer = nv50_wndw_get_scanout_buffer,
 };
 
 static void
@@ -626,8 +754,6 @@ nv50_wndw_reset(struct drm_plane *plane)
 		plane->funcs->atomic_destroy_state(plane, plane->state);
 
 	__drm_atomic_helper_plane_reset(plane, &asyw->state);
-	plane->state->zpos = nv50_wndw_zpos_default(plane);
-	plane->state->normalized_zpos = nv50_wndw_zpos_default(plane);
 }
 
 static void
@@ -640,7 +766,6 @@ nv50_wndw_destroy(struct drm_plane *plane)
 		nv50_wndw_ctxdma_del(ctxdma);
 	}
 
-	nvif_notify_dtor(&wndw->notify);
 	nv50_dmac_destroy(&wndw->wimm);
 	nv50_dmac_destroy(&wndw->wndw);
 
@@ -684,23 +809,10 @@ nv50_wndw = {
 	.format_mod_supported = nv50_plane_format_mod_supported,
 };
 
-static int
-nv50_wndw_notify(struct nvif_notify *notify)
-{
-	return NVIF_NOTIFY_KEEP;
-}
-
-void
-nv50_wndw_fini(struct nv50_wndw *wndw)
-{
-	nvif_notify_put(&wndw->notify);
-}
-
-void
-nv50_wndw_init(struct nv50_wndw *wndw)
-{
-	nvif_notify_get(&wndw->notify);
-}
+static const u64 nv50_cursor_format_modifiers[] = {
+	DRM_FORMAT_MOD_LINEAR,
+	DRM_FORMAT_MOD_INVALID,
+};
 
 int
 nv50_wndw_new_(const struct nv50_wndw_func *func, struct drm_device *dev,
@@ -713,6 +825,7 @@ nv50_wndw_new_(const struct nv50_wndw_func *func, struct drm_device *dev,
 	struct nvif_mmu *mmu = &drm->client.mmu;
 	struct nv50_disp *disp = nv50_disp(dev);
 	struct nv50_wndw *wndw;
+	const u64 *format_modifiers;
 	int nformat;
 	int ret;
 
@@ -728,25 +841,29 @@ nv50_wndw_new_(const struct nv50_wndw_func *func, struct drm_device *dev,
 
 	for (nformat = 0; format[nformat]; nformat++);
 
-	ret = drm_universal_plane_init(dev, &wndw->plane, heads, &nv50_wndw,
-				       format, nformat,
-				       nouveau_display(dev)->format_modifiers,
-				       type, "%s-%d", name, index);
+	if (type == DRM_PLANE_TYPE_CURSOR)
+		format_modifiers = nv50_cursor_format_modifiers;
+	else
+		format_modifiers = nouveau_display(dev)->format_modifiers;
+
+	ret = drm_universal_plane_init(dev, &wndw->plane, heads, &nv50_wndw, format, nformat,
+				       format_modifiers, type, "%s-%d", name, index);
 	if (ret) {
 		kfree(*pwndw);
 		*pwndw = NULL;
 		return ret;
 	}
 
-	drm_plane_helper_add(&wndw->plane, &nv50_wndw_helper);
+	if (type == DRM_PLANE_TYPE_PRIMARY)
+		drm_plane_helper_add(&wndw->plane, &nv50_wndw_primary_helper);
+	else
+		drm_plane_helper_add(&wndw->plane, &nv50_wndw_helper);
 
 	if (wndw->func->ilut) {
 		ret = nv50_lut_init(disp, mmu, &wndw->ilut);
 		if (ret)
 			return ret;
 	}
-
-	wndw->notify.func = nv50_wndw_notify;
 
 	if (wndw->func->blend_set) {
 		ret = drm_plane_create_zpos_property(&wndw->plane,
@@ -784,6 +901,7 @@ nv50_wndw_new(struct nouveau_drm *drm, enum drm_plane_type type, int index,
 		int (*new)(struct nouveau_drm *, enum drm_plane_type,
 			   int, s32, struct nv50_wndw **);
 	} wndws[] = {
+		{ GA102_DISP_WINDOW_CHANNEL_DMA, 0, wndwc67e_new },
 		{ TU102_DISP_WINDOW_CHANNEL_DMA, 0, wndwc57e_new },
 		{ GV100_DISP_WINDOW_CHANNEL_DMA, 0, wndwc37e_new },
 		{}

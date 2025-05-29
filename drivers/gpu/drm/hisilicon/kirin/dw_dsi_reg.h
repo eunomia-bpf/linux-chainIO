@@ -1,11 +1,13 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (c) 2016 Linaro Limited.
- * Copyright (c) 2014-2016 Hisilicon Limited.
+ * Copyright (c) 2014-2016 HiSilicon Limited.
  */
 
 #ifndef __DW_DSI_REG_H__
 #define __DW_DSI_REG_H__
+
+#include <linux/io.h>
 
 #define MASK(x)				(BIT(x) - 1)
 

@@ -26,38 +26,6 @@
 #include <asm/ptdump.h>
 
 
-enum address_markers_idx {
-	PAGE_OFFSET_NR = 0,
-	PAGE_END_NR,
-#ifdef CONFIG_KASAN
-	KASAN_START_NR,
-#endif
-};
-
-static struct addr_marker address_markers[] = {
-	{ PAGE_OFFSET,			"Linear Mapping start" },
-	{ 0 /* PAGE_END */,		"Linear Mapping end" },
-#ifdef CONFIG_KASAN
-	{ 0 /* KASAN_SHADOW_START */,	"Kasan shadow start" },
-	{ KASAN_SHADOW_END,		"Kasan shadow end" },
-#endif
-	{ BPF_JIT_REGION_START,		"BPF start" },
-	{ BPF_JIT_REGION_END,		"BPF end" },
-	{ MODULES_VADDR,		"Modules start" },
-	{ MODULES_END,			"Modules end" },
-	{ VMALLOC_START,		"vmalloc() area" },
-	{ VMALLOC_END,			"vmalloc() end" },
-	{ FIXADDR_START,		"Fixmap start" },
-	{ FIXADDR_TOP,			"Fixmap end" },
-	{ PCI_IO_START,			"PCI I/O start" },
-	{ PCI_IO_END,			"PCI I/O end" },
-#ifdef CONFIG_SPARSEMEM_VMEMMAP
-	{ VMEMMAP_START,		"vmemmap start" },
-	{ VMEMMAP_START + VMEMMAP_SIZE,	"vmemmap end" },
-#endif
-	{ -1,				NULL },
-};
-
 #define pt_dump_seq_printf(m, fmt, args...)	\
 ({						\
 	if (m)					\
@@ -70,32 +38,7 @@ static struct addr_marker address_markers[] = {
 		seq_printf(m, fmt);	\
 })
 
-/*
- * The page dumper groups page table entries of the same type into a single
- * description. It uses pg_state to track the range information while
- * iterating over the pte entries. When the continuity is broken it then
- * dumps out a description of the range.
- */
-struct pg_state {
-	struct ptdump_state ptdump;
-	struct seq_file *seq;
-	const struct addr_marker *marker;
-	unsigned long start_address;
-	int level;
-	u64 current_prot;
-	bool check_wx;
-	unsigned long wx_pages;
-	unsigned long uxn_pages;
-};
-
-struct prot_bits {
-	u64		mask;
-	u64		val;
-	const char	*set;
-	const char	*clear;
-};
-
-static const struct prot_bits pte_bits[] = {
+static const struct ptdump_prot_bits pte_bits[] = {
 	{
 		.mask	= PTE_VALID,
 		.val	= PTE_VALID,
@@ -137,10 +80,10 @@ static const struct prot_bits pte_bits[] = {
 		.set	= "CON",
 		.clear	= "   ",
 	}, {
-		.mask	= PTE_TABLE_BIT,
-		.val	= PTE_TABLE_BIT,
-		.set	= "   ",
-		.clear	= "BLK",
+		.mask	= PTE_TABLE_BIT | PTE_VALID,
+		.val	= PTE_VALID,
+		.set	= "BLK",
+		.clear	= "   ",
 	}, {
 		.mask	= PTE_UXN,
 		.val	= PTE_UXN,
@@ -161,10 +104,6 @@ static const struct prot_bits pte_bits[] = {
 		.set	= "DEVICE/nGnRE",
 	}, {
 		.mask	= PTE_ATTRINDX_MASK,
-		.val	= PTE_ATTRINDX(MT_DEVICE_GRE),
-		.set	= "DEVICE/GRE",
-	}, {
-		.mask	= PTE_ATTRINDX_MASK,
 		.val	= PTE_ATTRINDX(MT_NORMAL_NC),
 		.set	= "MEM/NORMAL-NC",
 	}, {
@@ -178,14 +117,7 @@ static const struct prot_bits pte_bits[] = {
 	}
 };
 
-struct pg_level {
-	const struct prot_bits *bits;
-	const char *name;
-	size_t num;
-	u64 mask;
-};
-
-static struct pg_level pg_level[] = {
+static struct ptdump_pg_level kernel_pg_levels[] __ro_after_init = {
 	{ /* pgd */
 		.name	= "PGD",
 		.bits	= pte_bits,
@@ -195,11 +127,11 @@ static struct pg_level pg_level[] = {
 		.bits	= pte_bits,
 		.num	= ARRAY_SIZE(pte_bits),
 	}, { /* pud */
-		.name	= (CONFIG_PGTABLE_LEVELS > 3) ? "PUD" : "PGD",
+		.name	= "PUD",
 		.bits	= pte_bits,
 		.num	= ARRAY_SIZE(pte_bits),
 	}, { /* pmd */
-		.name	= (CONFIG_PGTABLE_LEVELS > 2) ? "PMD" : "PGD",
+		.name	= "PMD",
 		.bits	= pte_bits,
 		.num	= ARRAY_SIZE(pte_bits),
 	}, { /* pte */
@@ -209,7 +141,7 @@ static struct pg_level pg_level[] = {
 	},
 };
 
-static void dump_prot(struct pg_state *st, const struct prot_bits *bits,
+static void dump_prot(struct ptdump_pg_state *st, const struct ptdump_prot_bits *bits,
 			size_t num)
 {
 	unsigned i;
@@ -227,7 +159,7 @@ static void dump_prot(struct pg_state *st, const struct prot_bits *bits,
 	}
 }
 
-static void note_prot_uxn(struct pg_state *st, unsigned long addr)
+static void note_prot_uxn(struct ptdump_pg_state *st, unsigned long addr)
 {
 	if (!st->check_wx)
 		return;
@@ -241,7 +173,7 @@ static void note_prot_uxn(struct pg_state *st, unsigned long addr)
 	st->uxn_pages += (addr - st->start_address) / PAGE_SIZE;
 }
 
-static void note_prot_wx(struct pg_state *st, unsigned long addr)
+static void note_prot_wx(struct ptdump_pg_state *st, unsigned long addr)
 {
 	if (!st->check_wx)
 		return;
@@ -256,12 +188,18 @@ static void note_prot_wx(struct pg_state *st, unsigned long addr)
 	st->wx_pages += (addr - st->start_address) / PAGE_SIZE;
 }
 
-static void note_page(struct ptdump_state *pt_st, unsigned long addr, int level,
-		      u64 val)
+void note_page(struct ptdump_state *pt_st, unsigned long addr, int level,
+	       u64 val)
 {
-	struct pg_state *st = container_of(pt_st, struct pg_state, ptdump);
+	struct ptdump_pg_state *st = container_of(pt_st, struct ptdump_pg_state, ptdump);
+	struct ptdump_pg_level *pg_level = st->pg_level;
 	static const char units[] = "KMGTPE";
 	u64 prot = 0;
+
+	/* check if the current level has been folded dynamically */
+	if (st->mm && ((level == 1 && mm_p4d_folded(st->mm)) ||
+	    (level == 2 && mm_pud_folded(st->mm))))
+		level = 0;
 
 	if (level >= 0)
 		prot = val & pg_level[level].mask;
@@ -316,14 +254,17 @@ static void note_page(struct ptdump_state *pt_st, unsigned long addr, int level,
 void ptdump_walk(struct seq_file *s, struct ptdump_info *info)
 {
 	unsigned long end = ~0UL;
-	struct pg_state st;
+	struct ptdump_pg_state st;
 
 	if (info->base_addr < TASK_SIZE_64)
 		end = TASK_SIZE_64;
 
-	st = (struct pg_state){
+	st = (struct ptdump_pg_state){
 		.seq = s,
 		.marker = info->markers,
+		.mm = info->mm,
+		.pg_level = &kernel_pg_levels[0],
+		.level = -1,
 		.ptdump = {
 			.note_page = note_page,
 			.range = (struct ptdump_range[]){
@@ -336,36 +277,35 @@ void ptdump_walk(struct seq_file *s, struct ptdump_info *info)
 	ptdump_walk_pgd(&st.ptdump, info->mm, NULL);
 }
 
-static void ptdump_initialize(void)
+static void __init ptdump_initialize(void)
 {
 	unsigned i, j;
 
-	for (i = 0; i < ARRAY_SIZE(pg_level); i++)
-		if (pg_level[i].bits)
-			for (j = 0; j < pg_level[i].num; j++)
-				pg_level[i].mask |= pg_level[i].bits[j].mask;
+	for (i = 0; i < ARRAY_SIZE(kernel_pg_levels); i++)
+		if (kernel_pg_levels[i].bits)
+			for (j = 0; j < kernel_pg_levels[i].num; j++)
+				kernel_pg_levels[i].mask |= kernel_pg_levels[i].bits[j].mask;
 }
 
-static struct ptdump_info kernel_ptdump_info = {
+static struct ptdump_info kernel_ptdump_info __ro_after_init = {
 	.mm		= &init_mm,
-	.markers	= address_markers,
-	.base_addr	= PAGE_OFFSET,
 };
 
-void ptdump_check_wx(void)
+bool ptdump_check_wx(void)
 {
-	struct pg_state st = {
+	struct ptdump_pg_state st = {
 		.seq = NULL,
 		.marker = (struct addr_marker[]) {
 			{ 0, NULL},
 			{ -1, NULL},
 		},
+		.pg_level = &kernel_pg_levels[0],
 		.level = -1,
 		.check_wx = true,
 		.ptdump = {
 			.note_page = note_page,
 			.range = (struct ptdump_range[]) {
-				{PAGE_OFFSET, ~0UL},
+				{_PAGE_OFFSET(vabits_actual), ~0UL},
 				{0, 0}
 			}
 		}
@@ -373,19 +313,46 @@ void ptdump_check_wx(void)
 
 	ptdump_walk_pgd(&st.ptdump, &init_mm, NULL);
 
-	if (st.wx_pages || st.uxn_pages)
+	if (st.wx_pages || st.uxn_pages) {
 		pr_warn("Checked W+X mappings: FAILED, %lu W+X pages found, %lu non-UXN pages found\n",
 			st.wx_pages, st.uxn_pages);
-	else
+
+		return false;
+	} else {
 		pr_info("Checked W+X mappings: passed, no W+X pages found\n");
+
+		return true;
+	}
 }
 
-static int ptdump_init(void)
+static int __init ptdump_init(void)
 {
-	address_markers[PAGE_END_NR].start_address = PAGE_END;
-#ifdef CONFIG_KASAN
-	address_markers[KASAN_START_NR].start_address = KASAN_SHADOW_START;
+	u64 page_offset = _PAGE_OFFSET(vabits_actual);
+	u64 vmemmap_start = (u64)virt_to_page((void *)page_offset);
+	struct addr_marker m[] = {
+		{ PAGE_OFFSET,		"Linear Mapping start" },
+		{ PAGE_END,		"Linear Mapping end" },
+#if defined(CONFIG_KASAN_GENERIC) || defined(CONFIG_KASAN_SW_TAGS)
+		{ KASAN_SHADOW_START,   "Kasan shadow start" },
+		{ KASAN_SHADOW_END,     "Kasan shadow end" },
 #endif
+		{ MODULES_VADDR,	"Modules start" },
+		{ MODULES_END,		"Modules end" },
+		{ VMALLOC_START,	"vmalloc() area" },
+		{ VMALLOC_END,		"vmalloc() end" },
+		{ vmemmap_start,	"vmemmap start" },
+		{ VMEMMAP_END,		"vmemmap end" },
+		{ PCI_IO_START,		"PCI I/O start" },
+		{ PCI_IO_END,		"PCI I/O end" },
+		{ FIXADDR_TOT_START,    "Fixmap start" },
+		{ FIXADDR_TOP,	        "Fixmap end" },
+		{ -1,			NULL },
+	};
+	static struct addr_marker address_markers[ARRAY_SIZE(m)] __ro_after_init;
+
+	kernel_ptdump_info.markers = memcpy(address_markers, m, sizeof(m));
+	kernel_ptdump_info.base_addr = page_offset;
+
 	ptdump_initialize();
 	ptdump_debugfs_register(&kernel_ptdump_info, "kernel_page_tables");
 	return 0;

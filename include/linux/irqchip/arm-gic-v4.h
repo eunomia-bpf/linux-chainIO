@@ -25,6 +25,14 @@ struct its_vm {
 	irq_hw_number_t		db_lpi_base;
 	unsigned long		*db_bitmap;
 	int			nr_db_lpis;
+	/*
+	 * Ensures mutual exclusion between updates to vlpi_count[]
+	 * and map/unmap when using the ITSList mechanism.
+	 *
+	 * The lock order for any sequence involving the ITSList is
+	 * vmapp_lock -> vpe_lock ->vmovp_lock.
+	 */
+	raw_spinlock_t		vmapp_lock;
 	u32			vlpi_count[GICv4_ITS_LIST_MAX];
 };
 
@@ -39,6 +47,8 @@ struct its_vpe {
 	irq_hw_number_t		vpe_db_lpi;
 	/* VPE resident */
 	bool			resident;
+	/* VPT parse complete */
+	bool			ready;
 	union {
 		/* GICv4.0 implementations */
 		struct {
@@ -56,9 +66,11 @@ struct its_vpe {
 				bool	enabled;
 				bool	group;
 			}			sgi_config[16];
-			atomic_t vmapp_count;
 		};
 	};
+
+	/* Track the VPE being mapped */
+	atomic_t vmapp_count;
 
 	/*
 	 * Ensures mutual exclusion between affinity setting of the
@@ -104,6 +116,7 @@ enum its_vcpu_info_cmd_type {
 	PROP_UPDATE_AND_INV_VLPI,
 	SCHEDULE_VPE,
 	DESCHEDULE_VPE,
+	COMMIT_VPE,
 	INVALL_VPE,
 	PROP_UPDATE_VSGI,
 };
@@ -129,6 +142,7 @@ int its_alloc_vcpu_irqs(struct its_vm *vm);
 void its_free_vcpu_irqs(struct its_vm *vm);
 int its_make_vpe_resident(struct its_vpe *vpe, bool g0en, bool g1en);
 int its_make_vpe_non_resident(struct its_vpe *vpe, bool db);
+int its_commit_vpe(struct its_vpe *vpe);
 int its_invall_vpe(struct its_vpe *vpe);
 int its_map_vlpi(int irq, struct its_vlpi_map *map);
 int its_get_vlpi(int irq, struct its_vlpi_map *map);
@@ -140,5 +154,7 @@ struct irq_domain_ops;
 int its_init_v4(struct irq_domain *domain,
 		const struct irq_domain_ops *vpe_ops,
 		const struct irq_domain_ops *sgi_ops);
+
+bool gic_cpuif_has_vsgi(void);
 
 #endif

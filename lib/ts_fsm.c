@@ -193,7 +193,7 @@ startover:
 				TOKEN_MISMATCH();
 
 			block_idx++;
-			/* fall through */
+			fallthrough;
 
 		case TS_FSM_ANY:
 			if (next == NULL)
@@ -331,6 +331,7 @@ static void __exit exit_fsm(void)
 	textsearch_unregister(&fsm_ops);
 }
 
+MODULE_DESCRIPTION("naive finite state machine text search");
 MODULE_LICENSE("GPL");
 
 module_init(init_fsm);

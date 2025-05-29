@@ -8,149 +8,51 @@
  * out of the OpenFirmware device tree and using it to populate an mii_bus.
  */
 
-#include <linux/kernel.h>
 #include <linux/device.h>
-#include <linux/netdevice.h>
 #include <linux/err.h>
-#include <linux/phy.h>
-#include <linux/phy_fixed.h>
+#include <linux/fwnode_mdio.h>
+#include <linux/kernel.h>
+#include <linux/module.h>
+#include <linux/netdevice.h>
 #include <linux/of.h>
 #include <linux/of_irq.h>
 #include <linux/of_mdio.h>
 #include <linux/of_net.h>
-#include <linux/module.h>
+#include <linux/phy.h>
+#include <linux/phy_fixed.h>
 
 #define DEFAULT_GPIO_RESET_DELAY	10	/* in microseconds */
 
 MODULE_AUTHOR("Grant Likely <grant.likely@secretlab.ca>");
 MODULE_LICENSE("GPL");
+MODULE_DESCRIPTION("OpenFirmware MDIO bus (Ethernet PHY) accessors");
 
 /* Extract the clause 22 phy ID from the compatible string of the form
  * ethernet-phy-idAAAA.BBBB */
 static int of_get_phy_id(struct device_node *device, u32 *phy_id)
 {
-	struct property *prop;
-	const char *cp;
-	unsigned int upper, lower;
-
-	of_property_for_each_string(device, "compatible", prop, cp) {
-		if (sscanf(cp, "ethernet-phy-id%4x.%4x", &upper, &lower) == 2) {
-			*phy_id = ((upper & 0xFFFF) << 16) | (lower & 0xFFFF);
-			return 0;
-		}
-	}
-	return -EINVAL;
-}
-
-static struct mii_timestamper *of_find_mii_timestamper(struct device_node *node)
-{
-	struct of_phandle_args arg;
-	int err;
-
-	err = of_parse_phandle_with_fixed_args(node, "timestamper", 1, 0, &arg);
-
-	if (err == -ENOENT)
-		return NULL;
-	else if (err)
-		return ERR_PTR(err);
-
-	if (arg.args_count != 1)
-		return ERR_PTR(-EINVAL);
-
-	return register_mii_timestamper(arg.np, arg.args[0]);
+	return fwnode_get_phy_id(of_fwnode_handle(device), phy_id);
 }
 
 int of_mdiobus_phy_device_register(struct mii_bus *mdio, struct phy_device *phy,
-			      struct device_node *child, u32 addr)
+				   struct device_node *child, u32 addr)
 {
-	int rc;
-
-	rc = of_irq_get(child, 0);
-	if (rc == -EPROBE_DEFER)
-		return rc;
-
-	if (rc > 0) {
-		phy->irq = rc;
-		mdio->irq[addr] = rc;
-	} else {
-		phy->irq = mdio->irq[addr];
-	}
-
-	if (of_property_read_bool(child, "broken-turn-around"))
-		mdio->phy_ignore_ta_mask |= 1 << addr;
-
-	of_property_read_u32(child, "reset-assert-us",
-			     &phy->mdio.reset_assert_delay);
-	of_property_read_u32(child, "reset-deassert-us",
-			     &phy->mdio.reset_deassert_delay);
-
-	/* Associate the OF node with the device structure so it
-	 * can be looked up later */
-	of_node_get(child);
-	phy->mdio.dev.of_node = child;
-	phy->mdio.dev.fwnode = of_fwnode_handle(child);
-
-	/* All data is now stored in the phy struct;
-	 * register it */
-	rc = phy_device_register(phy);
-	if (rc) {
-		of_node_put(child);
-		return rc;
-	}
-
-	dev_dbg(&mdio->dev, "registered phy %pOFn at address %i\n",
-		child, addr);
-	return 0;
+	return fwnode_mdiobus_phy_device_register(mdio, phy,
+						  of_fwnode_handle(child),
+						  addr);
 }
 EXPORT_SYMBOL(of_mdiobus_phy_device_register);
 
 static int of_mdiobus_register_phy(struct mii_bus *mdio,
 				    struct device_node *child, u32 addr)
 {
-	struct mii_timestamper *mii_ts;
-	struct phy_device *phy;
-	bool is_c45;
-	int rc;
-	u32 phy_id;
-
-	mii_ts = of_find_mii_timestamper(child);
-	if (IS_ERR(mii_ts))
-		return PTR_ERR(mii_ts);
-
-	is_c45 = of_device_is_compatible(child,
-					 "ethernet-phy-ieee802.3-c45");
-
-	if (!is_c45 && !of_get_phy_id(child, &phy_id))
-		phy = phy_device_create(mdio, addr, phy_id, 0, NULL);
-	else
-		phy = get_phy_device(mdio, addr, is_c45);
-	if (IS_ERR(phy)) {
-		if (mii_ts)
-			unregister_mii_timestamper(mii_ts);
-		return PTR_ERR(phy);
-	}
-
-	rc = of_mdiobus_phy_device_register(mdio, phy, child, addr);
-	if (rc) {
-		if (mii_ts)
-			unregister_mii_timestamper(mii_ts);
-		phy_device_free(phy);
-		return rc;
-	}
-
-	/* phy->mii_ts may already be defined by the PHY driver. A
-	 * mii_timestamper probed via the device tree will still have
-	 * precedence.
-	 */
-	if (mii_ts)
-		phy->mii_ts = mii_ts;
-
-	return 0;
+	return fwnode_mdiobus_register_phy(mdio, of_fwnode_handle(child), addr);
 }
 
 static int of_mdiobus_register_device(struct mii_bus *mdio,
 				      struct device_node *child, u32 addr)
 {
+	struct fwnode_handle *fwnode = of_fwnode_handle(child);
 	struct mdio_device *mdiodev;
 	int rc;
 
@@ -161,15 +63,15 @@ static int of_mdiobus_register_device(struct mii_bus *mdio,
 	/* Associate the OF node with the device structure so it
 	 * can be looked up later.
 	 */
-	of_node_get(child);
-	mdiodev->dev.of_node = child;
-	mdiodev->dev.fwnode = of_fwnode_handle(child);
+	fwnode_handle_get(fwnode);
+	device_set_node(&mdiodev->dev, fwnode);
 
 	/* All data is now stored in the mdiodev struct; register it. */
 	rc = mdio_device_register(mdiodev);
 	if (rc) {
+		device_set_node(&mdiodev->dev, NULL);
+		fwnode_handle_put(fwnode);
 		mdio_device_free(mdiodev);
-		of_node_put(child);
 		return rc;
 	}
 
@@ -230,57 +132,38 @@ bool of_mdiobus_child_is_phy(struct device_node *child)
 		return true;
 	}
 
-	if (!of_find_property(child, "compatible", NULL))
+	if (!of_property_present(child, "compatible"))
 		return true;
 
 	return false;
 }
 EXPORT_SYMBOL(of_mdiobus_child_is_phy);
 
-/**
- * of_mdiobus_register - Register mii_bus and create PHYs from the device tree
- * @mdio: pointer to mii_bus structure
- * @np: pointer to device_node of MDIO bus.
- *
- * This function registers the mii_bus structure and registers a phy_device
- * for each child node of @np.
- */
-int of_mdiobus_register(struct mii_bus *mdio, struct device_node *np)
+static int __of_mdiobus_parse_phys(struct mii_bus *mdio, struct device_node *np,
+				   bool *scanphys)
 {
 	struct device_node *child;
-	bool scanphys = false;
-	int addr, rc;
-
-	if (!np)
-		return mdiobus_register(mdio);
-
-	/* Do not continue if the node is disabled */
-	if (!of_device_is_available(np))
-		return -ENODEV;
-
-	/* Mask out all PHYs from auto probing.  Instead the PHYs listed in
-	 * the device tree are populated after the bus has been registered */
-	mdio->phy_mask = ~0;
-
-	mdio->dev.of_node = np;
-	mdio->dev.fwnode = of_fwnode_handle(np);
-
-	/* Get bus level PHY reset GPIO details */
-	mdio->reset_delay_us = DEFAULT_GPIO_RESET_DELAY;
-	of_property_read_u32(np, "reset-delay-us", &mdio->reset_delay_us);
-	mdio->reset_post_delay_us = 0;
-	of_property_read_u32(np, "reset-post-delay-us", &mdio->reset_post_delay_us);
-
-	/* Register the MDIO bus */
-	rc = mdiobus_register(mdio);
-	if (rc)
-		return rc;
+	int addr, rc = 0;
 
 	/* Loop over the child nodes and register a phy_device for each phy */
 	for_each_available_child_of_node(np, child) {
+		if (of_node_name_eq(child, "ethernet-phy-package")) {
+			/* Ignore invalid ethernet-phy-package node */
+			if (!of_property_present(child, "reg"))
+				continue;
+
+			rc = __of_mdiobus_parse_phys(mdio, child, NULL);
+			if (rc && rc != -ENODEV)
+				goto exit;
+
+			continue;
+		}
+
 		addr = of_mdio_parse_addr(&mdio->dev, child);
 		if (addr < 0) {
-			scanphys = true;
+			/* Skip scanning for invalid ethernet-phy-package node */
+			if (scanphys)
+				*scanphys = true;
 			continue;
 		}
 
@@ -294,16 +177,68 @@ int of_mdiobus_register(struct mii_bus *mdio, struct device_node *np)
 				"MDIO device at address %d is missing.\n",
 				addr);
 		else if (rc)
-			goto unregister;
+			goto exit;
 	}
+
+	return 0;
+exit:
+	of_node_put(child);
+	return rc;
+}
+
+/**
+ * __of_mdiobus_register - Register mii_bus and create PHYs from the device tree
+ * @mdio: pointer to mii_bus structure
+ * @np: pointer to device_node of MDIO bus.
+ * @owner: module owning the @mdio object.
+ *
+ * This function registers the mii_bus structure and registers a phy_device
+ * for each child node of @np.
+ */
+int __of_mdiobus_register(struct mii_bus *mdio, struct device_node *np,
+			  struct module *owner)
+{
+	struct device_node *child;
+	bool scanphys = false;
+	int addr, rc;
+
+	if (!np)
+		return __mdiobus_register(mdio, owner);
+
+	/* Do not continue if the node is disabled */
+	if (!of_device_is_available(np))
+		return -ENODEV;
+
+	/* Mask out all PHYs from auto probing.  Instead the PHYs listed in
+	 * the device tree are populated after the bus has been registered */
+	mdio->phy_mask = ~0;
+
+	device_set_node(&mdio->dev, of_fwnode_handle(np));
+
+	/* Get bus level PHY reset GPIO details */
+	mdio->reset_delay_us = DEFAULT_GPIO_RESET_DELAY;
+	of_property_read_u32(np, "reset-delay-us", &mdio->reset_delay_us);
+	mdio->reset_post_delay_us = 0;
+	of_property_read_u32(np, "reset-post-delay-us", &mdio->reset_post_delay_us);
+
+	/* Register the MDIO bus */
+	rc = __mdiobus_register(mdio, owner);
+	if (rc)
+		return rc;
+
+	/* Loop over the child nodes and register a phy_device for each phy */
+	rc = __of_mdiobus_parse_phys(mdio, np, &scanphys);
+	if (rc)
+		goto unregister;
 
 	if (!scanphys)
 		return 0;
 
 	/* auto scan for PHYs with empty reg property */
 	for_each_available_child_of_node(np, child) {
-		/* Skip PHYs with reg property set */
-		if (of_find_property(child, "reg", NULL))
+		/* Skip PHYs with reg property set or ethernet-phy-package node */
+		if (of_property_present(child, "reg") ||
+		    of_node_name_eq(child, "ethernet-phy-package"))
 			continue;
 
 		for (addr = 0; addr < PHY_MAX_ADDR; addr++) {
@@ -324,18 +259,20 @@ int of_mdiobus_register(struct mii_bus *mdio, struct device_node *np)
 				if (!rc)
 					break;
 				if (rc != -ENODEV)
-					goto unregister;
+					goto put_unregister;
 			}
 		}
 	}
 
 	return 0;
 
+put_unregister:
+	of_node_put(child);
 unregister:
 	mdiobus_unregister(mdio);
 	return rc;
 }
-EXPORT_SYMBOL(of_mdiobus_register);
+EXPORT_SYMBOL(__of_mdiobus_register);
 
 /**
  * of_mdio_find_device - Given a device tree node, find the mdio_device
@@ -347,16 +284,7 @@ EXPORT_SYMBOL(of_mdiobus_register);
  */
 struct mdio_device *of_mdio_find_device(struct device_node *np)
 {
-	struct device *d;
-
-	if (!np)
-		return NULL;
-
-	d = bus_find_device_by_of_node(&mdio_bus_type, np);
-	if (!d)
-		return NULL;
-
-	return to_mdio_device(d);
+	return fwnode_mdio_find_device(of_fwnode_handle(np));
 }
 EXPORT_SYMBOL(of_mdio_find_device);
 
@@ -369,18 +297,7 @@ EXPORT_SYMBOL(of_mdio_find_device);
  */
 struct phy_device *of_phy_find_device(struct device_node *phy_np)
 {
-	struct mdio_device *mdiodev;
-
-	mdiodev = of_mdio_find_device(phy_np);
-	if (!mdiodev)
-		return NULL;
-
-	if (mdiodev->flags & MDIO_DEVICE_FLAG_PHY)
-		return to_phy_device(&mdiodev->dev);
-
-	put_device(&mdiodev->dev);
-
-	return NULL;
+	return fwnode_phy_find_device(of_fwnode_handle(phy_np));
 }
 EXPORT_SYMBOL(of_phy_find_device);
 
@@ -462,48 +379,18 @@ struct phy_device *of_phy_get_and_connect(struct net_device *dev,
 }
 EXPORT_SYMBOL(of_phy_get_and_connect);
 
-/**
- * of_phy_attach - Attach to a PHY without starting the state machine
- * @dev: pointer to net_device claiming the phy
- * @phy_np: Node pointer for the PHY
- * @flags: flags to pass to the PHY
- * @iface: PHY data interface type
- *
- * If successful, returns a pointer to the phy_device with the embedded
- * struct device refcount incremented by one, or NULL on failure. The
- * refcount must be dropped by calling phy_disconnect() or phy_detach().
- */
-struct phy_device *of_phy_attach(struct net_device *dev,
-				 struct device_node *phy_np, u32 flags,
-				 phy_interface_t iface)
-{
-	struct phy_device *phy = of_phy_find_device(phy_np);
-	int ret;
-
-	if (!phy)
-		return NULL;
-
-	ret = phy_attach_direct(dev, phy, flags, iface);
-
-	/* refcount is held by phy_attach_direct() on success */
-	put_device(&phy->mdio.dev);
-
-	return ret ? NULL : phy;
-}
-EXPORT_SYMBOL(of_phy_attach);
-
 /*
  * of_phy_is_fixed_link() and of_phy_register_fixed_link() must
  * support two DT bindings:
  * - the old DT binding, where 'fixed-link' was a property with 5
- *   cells encoding various informations about the fixed PHY
+ *   cells encoding various information about the fixed PHY
  * - the new DT binding, where 'fixed-link' is a sub-node of the
  *   Ethernet device.
  */
 bool of_phy_is_fixed_link(struct device_node *np)
 {
 	struct device_node *dn;
-	int len, err;
+	int err;
 	const char *managed;
 
 	/* New binding */
@@ -518,8 +405,7 @@ bool of_phy_is_fixed_link(struct device_node *np)
 		return true;
 
 	/* Old binding */
-	if (of_get_property(np, "fixed-link", &len) &&
-	    len == (5 * sizeof(__be32)))
+	if (of_property_count_u32_elems(np, "fixed-link") == 5)
 		return true;
 
 	return false;
