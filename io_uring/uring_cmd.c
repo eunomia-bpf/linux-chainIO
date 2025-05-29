@@ -119,9 +119,13 @@ EXPORT_SYMBOL_GPL(io_uring_cmd_mark_cancelable);
 static void io_uring_cmd_work(struct io_kiocb *req, struct io_tw_state *ts)
 {
 	struct io_uring_cmd *ioucmd = io_kiocb_to_cmd(req, struct io_uring_cmd);
+	unsigned int flags = IO_URING_F_COMPLETE_DEFER;
+
+	if (current->flags & (PF_EXITING | PF_KTHREAD))
+		flags |= IO_URING_F_TASK_DEAD;
 
 	/* task_work executor checks the deffered list completion */
-	ioucmd->task_work_cb(ioucmd, IO_URING_F_COMPLETE_DEFER);
+	ioucmd->task_work_cb(ioucmd, flags);
 }
 
 void __io_uring_cmd_do_in_task(struct io_uring_cmd *ioucmd,
@@ -210,8 +214,9 @@ int io_uring_cmd_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
 	if (ioucmd->flags & IORING_URING_CMD_FIXED) {
 		struct io_ring_ctx *ctx = req->ctx;
 		struct io_rsrc_node *node;
+		u16 index = READ_ONCE(sqe->buf_index);
 
-		node = io_rsrc_node_lookup(&ctx->buf_table, req->buf_index);
+		node = io_rsrc_node_lookup(&ctx->buf_table, index);
 		if (unlikely(!node))
 			return -EFAULT;
 		/*
@@ -220,6 +225,7 @@ int io_uring_cmd_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
 		 * we'll need at actual import time.
 		 */
 		io_req_assign_rsrc_node(&req->buf_node, node);
+		io_req_assign_buf_node(req, node);
 	}
 	ioucmd->cmd_op = READ_ONCE(sqe->cmd_op);
 

@@ -137,7 +137,7 @@ static inline void io_lockdep_assert_cq_locked(struct io_ring_ctx *ctx)
 		 * Not from an SQE, as those cannot be submitted, but via
 		 * updating tagged resources.
 		 */
-		if (ctx->submitter_task->flags & PF_EXITING)
+		if (percpu_ref_is_dying(&ctx->refs))
 			lockdep_assert(current_work());
 		else
 			lockdep_assert(current == ctx->submitter_task);
@@ -181,6 +181,16 @@ static inline bool io_get_cqe_overflow(struct io_ring_ctx *ctx,
 static inline bool io_get_cqe(struct io_ring_ctx *ctx, struct io_uring_cqe **ret)
 {
 	return io_get_cqe_overflow(ctx, ret, false);
+}
+
+static inline bool io_defer_get_uncommited_cqe(struct io_ring_ctx *ctx,
+					       struct io_uring_cqe **cqe_ret)
+{
+	io_lockdep_assert_cq_locked(ctx);
+
+	ctx->cq_extra++;
+	ctx->submit_state.cq_flush = true;
+	return io_get_cqe(ctx, cqe_ret);
 }
 
 static __always_inline bool io_fill_cqe_req(struct io_ring_ctx *ctx,
@@ -349,9 +359,14 @@ static inline int io_run_task_work(void)
 	return ret;
 }
 
+static inline bool io_local_work_pending(struct io_ring_ctx *ctx)
+{
+	return !llist_empty(&ctx->work_llist) || !llist_empty(&ctx->retry_llist);
+}
+
 static inline bool io_task_work_pending(struct io_ring_ctx *ctx)
 {
-	return task_work_pending(current) || !llist_empty(&ctx->work_llist);
+	return task_work_pending(current) || io_local_work_pending(ctx);
 }
 
 static inline void io_tw_lock(struct io_ring_ctx *ctx, struct io_tw_state *ts)
@@ -491,6 +506,6 @@ enum {
 static inline bool io_has_work(struct io_ring_ctx *ctx)
 {
 	return test_bit(IO_CHECK_CQ_OVERFLOW_BIT, &ctx->check_cq) ||
-	       !llist_empty(&ctx->work_llist);
+	       io_local_work_pending(ctx);
 }
 #endif

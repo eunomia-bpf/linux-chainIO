@@ -31,6 +31,7 @@
 #include "msg_ring.h"
 #include "memmap.h"
 #include "bpf.h"
+#include "zcrx.h"
 
 #define IORING_MAX_RESTRICTIONS	(IORING_RESTRICTION_LAST + \
 				 IORING_REGISTER_LAST + IORING_OP_LAST)
@@ -368,28 +369,19 @@ static int io_register_clock(struct io_ring_ctx *ctx,
  * either mapping or freeing.
  */
 struct io_ring_ctx_rings {
-	unsigned short n_ring_pages;
-	unsigned short n_sqe_pages;
-	struct page **ring_pages;
-	struct page **sqe_pages;
-	struct io_uring_sqe *sq_sqes;
 	struct io_rings *rings;
+	struct io_uring_sqe *sq_sqes;
+
+	struct io_mapped_region sq_region;
+	struct io_mapped_region ring_region;
 };
 
-static void io_register_free_rings(struct io_uring_params *p,
+static void io_register_free_rings(struct io_ring_ctx *ctx,
+				   struct io_uring_params *p,
 				   struct io_ring_ctx_rings *r)
 {
-	if (!(p->flags & IORING_SETUP_NO_MMAP)) {
-		io_pages_unmap(r->rings, &r->ring_pages, &r->n_ring_pages,
-				true);
-		io_pages_unmap(r->sq_sqes, &r->sqe_pages, &r->n_sqe_pages,
-				true);
-	} else {
-		io_pages_free(&r->ring_pages, r->n_ring_pages);
-		io_pages_free(&r->sqe_pages, r->n_sqe_pages);
-		vunmap(r->rings);
-		vunmap(r->sq_sqes);
-	}
+	io_free_region(ctx, &r->sq_region);
+	io_free_region(ctx, &r->ring_region);
 }
 
 #define swap_old(ctx, o, n, field)		\
@@ -404,11 +396,11 @@ static void io_register_free_rings(struct io_uring_params *p,
 
 static int io_register_resize_rings(struct io_ring_ctx *ctx, void __user *arg)
 {
+	struct io_uring_region_desc rd;
 	struct io_ring_ctx_rings o = { }, n = { }, *to_free = NULL;
 	size_t size, sq_array_offset;
 	struct io_uring_params p;
 	unsigned i, tail;
-	void *ptr;
 	int ret;
 
 	/* for single issuer, must be owner resizing */
@@ -439,13 +431,18 @@ static int io_register_resize_rings(struct io_ring_ctx *ctx, void __user *arg)
 	if (size == SIZE_MAX)
 		return -EOVERFLOW;
 
-	if (!(p.flags & IORING_SETUP_NO_MMAP))
-		n.rings = io_pages_map(&n.ring_pages, &n.n_ring_pages, size);
-	else
-		n.rings = __io_uaddr_map(&n.ring_pages, &n.n_ring_pages,
-						p.cq_off.user_addr, size);
-	if (IS_ERR(n.rings))
-		return PTR_ERR(n.rings);
+	memset(&rd, 0, sizeof(rd));
+	rd.size = PAGE_ALIGN(size);
+	if (p.flags & IORING_SETUP_NO_MMAP) {
+		rd.user_addr = p.cq_off.user_addr;
+		rd.flags |= IORING_MEM_REGION_TYPE_USER;
+	}
+	ret = io_create_region_mmap_safe(ctx, &n.ring_region, &rd, IORING_OFF_CQ_RING);
+	if (ret) {
+		io_register_free_rings(ctx, &p, &n);
+		return ret;
+	}
+	n.rings = io_region_get_ptr(&n.ring_region);
 
 	n.rings->sq_ring_mask = p.sq_entries - 1;
 	n.rings->cq_ring_mask = p.cq_entries - 1;
@@ -453,7 +450,7 @@ static int io_register_resize_rings(struct io_ring_ctx *ctx, void __user *arg)
 	n.rings->cq_ring_entries = p.cq_entries;
 
 	if (copy_to_user(arg, &p, sizeof(p))) {
-		io_register_free_rings(&p, &n);
+		io_register_free_rings(ctx, &p, &n);
 		return -EFAULT;
 	}
 
@@ -462,20 +459,22 @@ static int io_register_resize_rings(struct io_ring_ctx *ctx, void __user *arg)
 	else
 		size = array_size(sizeof(struct io_uring_sqe), p.sq_entries);
 	if (size == SIZE_MAX) {
-		io_register_free_rings(&p, &n);
+		io_register_free_rings(ctx, &p, &n);
 		return -EOVERFLOW;
 	}
 
-	if (!(p.flags & IORING_SETUP_NO_MMAP))
-		ptr = io_pages_map(&n.sqe_pages, &n.n_sqe_pages, size);
-	else
-		ptr = __io_uaddr_map(&n.sqe_pages, &n.n_sqe_pages,
-					p.sq_off.user_addr,
-					size);
-	if (IS_ERR(ptr)) {
-		io_register_free_rings(&p, &n);
-		return PTR_ERR(ptr);
+	memset(&rd, 0, sizeof(rd));
+	rd.size = PAGE_ALIGN(size);
+	if (p.flags & IORING_SETUP_NO_MMAP) {
+		rd.user_addr = p.sq_off.user_addr;
+		rd.flags |= IORING_MEM_REGION_TYPE_USER;
 	}
+	ret = io_create_region_mmap_safe(ctx, &n.sq_region, &rd, IORING_OFF_SQES);
+	if (ret) {
+		io_register_free_rings(ctx, &p, &n);
+		return ret;
+	}
+	n.sq_sqes = io_region_get_ptr(&n.sq_region);
 
 	/*
 	 * If using SQPOLL, park the thread
@@ -487,15 +486,15 @@ static int io_register_resize_rings(struct io_ring_ctx *ctx, void __user *arg)
 	}
 
 	/*
-	 * We'll do the swap. Grab the ctx->resize_lock, which will exclude
+	 * We'll do the swap. Grab the ctx->mmap_lock, which will exclude
 	 * any new mmap's on the ring fd. Clear out existing mappings to prevent
 	 * mmap from seeing them, as we'll unmap them. Any attempt to mmap
 	 * existing rings beyond this point will fail. Not that it could proceed
 	 * at this point anyway, as the io_uring mmap side needs go grab the
-	 * ctx->resize_lock as well. Likewise, hold the completion lock over the
+	 * ctx->mmap_lock as well. Likewise, hold the completion lock over the
 	 * duration of the actual swap.
 	 */
-	mutex_lock(&ctx->resize_lock);
+	mutex_lock(&ctx->mmap_lock);
 	spin_lock(&ctx->completion_lock);
 	o.rings = ctx->rings;
 	ctx->rings = NULL;
@@ -506,7 +505,6 @@ static int io_register_resize_rings(struct io_ring_ctx *ctx, void __user *arg)
 	 * Now copy SQ and CQ entries, if any. If either of the destination
 	 * rings can't hold what is already there, then fail the operation.
 	 */
-	n.sq_sqes = ptr;
 	tail = o.rings->sq.tail;
 	if (tail - o.rings->sq.head > p.sq_entries)
 		goto overflow;
@@ -554,16 +552,14 @@ overflow:
 
 	ctx->rings = n.rings;
 	ctx->sq_sqes = n.sq_sqes;
-	swap_old(ctx, o, n, n_ring_pages);
-	swap_old(ctx, o, n, n_sqe_pages);
-	swap_old(ctx, o, n, ring_pages);
-	swap_old(ctx, o, n, sqe_pages);
+	swap_old(ctx, o, n, ring_region);
+	swap_old(ctx, o, n, sq_region);
 	to_free = &o;
 	ret = 0;
 out:
 	spin_unlock(&ctx->completion_lock);
-	mutex_unlock(&ctx->resize_lock);
-	io_register_free_rings(&p, to_free);
+	mutex_unlock(&ctx->mmap_lock);
+	io_register_free_rings(ctx, &p, to_free);
 
 	if (ctx->sq_data)
 		io_sq_thread_unpark(ctx->sq_data);
@@ -571,80 +567,49 @@ out:
 	return ret;
 }
 
-void io_unregister_cqwait_reg(struct io_ring_ctx *ctx)
+static int io_register_mem_region(struct io_ring_ctx *ctx, void __user *uarg)
 {
-	unsigned short npages = 1;
-
-	if (!ctx->cq_wait_page)
-		return;
-
-	io_pages_unmap(ctx->cq_wait_arg, &ctx->cq_wait_page, &npages, true);
-	ctx->cq_wait_arg = NULL;
-	if (ctx->user)
-		__io_unaccount_mem(ctx->user, 1);
-}
-
-/*
- * Register a page holding N entries of struct io_uring_reg_wait, which can
- * be used via io_uring_enter(2) if IORING_GETEVENTS_EXT_ARG_REG is set.
- * If that is set with IORING_GETEVENTS_EXT_ARG, then instead of passing
- * in a pointer for a struct io_uring_getevents_arg, an index into this
- * registered array is passed, avoiding two (arg + timeout) copies per
- * invocation.
- */
-static int io_register_cqwait_reg(struct io_ring_ctx *ctx, void __user *uarg)
-{
-	struct io_uring_cqwait_reg_arg arg;
-	struct io_uring_reg_wait *reg;
-	struct page **pages;
-	unsigned long len;
-	int nr_pages, poff;
+	struct io_uring_mem_region_reg __user *reg_uptr = uarg;
+	struct io_uring_mem_region_reg reg;
+	struct io_uring_region_desc __user *rd_uptr;
+	struct io_uring_region_desc rd;
 	int ret;
 
-	if (ctx->cq_wait_page || ctx->cq_wait_arg)
+	if (io_region_is_set(&ctx->param_region))
 		return -EBUSY;
-	if (copy_from_user(&arg, uarg, sizeof(arg)))
+	if (copy_from_user(&reg, reg_uptr, sizeof(reg)))
 		return -EFAULT;
-	if (!arg.nr_entries || arg.flags)
+	rd_uptr = u64_to_user_ptr(reg.region_uptr);
+	if (copy_from_user(&rd, rd_uptr, sizeof(rd)))
+		return -EFAULT;
+	if (memchr_inv(&reg.__resv, 0, sizeof(reg.__resv)))
 		return -EINVAL;
-	if (arg.struct_size != sizeof(*reg))
-		return -EINVAL;
-	if (check_mul_overflow(arg.struct_size, arg.nr_entries, &len))
-		return -EOVERFLOW;
-	if (len > PAGE_SIZE)
-		return -EINVAL;
-	/* offset + len must fit within a page, and must be reg_wait aligned */
-	poff = arg.user_addr & ~PAGE_MASK;
-	if (len + poff > PAGE_SIZE)
-		return -EINVAL;
-	if (poff % arg.struct_size)
+	if (reg.flags & ~IORING_MEM_REGION_REG_WAIT_ARG)
 		return -EINVAL;
 
-	pages = io_pin_pages(arg.user_addr, len, &nr_pages);
-	if (IS_ERR(pages))
-		return PTR_ERR(pages);
-	ret = -EINVAL;
-	if (nr_pages != 1)
-		goto out_free;
-	if (ctx->user) {
-		ret = __io_account_mem(ctx->user, 1);
-		if (ret)
-			goto out_free;
+	/*
+	 * This ensures there are no waiters. Waiters are unlocked and it's
+	 * hard to synchronise with them, especially if we need to initialise
+	 * the region.
+	 */
+	if ((reg.flags & IORING_MEM_REGION_REG_WAIT_ARG) &&
+	    !(ctx->flags & IORING_SETUP_R_DISABLED))
+		return -EINVAL;
+
+	ret = io_create_region_mmap_safe(ctx, &ctx->param_region, &rd,
+					 IORING_MAP_OFF_PARAM_REGION);
+	if (ret)
+		return ret;
+	if (copy_to_user(rd_uptr, &rd, sizeof(rd))) {
+		io_free_region(ctx, &ctx->param_region);
+		return -EFAULT;
 	}
 
-	reg = vmap(pages, 1, VM_MAP, PAGE_KERNEL);
-	if (reg) {
-		ctx->cq_wait_index = arg.nr_entries - 1;
-		WRITE_ONCE(ctx->cq_wait_page, pages);
-		WRITE_ONCE(ctx->cq_wait_arg, (void *) reg + poff);
-		return 0;
+	if (reg.flags & IORING_MEM_REGION_REG_WAIT_ARG) {
+		ctx->cq_wait_arg = io_region_get_ptr(&ctx->param_region);
+		ctx->cq_wait_size = rd.size;
 	}
-	ret = -ENOMEM;
-	if (ctx->user)
-		__io_unaccount_mem(ctx->user, 1);
-out_free:
-	io_pages_free(&pages, nr_pages);
-	return ret;
+	return 0;
 }
 
 static int __io_uring_register(struct io_ring_ctx *ctx, unsigned opcode,
@@ -835,17 +800,23 @@ static int __io_uring_register(struct io_ring_ctx *ctx, unsigned opcode,
 			break;
 		ret = io_register_clone_buffers(ctx, arg);
 		break;
+	case IORING_REGISTER_ZCRX_IFQ:
+		ret = -EINVAL;
+		if (!arg || nr_args != 1)
+			break;
+		ret = io_register_zcrx_ifq(ctx, arg);
+		break;
 	case IORING_REGISTER_RESIZE_RINGS:
 		ret = -EINVAL;
 		if (!arg || nr_args != 1)
 			break;
 		ret = io_register_resize_rings(ctx, arg);
 		break;
-	case IORING_REGISTER_CQWAIT_REG:
+	case IORING_REGISTER_MEM_REGION:
 		ret = -EINVAL;
 		if (!arg || nr_args != 1)
 			break;
-		ret = io_register_cqwait_reg(ctx, arg);
+		ret = io_register_mem_region(ctx, arg);
 		break;
 	case IORING_REGISTER_BPF:
 		ret = -EINVAL;
@@ -943,9 +914,10 @@ SYSCALL_DEFINE4(io_uring_register, unsigned int, fd, unsigned int, opcode,
 
 	mutex_lock(&ctx->uring_lock);
 	ret = __io_uring_register(ctx, opcode, arg, nr_args);
-	mutex_unlock(&ctx->uring_lock);
+
 	trace_io_uring_register(ctx, opcode, ctx->file_table.data.nr,
 				ctx->buf_table.nr, ret);
+	mutex_unlock(&ctx->uring_lock);
 	if (!use_registered_ring)
 		fput(file);
 	return ret;

@@ -17,6 +17,7 @@ enum {
 
 struct io_rsrc_node {
 	unsigned long			ctx_ptr;
+	unsigned char			type;
 	int				refs;
 
 	u64 tag;
@@ -42,11 +43,12 @@ struct io_imu_folio_data {
 	/* For non-head/tail folios, has to be fully included */
 	unsigned int	nr_pages_mid;
 	unsigned int	folio_shift;
+	unsigned int	nr_folios;
 };
 
 struct io_rsrc_node *io_rsrc_node_alloc(struct io_ring_ctx *ctx, int type);
-void io_free_rsrc_node(struct io_rsrc_node *node);
-void io_rsrc_data_free(struct io_rsrc_data *data);
+void io_free_rsrc_node(struct io_ring_ctx *ctx, struct io_rsrc_node *node);
+void io_rsrc_data_free(struct io_ring_ctx *ctx, struct io_rsrc_data *data);
 int io_rsrc_data_alloc(struct io_rsrc_data *data, unsigned nr);
 
 int io_import_fixed(int ddir, struct iov_iter *iter,
@@ -67,6 +69,10 @@ int io_register_rsrc_update(struct io_ring_ctx *ctx, void __user *arg,
 			    unsigned size, unsigned type);
 int io_register_rsrc(struct io_ring_ctx *ctx, void __user *arg,
 			unsigned int size, unsigned int type);
+int io_buffer_validate(struct iovec *iov);
+
+bool io_check_coalesce_buffer(struct page **page_array, int nr_pages,
+			      struct io_imu_folio_data *data);
 
 static inline struct io_rsrc_node *io_rsrc_node_lookup(struct io_rsrc_data *data,
 						       int index)
@@ -76,19 +82,20 @@ static inline struct io_rsrc_node *io_rsrc_node_lookup(struct io_rsrc_data *data
 	return NULL;
 }
 
-static inline void io_put_rsrc_node(struct io_rsrc_node *node)
+static inline void io_put_rsrc_node(struct io_ring_ctx *ctx, struct io_rsrc_node *node)
 {
 	if (node && !--node->refs)
-		io_free_rsrc_node(node);
+		io_free_rsrc_node(ctx, node);
 }
 
-static inline bool io_reset_rsrc_node(struct io_rsrc_data *data, int index)
+static inline bool io_reset_rsrc_node(struct io_ring_ctx *ctx,
+				      struct io_rsrc_data *data, int index)
 {
 	struct io_rsrc_node *node = data->nodes[index];
 
 	if (!node)
 		return false;
-	io_put_rsrc_node(node);
+	io_put_rsrc_node(ctx, node);
 	data->nodes[index] = NULL;
 	return true;
 }
@@ -96,11 +103,11 @@ static inline bool io_reset_rsrc_node(struct io_rsrc_data *data, int index)
 static inline void io_req_put_rsrc_nodes(struct io_kiocb *req)
 {
 	if (req->file_node) {
-		io_put_rsrc_node(req->file_node);
+		io_put_rsrc_node(req->ctx, req->file_node);
 		req->file_node = NULL;
 	}
 	if (req->flags & REQ_F_BUF_NODE) {
-		io_put_rsrc_node(req->buf_node);
+		io_put_rsrc_node(req->ctx, req->buf_node);
 		req->buf_node = NULL;
 	}
 }
@@ -120,6 +127,13 @@ static inline void io_req_assign_rsrc_node(struct io_rsrc_node **dst_node,
 {
 	node->refs++;
 	*dst_node = node;
+}
+
+static inline void io_req_assign_buf_node(struct io_kiocb *req,
+					  struct io_rsrc_node *node)
+{
+	io_req_assign_rsrc_node(&req->buf_node, node);
+	req->flags |= REQ_F_BUF_NODE;
 }
 
 int io_files_update(struct io_kiocb *req, unsigned int issue_flags);

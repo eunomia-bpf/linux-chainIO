@@ -77,7 +77,7 @@ static int io_account_mem(struct io_ring_ctx *ctx, unsigned long nr_pages)
 	return 0;
 }
 
-static int io_buffer_validate(struct iovec *iov)
+int io_buffer_validate(struct iovec *iov)
 {
 	unsigned long tmp, acct_len = iov->iov_len + (PAGE_SIZE - 1);
 
@@ -125,18 +125,19 @@ struct io_rsrc_node *io_rsrc_node_alloc(struct io_ring_ctx *ctx, int type)
 	node = kzalloc(sizeof(*node), GFP_KERNEL);
 	if (node) {
 		node->ctx_ptr = (unsigned long) ctx | type;
+		node->type = type;
 		node->refs = 1;
 	}
 	return node;
 }
 
-__cold void io_rsrc_data_free(struct io_rsrc_data *data)
+__cold void io_rsrc_data_free(struct io_ring_ctx *ctx, struct io_rsrc_data *data)
 {
 	if (!data->nr)
 		return;
 	while (data->nr--) {
 		if (data->nodes[data->nr])
-			io_put_rsrc_node(data->nodes[data->nr]);
+			io_put_rsrc_node(ctx, data->nodes[data->nr]);
 	}
 	kvfree(data->nodes);
 	data->nodes = NULL;
@@ -184,7 +185,7 @@ static int __io_sqe_files_update(struct io_ring_ctx *ctx,
 			continue;
 
 		i = up->offset + done;
-		if (io_reset_rsrc_node(&ctx->file_table.data, i))
+		if (io_reset_rsrc_node(ctx, &ctx->file_table.data, i))
 			io_file_bitmap_clear(&ctx->file_table, i);
 
 		if (fd != -1) {
@@ -266,7 +267,7 @@ static int __io_sqe_buffers_update(struct io_ring_ctx *ctx,
 			node->tag = tag;
 		}
 		i = array_index_nospec(up->offset + done, ctx->buf_table.nr);
-		io_reset_rsrc_node(&ctx->buf_table, i);
+		io_reset_rsrc_node(ctx, &ctx->buf_table, i);
 		ctx->buf_table.nodes[i] = node;
 		if (ctx->compat)
 			user_data += sizeof(struct compat_iovec);
@@ -442,7 +443,7 @@ int io_files_update(struct io_kiocb *req, unsigned int issue_flags)
 	return IOU_OK;
 }
 
-void io_free_rsrc_node(struct io_rsrc_node *node)
+void io_free_rsrc_node(struct io_ring_ctx *ctx, struct io_rsrc_node *node)
 {
 	struct io_ring_ctx *ctx = io_rsrc_node_ctx(node);
 
@@ -473,7 +474,7 @@ int io_sqe_files_unregister(struct io_ring_ctx *ctx)
 	if (!ctx->file_table.data.nr)
 		return -ENXIO;
 
-	io_free_file_tables(&ctx->file_table);
+	io_free_file_tables(ctx, &ctx->file_table);
 	io_file_table_set_alloc_range(ctx, 0, 0);
 	return 0;
 }
@@ -494,7 +495,7 @@ int io_sqe_files_register(struct io_ring_ctx *ctx, void __user *arg,
 		return -EMFILE;
 	if (nr_args > rlimit(RLIMIT_NOFILE))
 		return -EMFILE;
-	if (!io_alloc_file_tables(&ctx->file_table, nr_args))
+	if (!io_alloc_file_tables(ctx, &ctx->file_table, nr_args))
 		return -ENOMEM;
 
 	for (i = 0; i < nr_args; i++) {
@@ -551,7 +552,7 @@ int io_sqe_buffers_unregister(struct io_ring_ctx *ctx)
 {
 	if (!ctx->buf_table.nr)
 		return -ENXIO;
-	io_rsrc_data_free(&ctx->buf_table);
+	io_rsrc_data_free(ctx, &ctx->buf_table);
 	return 0;
 }
 
@@ -628,11 +629,12 @@ static int io_buffer_account_pin(struct io_ring_ctx *ctx, struct page **pages,
 	return ret;
 }
 
-static bool io_do_coalesce_buffer(struct page ***pages, int *nr_pages,
-				struct io_imu_folio_data *data, int nr_folios)
+static bool io_coalesce_buffer(struct page ***pages, int *nr_pages,
+				struct io_imu_folio_data *data)
 {
 	struct page **page_array = *pages, **new_array = NULL;
 	int nr_pages_left = *nr_pages, i, j;
+	int nr_folios = data->nr_folios;
 
 	/* Store head pages only*/
 	new_array = kvmalloc_array(nr_folios, sizeof(struct page *),
@@ -669,15 +671,14 @@ static bool io_do_coalesce_buffer(struct page ***pages, int *nr_pages,
 	return true;
 }
 
-static bool io_try_coalesce_buffer(struct page ***pages, int *nr_pages,
-					 struct io_imu_folio_data *data)
+bool io_check_coalesce_buffer(struct page **page_array, int nr_pages,
+			      struct io_imu_folio_data *data)
 {
-	struct page **page_array = *pages;
 	struct folio *folio = page_folio(page_array[0]);
 	unsigned int count = 1, nr_folios = 1;
 	int i;
 
-	if (*nr_pages <= 1)
+	if (nr_pages <= 1)
 		return false;
 
 	data->nr_pages_mid = folio_nr_pages(folio);
@@ -689,7 +690,7 @@ static bool io_try_coalesce_buffer(struct page ***pages, int *nr_pages,
 	 * Check if pages are contiguous inside a folio, and all folios have
 	 * the same page count except for the head and tail.
 	 */
-	for (i = 1; i < *nr_pages; i++) {
+	for (i = 1; i < nr_pages; i++) {
 		if (page_folio(page_array[i]) == folio &&
 			page_array[i] == page_array[i-1] + 1) {
 			count++;
@@ -717,7 +718,8 @@ static bool io_try_coalesce_buffer(struct page ***pages, int *nr_pages,
 	if (nr_folios == 1)
 		data->nr_pages_head = count;
 
-	return io_do_coalesce_buffer(pages, nr_pages, data, nr_folios);
+	data->nr_folios = nr_folios;
+	return true;
 }
 
 static struct io_rsrc_node *io_sqe_buffer_register(struct io_ring_ctx *ctx,
@@ -731,7 +733,7 @@ static struct io_rsrc_node *io_sqe_buffer_register(struct io_ring_ctx *ctx,
 	size_t size;
 	int ret, nr_pages, i;
 	struct io_imu_folio_data data;
-	bool coalesced;
+	bool coalesced = false;
 
 	if (!iov->iov_base)
 		return NULL;
@@ -751,7 +753,8 @@ static struct io_rsrc_node *io_sqe_buffer_register(struct io_ring_ctx *ctx,
 	}
 
 	/* If it's huge page(s), try to coalesce them into fewer bvec entries */
-	coalesced = io_try_coalesce_buffer(&pages, &nr_pages, &data);
+	if (io_check_coalesce_buffer(pages, nr_pages, &data))
+		coalesced = io_coalesce_buffer(&pages, &nr_pages, &data);
 
 	imu = kvmalloc(struct_size(imu, bvec, nr_pages), GFP_KERNEL);
 	if (!imu)
@@ -788,7 +791,7 @@ done:
 	if (ret) {
 		kvfree(imu);
 		if (node)
-			io_put_rsrc_node(node);
+			io_put_rsrc_node(ctx, node);
 		node = ERR_PTR(ret);
 	}
 	kvfree(pages);
@@ -1018,7 +1021,7 @@ static int io_clone_buffers(struct io_ring_ctx *ctx, struct io_ring_ctx *src_ctx
 	 * old and new nodes at this point.
 	 */
 	if (arg->flags & IORING_REGISTER_DST_REPLACE)
-		io_rsrc_data_free(&ctx->buf_table);
+		io_rsrc_data_free(ctx, &ctx->buf_table);
 
 	/*
 	 * ctx->buf_table should be empty now - either the contents are being
@@ -1042,7 +1045,7 @@ out_put_free:
 		kfree(data.nodes[i]);
 	}
 out_unlock:
-	io_rsrc_data_free(&data);
+	io_rsrc_data_free(ctx, &data);
 	mutex_unlock(&src_ctx->uring_lock);
 	mutex_lock(&ctx->uring_lock);
 	return ret;
