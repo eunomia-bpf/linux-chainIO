@@ -30,6 +30,7 @@
 #include <linux/static_call.h>
 #include <linux/memcontrol.h>
 #include <linux/cfi.h>
+#include <linux/io_uring/bpf.h>
 
 struct bpf_verifier_env;
 struct bpf_verifier_log;

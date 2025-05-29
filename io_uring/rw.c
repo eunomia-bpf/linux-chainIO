@@ -400,6 +400,8 @@ static int io_prep_rw_fixed(struct io_kiocb *req, const struct io_uring_sqe *sqe
 	node = io_rsrc_node_lookup(&ctx->buf_table, req->buf_index);
 	if (!node)
 		return -EFAULT;
+	io_req_assign_rsrc_node(&req->buf_node, node);
+	req->flags |= REQ_F_BUF_NODE;
 	io_req_assign_buf_node(req, node);
 
 	io = req->async_data;

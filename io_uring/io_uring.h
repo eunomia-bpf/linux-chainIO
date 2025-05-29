@@ -78,6 +78,7 @@ bool io_post_aux_cqe(struct io_ring_ctx *ctx, u64 user_data, s32 res, u32 cflags
 void io_add_aux_cqe(struct io_ring_ctx *ctx, u64 user_data, s32 res, u32 cflags);
 bool io_req_post_cqe(struct io_kiocb *req, s32 res, u32 cflags);
 void __io_commit_cqring_flush(struct io_ring_ctx *ctx);
+void io_fail_group_members(struct io_kiocb *req);
 
 struct file *io_file_get_normal(struct io_kiocb *req, int fd);
 struct file *io_file_get_fixed(struct io_kiocb *req, int fd,
@@ -205,8 +206,9 @@ static __always_inline bool io_fill_cqe_req(struct io_ring_ctx *ctx,
 	if (unlikely(!io_get_cqe(ctx, &cqe)))
 		return false;
 
-
-	memcpy(cqe, &req->cqe, sizeof(*cqe));
+	cqe->user_data = req->cqe.user_data;
+	cqe->res = req->cqe.res;
+	cqe->flags = req->cqe.flags;
 	if (ctx->flags & IORING_SETUP_CQE32) {
 		memcpy(cqe->big_cqe, &req->big_cqe, sizeof(*cqe));
 		memset(&req->big_cqe, 0, sizeof(req->big_cqe));
@@ -370,6 +372,11 @@ static inline bool io_task_work_pending(struct io_ring_ctx *ctx)
 static inline void io_tw_lock(struct io_ring_ctx *ctx, struct io_tw_state *ts)
 {
 	lockdep_assert_held(&ctx->uring_lock);
+}
+
+static inline bool req_is_group_leader(struct io_kiocb *req)
+{
+	return req->flags & REQ_F_GROUP_LEADER;
 }
 
 /*

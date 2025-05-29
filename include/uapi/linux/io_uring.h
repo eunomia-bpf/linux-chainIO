@@ -141,6 +141,7 @@ enum io_uring_sqe_flags_bit {
 	IOSQE_ASYNC_BIT,
 	IOSQE_BUFFER_SELECT_BIT,
 	IOSQE_CQE_SKIP_SUCCESS_BIT,
+	IOSQE_GROUP_LINK_BIT,
 };
 
 /*
@@ -160,6 +161,8 @@ enum io_uring_sqe_flags_bit {
 #define IOSQE_BUFFER_SELECT	(1U << IOSQE_BUFFER_SELECT_BIT)
 /* don't post CQE if request succeeded */
 #define IOSQE_CQE_SKIP_SUCCESS	(1U << IOSQE_CQE_SKIP_SUCCESS_BIT)
+/* SQE grouping */
+#define IOSQE_GROUP_LINK	(1U << IOSQE_GROUP_LINK_BIT)
 
 /*
  * io_uring_setup() flags
@@ -579,6 +582,7 @@ struct io_uring_params {
 #define IORING_FEAT_REG_REG_RING	(1U << 13)
 #define IORING_FEAT_RECVSEND_BUNDLE	(1U << 14)
 #define IORING_FEAT_MIN_TIMEOUT		(1U << 15)
+#define IORING_FEAT_SQE_GROUP		(1U << 16)
 
 /*
  * io_uring_register(2) opcodes and arguments
@@ -647,6 +651,8 @@ enum io_uring_register_op {
 	IORING_REGISTER_RESIZE_RINGS		= 33,
 
 	IORING_REGISTER_MEM_REGION		= 34,
+
+	IORING_REGISTER_BPF			= 35,
 
 	/* this goes last */
 	IORING_REGISTER_LAST,
@@ -958,6 +964,12 @@ enum io_uring_socket_op {
 	SOCKET_URING_OP_SETSOCKOPT,
 };
 
+struct io_uring_bpf_reg {
+	__u64		prog_fd;
+	__u32		flags;
+	__u32		resv1;
+	__u64		resv2[2];
+};
 /* Zero copy receive refill queue entry */
 struct io_uring_zcrx_rqe {
 	__u64	off;

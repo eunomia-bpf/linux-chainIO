@@ -104,19 +104,21 @@
 #include "rw.h"
 #include "alloc_cache.h"
 #include "eventfd.h"
+#include "bpf.h"
 
 #define SQE_COMMON_FLAGS (IOSQE_FIXED_FILE | IOSQE_IO_LINK | \
 			  IOSQE_IO_HARDLINK | IOSQE_ASYNC)
 
 #define SQE_VALID_FLAGS	(SQE_COMMON_FLAGS | IOSQE_BUFFER_SELECT | \
-			IOSQE_IO_DRAIN | IOSQE_CQE_SKIP_SUCCESS)
+			IOSQE_IO_DRAIN | IOSQE_CQE_SKIP_SUCCESS | \
+			IOSQE_GROUP_LINK)
 
 #define IO_REQ_CLEAN_FLAGS (REQ_F_BUFFER_SELECTED | REQ_F_NEED_CLEANUP | \
 				REQ_F_POLLED | REQ_F_INFLIGHT | REQ_F_CREDS | \
 				REQ_F_ASYNC_DATA)
 
 #define IO_REQ_CLEAN_SLOW_FLAGS (REQ_F_REFCOUNT | REQ_F_LINK | REQ_F_HARDLINK |\
-				 IO_REQ_CLEAN_FLAGS)
+				 REQ_F_GROUP | IO_REQ_CLEAN_FLAGS)
 
 #define IO_TCTX_REFS_CACHE_NR	(1U << 10)
 
@@ -879,6 +881,137 @@ bool io_req_post_cqe(struct io_kiocb *req, s32 res, u32 cflags)
 	return posted;
 }
 
+static __always_inline void io_req_commit_cqe(struct io_ring_ctx *ctx,
+		struct io_kiocb *req)
+{
+	if (unlikely(!io_fill_cqe_req(ctx, req))) {
+		if (ctx->lockless_cq) {
+			spin_lock(&ctx->completion_lock);
+			io_req_cqe_overflow(req);
+			spin_unlock(&ctx->completion_lock);
+		} else {
+			io_req_cqe_overflow(req);
+		}
+	}
+}
+
+/* Can only be called after this request is issued */
+static inline struct io_kiocb *get_group_leader(struct io_kiocb *req)
+{
+	if (!(req->flags & REQ_F_GROUP))
+		return NULL;
+	if (req_is_group_leader(req))
+		return req;
+	return req->grp_leader;
+}
+
+void io_fail_group_members(struct io_kiocb *req)
+{
+	struct io_kiocb *member = req->grp_link;
+
+	while (member) {
+		struct io_kiocb *next = member->grp_link;
+
+		if (!(member->flags & REQ_F_FAIL)) {
+			req_set_fail(member);
+			io_req_set_res(member, -ECANCELED, 0);
+		}
+		member = next;
+	}
+}
+
+static void io_queue_group_members(struct io_kiocb *req)
+{
+	struct io_kiocb *member = req->grp_link;
+
+	req->grp_link = NULL;
+	while (member) {
+		struct io_kiocb *next = member->grp_link;
+
+		member->grp_leader = req;
+		if (unlikely(member->flags & REQ_F_FAIL))
+			io_req_task_queue_fail(member, member->cqe.res);
+		else if (unlikely(req->flags & REQ_F_FAIL))
+			io_req_task_queue_fail(member, -ECANCELED);
+		else
+			io_req_task_queue(member);
+		member = next;
+	}
+}
+
+/* called only after the request is completed */
+static bool req_is_last_group_member(struct io_kiocb *req)
+{
+	return req->grp_leader != NULL;
+}
+
+static void io_complete_group_req(struct io_kiocb *req)
+{
+	struct io_kiocb *lead;
+
+	if (req_is_group_leader(req)) {
+		req->grp_refs--;
+		return;
+	}
+
+	lead = get_group_leader(req);
+
+	/* member CQE needs to be posted first */
+	if (!(req->flags & REQ_F_CQE_SKIP))
+		io_req_commit_cqe(req->ctx, req);
+
+	/* Set leader as failed in case of any member failed */
+	if (unlikely((req->flags & REQ_F_FAIL)))
+		req_set_fail(lead);
+
+	WARN_ON_ONCE(lead->grp_refs <= 0);
+	if (!--lead->grp_refs) {
+		/*
+		 * We are the last member, and ->grp_leader isn't cleared,
+		 * so our leader can be found & freed with the last member
+		 */
+		if (!(lead->flags & REQ_F_CQE_SKIP))
+			io_req_commit_cqe(lead->ctx, lead);
+	} else {
+		/* we are done with the group now */
+		req->grp_leader = NULL;
+	}
+}
+
+enum group_mem {
+	GROUP_LEADER,
+	GROUP_LAST_MEMBER,
+	GROUP_OTHER_MEMBER,
+};
+
+static enum group_mem io_prep_free_group_req(struct io_kiocb *req,
+					     struct io_kiocb **leader)
+{
+	/*
+	 * Group completion is done, so clear the flag for avoiding double
+	 * handling in case of io-wq
+	 */
+	req->flags &= ~REQ_F_GROUP;
+
+	if (req_is_group_leader(req)) {
+		/* Queue members now */
+		if (req->grp_link)
+			io_queue_group_members(req);
+		return GROUP_LEADER;
+	}
+	if (!req_is_last_group_member(req))
+		return GROUP_OTHER_MEMBER;
+
+	/*
+	 * Prepare for freeing leader which can only be found from the last
+	 * member
+	 */
+	*leader = req->grp_leader;
+	(*leader)->flags &= ~REQ_F_GROUP_LEADER;
+	req->grp_leader = NULL;
+	return GROUP_LAST_MEMBER;
+}
+
 static void io_req_complete_post(struct io_kiocb *req, unsigned issue_flags)
 {
 	struct io_ring_ctx *ctx = req->ctx;
@@ -894,7 +1027,8 @@ static void io_req_complete_post(struct io_kiocb *req, unsigned issue_flags)
 	 * Handle special CQ sync cases via task_work. DEFER_TASKRUN requires
 	 * the submitter task context, IOPOLL protects with uring_lock.
 	 */
-	if (ctx->task_complete || (ctx->flags & IORING_SETUP_IOPOLL)) {
+	if (ctx->task_complete || (ctx->flags & IORING_SETUP_IOPOLL) ||
+	    (req->flags & REQ_F_GROUP)) {
 		req->io_task_work.func = io_req_task_complete;
 		io_req_task_work_add(req);
 		return;
@@ -1392,6 +1526,25 @@ void io_queue_next(struct io_kiocb *req)
 		io_req_task_queue(nxt);
 }
 
+static bool io_group_complete(struct io_kiocb *req)
+{
+	struct io_kiocb *leader = NULL;
+	enum group_mem type = io_prep_free_group_req(req, &leader);
+
+	if (type == GROUP_LEADER) {
+		return true;
+	} else if (type == GROUP_LAST_MEMBER) {
+		/*
+		 * Link leader to current request's next, this way works
+		 * because the iterator always check the next node only.
+		 *
+		 * Be careful when you change the iterator in future
+		 */
+		wq_stack_add_head(&leader->comp_list, &req->comp_list);
+	}
+	return false;
+}
+
 static void io_free_batch_list(struct io_ring_ctx *ctx,
 			       struct io_wq_work_node *node)
 	__must_hold(&ctx->uring_lock)
@@ -1401,6 +1554,12 @@ static void io_free_batch_list(struct io_ring_ctx *ctx,
 						    comp_list);
 
 		if (unlikely(req->flags & IO_REQ_CLEAN_SLOW_FLAGS)) {
+			if (req->flags & REQ_F_GROUP) {
+				if (io_group_complete(req)) {
+					node = req->comp_list.next;
+					continue;
+				}
+			}
 			if (req->flags & REQ_F_REFCOUNT) {
 				node = req->comp_list.next;
 				if (!req_ref_put_and_test(req))
@@ -1440,16 +1599,16 @@ void __io_submit_flush_completions(struct io_ring_ctx *ctx)
 		struct io_kiocb *req = container_of(node, struct io_kiocb,
 					    comp_list);
 
-		if (!(req->flags & REQ_F_CQE_SKIP) &&
-		    unlikely(!io_fill_cqe_req(ctx, req))) {
-			if (ctx->lockless_cq) {
-				spin_lock(&ctx->completion_lock);
-				io_req_cqe_overflow(req);
-				spin_unlock(&ctx->completion_lock);
-			} else {
-				io_req_cqe_overflow(req);
+		if (unlikely(req->flags & (REQ_F_CQE_SKIP | REQ_F_GROUP))) {
+			if (req->flags & REQ_F_GROUP) {
+				io_complete_group_req(req);
+				continue;
 			}
+
+			if (req->flags & REQ_F_CQE_SKIP)
+				continue;
 		}
+		io_req_commit_cqe(ctx, req);
 	}
 	__io_cq_unlock_post(ctx);
 
@@ -1659,8 +1818,12 @@ static u32 io_get_sequence(struct io_kiocb *req)
 	struct io_kiocb *cur;
 
 	/* need original cached_sq_head, but it was increased for each req */
-	io_for_each_link(cur, req)
-		seq--;
+	io_for_each_link(cur, req) {
+		if (req_is_group_leader(cur))
+			seq -= cur->grp_refs;
+		else
+			seq--;
+	}
 	return seq;
 }
 
@@ -2117,14 +2280,70 @@ static int io_init_req(struct io_ring_ctx *ctx, struct io_kiocb *req,
 	return def->prep(req, sqe);
 }
 
-static __cold int io_submit_fail_init(const struct io_uring_sqe *sqe,
+static struct io_kiocb *io_group_sqe(struct io_submit_link *group,
+				     struct io_kiocb *req)
+{
+	/*
+	 * Group chain is similar with link chain: starts with 1st sqe with
+	 * REQ_F_GROUP, and ends with the 1st sqe without REQ_F_GROUP
+	 */
+	if (group->head) {
+		struct io_kiocb *lead = group->head;
+
+		/*
+		 * Members can't be in link chain, can't be drained, but
+		 * the whole group can be linked or drained by setting
+		 * flags on group leader.
+		 *
+		 * IOSQE_CQE_SKIP_SUCCESS can't be set for member
+		 * for the sake of simplicity
+		 */
+		if (req->flags & (IO_REQ_LINK_FLAGS | REQ_F_IO_DRAIN |
+				REQ_F_CQE_SKIP))
+			req_fail_link_node(lead, -EINVAL);
+
+		lead->grp_refs += 1;
+		group->last->grp_link = req;
+		group->last = req;
+
+		if (req->flags & REQ_F_GROUP)
+			return NULL;
+
+		req->grp_link = NULL;
+		req->flags |= REQ_F_GROUP;
+		group->head = NULL;
+		return lead;
+	}
+
+	if (WARN_ON_ONCE(!(req->flags & REQ_F_GROUP)))
+		return req;
+	group->head = req;
+	group->last = req;
+	req->grp_refs = 1;
+	req->flags |= REQ_F_GROUP_LEADER;
+	return NULL;
+}
+
+static __cold struct io_kiocb *io_submit_fail_group(
+		struct io_submit_link *link, struct io_kiocb *req)
+{
+	struct io_kiocb *lead = link->head;
+
+	/*
+	 * Instead of failing eagerly, continue assembling the group link
+	 * if applicable and mark the leader with REQ_F_FAIL. The group
+	 * flushing code should find the flag and handle the rest
+	 */
+	if (lead && !(lead->flags & REQ_F_FAIL))
+		req_fail_link_node(lead, -ECANCELED);
+
+	return io_group_sqe(link, req);
+}
+
+static __cold int io_submit_fail_link(struct io_submit_link *link,
 				      struct io_kiocb *req, int ret)
 {
-	struct io_ring_ctx *ctx = req->ctx;
-	struct io_submit_link *link = &ctx->submit_state.link;
 	struct io_kiocb *head = link->head;
-
-	trace_io_uring_req_failed(sqe, req, ret);
 
 	/*
 	 * Avoid breaking links in the middle as it renders links with SQPOLL
@@ -2132,7 +2351,6 @@ static __cold int io_submit_fail_init(const struct io_uring_sqe *sqe,
 	 * applicable and mark the head with REQ_F_FAIL. The link flushing code
 	 * should find the flag and handle the rest.
 	 */
-	req_fail_link_node(req, ret);
 	if (head && !(head->flags & REQ_F_FAIL))
 		req_fail_link_node(head, -ECANCELED);
 
@@ -2151,22 +2369,36 @@ static __cold int io_submit_fail_init(const struct io_uring_sqe *sqe,
 	else
 		link->head = req;
 	link->last = req;
+
 	return 0;
 }
 
-static inline int io_submit_sqe(struct io_ring_ctx *ctx, struct io_kiocb *req,
-			 const struct io_uring_sqe *sqe)
-	__must_hold(&ctx->uring_lock)
+static __cold int io_submit_fail_init(const struct io_uring_sqe *sqe,
+				      struct io_kiocb *req, int ret)
 {
+	struct io_ring_ctx *ctx = req->ctx;
 	struct io_submit_link *link = &ctx->submit_state.link;
-	int ret;
+	struct io_submit_link *group = &ctx->submit_state.group;
 
-	ret = io_init_req(ctx, req, sqe);
-	if (unlikely(ret))
-		return io_submit_fail_init(sqe, req, ret);
+	trace_io_uring_req_failed(sqe, req, ret);
 
-	trace_io_uring_submit_req(req);
+	req_fail_link_node(req, ret);
 
+	if (group->head || (req->flags & REQ_F_GROUP)) {
+		req = io_submit_fail_group(group, req);
+		if (!req)
+			return 0;
+	}
+
+	/* cover both linked and non-linked request */
+	return io_submit_fail_link(link, req, ret);
+}
+
+/*
+ * Return NULL if nothing to be queued, otherwise return request for queueing */
+static struct io_kiocb *io_link_sqe(struct io_submit_link *link,
+				    struct io_kiocb *req)
+{
 	/*
 	 * If we already have a head request, queue this one for async
 	 * submittal once the head completes. If we don't have a head but
@@ -2180,7 +2412,7 @@ static inline int io_submit_sqe(struct io_ring_ctx *ctx, struct io_kiocb *req,
 		link->last = req;
 
 		if (req->flags & IO_REQ_LINK_FLAGS)
-			return 0;
+			return NULL;
 		/* last request of the link, flush it */
 		req = link->head;
 		link->head = NULL;
@@ -2196,9 +2428,57 @@ static inline int io_submit_sqe(struct io_ring_ctx *ctx, struct io_kiocb *req,
 fallback:
 			io_queue_sqe_fallback(req);
 		}
-		return 0;
+		return NULL;
 	}
+	return req;
+}
 
+static inline bool io_group_assembling(const struct io_submit_state *state,
+				       const struct io_kiocb *req)
+{
+	if (state->group.head || req->flags & REQ_F_GROUP)
+		return true;
+	return false;
+}
+
+/* Failed request is covered too */
+static inline bool io_link_assembling(const struct io_submit_state *state,
+				      const struct io_kiocb *req)
+{
+	if (state->link.head ||
+	    (req->flags & (IO_REQ_LINK_FLAGS | REQ_F_FORCE_ASYNC | REQ_F_FAIL)))
+		return true;
+	return false;
+}
+
+static inline int io_submit_sqe(struct io_ring_ctx *ctx, struct io_kiocb *req,
+			 const struct io_uring_sqe *sqe)
+	__must_hold(&ctx->uring_lock)
+{
+	struct io_submit_state *state = &ctx->submit_state;
+	int ret;
+
+	ret = io_init_req(ctx, req, sqe);
+	if (unlikely(ret))
+		return io_submit_fail_init(sqe, req, ret);
+
+	trace_io_uring_submit_req(req);
+
+	if (unlikely(io_link_assembling(state, req) ||
+		     io_group_assembling(state, req))) {
+		if (io_group_assembling(state, req)) {
+			req = io_group_sqe(&state->group, req);
+			if (!req)
+				return 0;
+		}
+
+		/* covers non-linked failed request too */
+		if (io_link_assembling(state, req)) {
+			req = io_link_sqe(&state->link, req);
+			if (!req)
+				return 0;
+		}
+	}
 	io_queue_sqe(req);
 	return 0;
 }
@@ -2210,8 +2490,27 @@ static void io_submit_state_end(struct io_ring_ctx *ctx)
 {
 	struct io_submit_state *state = &ctx->submit_state;
 
-	if (unlikely(state->link.head))
-		io_queue_sqe_fallback(state->link.head);
+	if (unlikely(state->group.head || state->link.head)) {
+		/* the last member must set REQ_F_GROUP */
+		if (state->group.head) {
+			struct io_kiocb *lead = state->group.head;
+			struct io_kiocb *last = state->group.last;
+
+			/* fail group with single leader */
+			if (unlikely(last == lead))
+				req_fail_link_node(lead, -EINVAL);
+
+			last->grp_link = NULL;
+			if (state->link.head)
+				io_link_sqe(&state->link, lead);
+			else
+				io_queue_sqe_fallback(lead);
+		}
+
+		if (unlikely(state->link.head))
+			io_queue_sqe_fallback(state->link.head);
+	}
+
 	/* flush only after queuing links as they can generate completions */
 	io_submit_flush_completions(ctx);
 	if (state->plug_started)
@@ -2229,6 +2528,7 @@ static void io_submit_state_start(struct io_submit_state *state,
 	state->submit_nr = max_ios;
 	/* set only head, no need to init link_last in advance */
 	state->link.head = NULL;
+	state->group.head = NULL;
 }
 
 static void io_commit_sqring(struct io_ring_ctx *ctx)
@@ -2561,6 +2861,13 @@ static int io_cqring_wait(struct io_ring_ctx *ctx, int min_events, u32 flags,
 
 	io_napi_busy_loop(ctx, &iowq);
 
+	if (io_bpf_enabled(ctx)) {
+		ctx->bpf_ctx->waitq = &iowq;
+		ret = io_run_bpf(ctx);
+		if (ret == IOU_BPF_RET_STOP)
+			return 0;
+	}
+
 	trace_io_uring_cqring_wait(ctx, min_events);
 	do {
 		unsigned long check_cq;
@@ -2605,6 +2912,13 @@ static int io_cqring_wait(struct io_ring_ctx *ctx, int min_events, u32 flags,
 		 */
 		if (ret < 0)
 			break;
+
+		if (io_bpf_enabled(ctx)) {
+			ret = io_run_bpf(ctx);
+			if (ret == IOU_BPF_RET_STOP)
+				break;
+			continue;
+		}
 
 		check_cq = READ_ONCE(ctx->check_cq);
 		if (unlikely(check_cq)) {
@@ -2710,6 +3024,8 @@ static __cold void io_ring_ctx_free(struct io_ring_ctx *ctx)
 	io_alloc_cache_free(&ctx->msg_cache, io_msg_cache_free);
 	io_futex_cache_free(ctx);
 	io_destroy_buffers(ctx);
+	io_unregister_cqwait_reg(ctx);
+	io_unregister_bpf(ctx);
 	io_free_region(ctx, &ctx->param_region);
 	mutex_unlock(&ctx->uring_lock);
 	if (ctx->sq_creds)
@@ -3717,7 +4033,8 @@ static __cold int io_uring_create(unsigned entries, struct io_uring_params *p,
 			IORING_FEAT_EXT_ARG | IORING_FEAT_NATIVE_WORKERS |
 			IORING_FEAT_RSRC_TAGS | IORING_FEAT_CQE_SKIP |
 			IORING_FEAT_LINKED_FILE | IORING_FEAT_REG_REG_RING |
-			IORING_FEAT_RECVSEND_BUNDLE | IORING_FEAT_MIN_TIMEOUT;
+			IORING_FEAT_RECVSEND_BUNDLE | IORING_FEAT_MIN_TIMEOUT |
+			IORING_FEAT_SQE_GROUP;
 
 	if (copy_to_user(params, p, sizeof(*p))) {
 		ret = -EFAULT;
