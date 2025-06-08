@@ -1,0 +1,89 @@
+# SPDX-License-Identifier: GPL-2.0
+# Makefile for full-stack unified interface test
+
+CC = gcc
+CLANG = clang
+CFLAGS = -Wall -Wextra -O2 -g -std=gnu99
+LDFLAGS = -pthread
+LIBS = -lbpf -lxdp -lelf -lz
+
+# Check for required libraries
+HAS_LIBBPF := $(shell pkg-config --exists libbpf && echo 1 || echo 0)
+HAS_LIBXDP := $(shell pkg-config --exists libxdp && echo 1 || echo 0)
+
+ifeq ($(HAS_LIBBPF),1)
+    CFLAGS += $(shell pkg-config --cflags libbpf)
+    LIBS += $(shell pkg-config --libs libbpf)
+else
+    CFLAGS += -I/usr/include/bpf
+    LIBS += -lbpf
+endif
+
+ifeq ($(HAS_LIBXDP),1)
+    CFLAGS += $(shell pkg-config --cflags libxdp)
+    LIBS += $(shell pkg-config --libs libxdp)
+else
+    CFLAGS += -I/usr/include/xdp
+    LIBS += -lxdp
+endif
+
+TARGETS = unified-full-stack-test
+
+all: check-deps $(TARGETS)
+
+check-deps:
+	@echo "Checking dependencies..."
+	@which $(CLANG) > /dev/null || (echo "Error: clang not found. Please install clang." && exit 1)
+	@echo "  clang: OK"
+	@pkg-config --exists libbpf || echo "Warning: libbpf development package not found"
+	@pkg-config --exists libxdp || echo "Warning: libxdp development package not found"
+	@echo "Dependencies check complete."
+
+unified-full-stack-test: unified-full-stack-test.c
+	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS) $(LIBS)
+
+clean:
+	rm -f $(TARGETS)
+	rm -f /tmp/xdp_prog.c /tmp/xdp_prog.o
+
+install: $(TARGETS)
+	mkdir -p $(DESTDIR)/usr/bin
+	cp $(TARGETS) $(DESTDIR)/usr/bin/
+
+# Target to install dependencies on Ubuntu/Debian
+install-deps-ubuntu:
+	sudo apt-get update
+	sudo apt-get install -y \
+		clang \
+		libbpf-dev \
+		libxdp-dev \
+		libelf-dev \
+		zlib1g-dev \
+		pkg-config \
+		gcc \
+		make
+
+# Target to install dependencies on RHEL/CentOS/Fedora
+install-deps-rhel:
+	sudo dnf install -y \
+		clang \
+		libbpf-devel \
+		libxdp-devel \
+		elfutils-libelf-devel \
+		zlib-devel \
+		pkgconfig \
+		gcc \
+		make
+
+help:
+	@echo "Available targets:"
+	@echo "  all                 - Build all targets"
+	@echo "  unified-full-stack-test - Build full-stack test program"
+	@echo "  clean               - Remove built files"
+	@echo "  install             - Install to system"
+	@echo "  install-deps-ubuntu - Install dependencies on Ubuntu/Debian"
+	@echo "  install-deps-rhel   - Install dependencies on RHEL/CentOS/Fedora"
+	@echo "  check-deps          - Check for required dependencies"
+	@echo "  help                - Show this help"
+
+.PHONY: all clean install install-deps-ubuntu install-deps-rhel check-deps help
