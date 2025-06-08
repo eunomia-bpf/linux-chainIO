@@ -79,6 +79,9 @@
 #include "ice_dpll.h"
 #include "ice_adapter.h"
 
+/* Forward declarations for unified RDMA interface */
+struct io_unified_rdma_ifq;
+
 #define ICE_BAR0		0
 #define ICE_REQ_DESC_MULTIPLE	32
 #define ICE_MIN_NUM_DESC	64
@@ -667,6 +670,9 @@ struct ice_pf {
 	struct device *hwmon_dev;
 
 	u8 num_quanta_prof_used;
+	
+	/* Unified RDMA interface */
+	struct io_unified_rdma_ifq *unified_rdma_ifq;
 };
 
 extern struct workqueue_struct *ice_lag_wq;
@@ -1013,6 +1019,8 @@ void ice_deinit_dev(struct ice_pf *pf);
 int ice_change_mtu(struct net_device *netdev, int new_mtu);
 void ice_tx_timeout(struct net_device *netdev, unsigned int txqueue);
 int ice_xdp(struct net_device *dev, struct netdev_bpf *xdp);
+int ice_xdp_setup_rdma_prog(struct ice_vsi *vsi, struct bpf_prog *prog,
+			     struct netlink_ext_ack *extack);
 void ice_set_netdev_features(struct net_device *netdev);
 int ice_vlan_rx_add_vid(struct net_device *netdev, __be16 proto, u16 vid);
 int ice_vlan_rx_kill_vid(struct net_device *netdev, __be16 proto, u16 vid);

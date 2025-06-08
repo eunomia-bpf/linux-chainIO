@@ -3099,7 +3099,14 @@ int ice_xdp(struct net_device *dev, struct netdev_bpf *xdp)
 
 	switch (xdp->command) {
 	case XDP_SETUP_PROG:
-		ret = ice_xdp_setup_prog(vsi, xdp->prog, xdp->extack);
+		/* Check if XDP_FLAGS_RDMA is set */
+		if (xdp->flags & XDP_FLAGS_RDMA) {
+			/* Transfer XDP program to SoftRoCE unified RDMA driver */
+			ret = ice_xdp_setup_rdma_prog(vsi, xdp->prog, xdp->extack);
+		} else {
+			/* Normal XDP program setup in NIC driver */
+			ret = ice_xdp_setup_prog(vsi, xdp->prog, xdp->extack);
+		}
 		break;
 	case XDP_SETUP_XSK_POOL:
 		ret = ice_xsk_pool_setup(vsi, xdp->xsk.pool, xdp->xsk.queue_id);
@@ -3110,6 +3117,45 @@ int ice_xdp(struct net_device *dev, struct netdev_bpf *xdp)
 
 	mutex_unlock(&vsi->xdp_state_lock);
 	return ret;
+}
+
+/**
+ * ice_xdp_setup_rdma_prog - setup XDP program for RDMA unified interface
+ * @vsi: VSI to setup XDP for
+ * @prog: XDP program
+ * @extack: netlink extended ack
+ */
+int ice_xdp_setup_rdma_prog(struct ice_vsi *vsi, struct bpf_prog *prog,
+			     struct netlink_ext_ack *extack)
+{
+	struct ice_pf *pf = vsi->back;
+	struct net_device *netdev = vsi->netdev;
+	int ret;
+
+	/* Validate that unified RDMA interface is available */
+	if (!pf->unified_rdma_ifq) {
+		NL_SET_ERR_MSG_MOD(extack,
+				   "Unified RDMA interface not registered. Cannot load XDP program to SoftRoCE");
+		return -ENODEV;
+	}
+
+	if (prog) {
+		/* Register XDP program with unified RDMA interface */
+		ret = io_unified_rdma_setup_xdp(pf->unified_rdma_ifq, prog);
+		if (ret) {
+			NL_SET_ERR_MSG_MOD(extack,
+					   "Failed to setup XDP program in unified RDMA interface");
+			return ret;
+		}
+
+		netdev_info(netdev, "XDP program transferred to unified RDMA interface (SoftRoCE)\n");
+	} else {
+		/* Unload XDP program from unified RDMA interface */
+		io_unified_rdma_detach_xdp(pf->unified_rdma_ifq);
+		netdev_info(netdev, "XDP program removed from unified RDMA interface\n");
+	}
+
+	return 0;
 }
 
 /**

@@ -5,11 +5,12 @@ CC = gcc
 CLANG = clang
 CFLAGS = -Wall -Wextra -O2 -g -std=gnu99
 LDFLAGS = -pthread
-LIBS = -lbpf -lxdp -lelf -lz
+LIBS = -lbpf -lxdp -lelf -lz -libverbs -lrdmacm
 
 # Check for required libraries
 HAS_LIBBPF := $(shell pkg-config --exists libbpf && echo 1 || echo 0)
 HAS_LIBXDP := $(shell pkg-config --exists libxdp && echo 1 || echo 0)
+HAS_RDMA := $(shell pkg-config --exists libibverbs librdmacm && echo 1 || echo 0)
 
 ifeq ($(HAS_LIBBPF),1)
     CFLAGS += $(shell pkg-config --cflags libbpf)
@@ -27,7 +28,15 @@ else
     LIBS += -lxdp
 endif
 
-TARGETS = unified-full-stack-test
+ifeq ($(HAS_RDMA),1)
+    CFLAGS += $(shell pkg-config --cflags libibverbs librdmacm)
+    RDMA_LIBS += $(shell pkg-config --libs libibverbs librdmacm)
+else
+    CFLAGS += -I/usr/include/infiniband -I/usr/include/rdma
+    RDMA_LIBS += -libverbs -lrdmacm
+endif
+
+TARGETS = unified-full-stack-test unified-rdma-test xdp-rdma-demo
 
 all: check-deps $(TARGETS)
 
@@ -37,14 +46,22 @@ check-deps:
 	@echo "  clang: OK"
 	@pkg-config --exists libbpf || echo "Warning: libbpf development package not found"
 	@pkg-config --exists libxdp || echo "Warning: libxdp development package not found"
+	@pkg-config --exists libibverbs librdmacm || echo "Warning: RDMA development packages not found"
 	@echo "Dependencies check complete."
 
 unified-full-stack-test: unified-full-stack-test.c
 	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS) $(LIBS)
 
+unified-rdma-test: unified-rdma-test.c
+	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS) $(LIBS) $(RDMA_LIBS)
+
+xdp-rdma-demo: xdp-rdma-demo.c
+	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS) $(LIBS)
+
 clean:
 	rm -f $(TARGETS)
 	rm -f /tmp/xdp_prog.c /tmp/xdp_prog.o
+	rm -f /tmp/xdp_rdma_prog.c /tmp/xdp_rdma_prog.o
 
 install: $(TARGETS)
 	mkdir -p $(DESTDIR)/usr/bin
@@ -59,6 +76,9 @@ install-deps-ubuntu:
 		libxdp-dev \
 		libelf-dev \
 		zlib1g-dev \
+		libibverbs-dev \
+		librdmacm-dev \
+		rdma-core \
 		pkg-config \
 		gcc \
 		make
@@ -71,6 +91,9 @@ install-deps-rhel:
 		libxdp-devel \
 		elfutils-libelf-devel \
 		zlib-devel \
+		libibverbs-devel \
+		librdmacm-devel \
+		rdma-core-devel \
 		pkgconfig \
 		gcc \
 		make
@@ -79,6 +102,8 @@ help:
 	@echo "Available targets:"
 	@echo "  all                 - Build all targets"
 	@echo "  unified-full-stack-test - Build full-stack test program"
+	@echo "  unified-rdma-test   - Build RDMA unified test program"
+	@echo "  xdp-rdma-demo       - Build XDP RDMA demonstration program"
 	@echo "  clean               - Remove built files"
 	@echo "  install             - Install to system"
 	@echo "  install-deps-ubuntu - Install dependencies on Ubuntu/Debian"
