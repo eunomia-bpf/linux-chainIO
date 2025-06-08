@@ -27,6 +27,7 @@
 #include "ice_tc_lib.h"
 #include "ice_vsi_vlan_ops.h"
 #include <net/xdp_sock_drv.h>
+#include <linux/io_uring/unified-rdma.h>
 
 #define DRV_SUMMARY	"Intel(R) Ethernet Connection E800 Series Linux Driver"
 static const char ice_driver_string[] = DRV_SUMMARY;

@@ -404,6 +404,9 @@ struct rxe_dev {
 
 	struct rxe_port		port;
 	struct crypto_shash	*tfm;
+	
+	/* XDP integration */
+	struct rxe_xdp_state	*xdp_state;
 };
 
 static inline void rxe_counter_inc(struct rxe_dev *rxe, enum rxe_counters index)

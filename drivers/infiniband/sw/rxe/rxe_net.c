@@ -17,6 +17,7 @@
 #include "rxe.h"
 #include "rxe_net.h"
 #include "rxe_loc.h"
+#include "rxe_xdp.h"
 
 static struct rxe_recv_sockets recv_sockets;
 
@@ -384,6 +385,9 @@ static int rxe_send(struct sk_buff *skb, struct rxe_pkt_info *pkt)
 	skb->sk = sk;
 	skb->destructor = rxe_skb_tx_dtor;
 	atomic_inc(&pkt->qp->skb_out);
+
+	/* Process packet with XDP if enabled (clone for monitoring) */
+	rxe_xdp_process_tx(pkt->qp, skb);
 
 	if (skb->protocol == htons(ETH_P_IP))
 		err = ip_local_out(dev_net(skb_dst(skb)->dev), skb->sk, skb);

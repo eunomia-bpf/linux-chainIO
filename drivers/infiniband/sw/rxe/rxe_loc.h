@@ -181,4 +181,12 @@ static inline unsigned int wr_opcode_mask(int opcode, struct rxe_qp *qp)
 	return rxe_wr_opcode_info[opcode].mask[qp->ibqp.qp_type];
 }
 
+/* rxe_xdp.c */
+int rxe_xdp_init(struct rxe_dev *rxe);
+void rxe_xdp_cleanup(struct rxe_dev *rxe);
+int rxe_xdp_setup(struct rxe_dev *rxe, struct bpf_prog *prog);
+int rxe_xdp_process_tx(struct rxe_qp *qp, struct sk_buff *skb);
+int rxe_xdp_process_rx(struct rxe_dev *rxe, struct sk_buff **pskb);
+int rxe_xdp_netdev_event(struct rxe_dev *rxe, unsigned long event);
+
 #endif /* RXE_LOC_H */

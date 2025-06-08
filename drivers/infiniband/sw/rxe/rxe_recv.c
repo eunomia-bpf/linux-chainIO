@@ -8,6 +8,7 @@
 
 #include "rxe.h"
 #include "rxe_loc.h"
+#include "rxe_xdp.h"
 
 /* check that QP matches packet opcode type and is in a valid state */
 static int check_type_state(struct rxe_dev *rxe, struct rxe_pkt_info *pkt,
@@ -318,6 +319,22 @@ void rxe_rcv(struct sk_buff *skb)
 	int err;
 	struct rxe_pkt_info *pkt = SKB_TO_PKT(skb);
 	struct rxe_dev *rxe = pkt->rxe;
+
+	/* Process packet with XDP if enabled */
+	if (rxe_xdp_process_rx(rxe, &skb)) {
+		/* Packet was consumed by XDP */
+		ib_device_put(&rxe->ib_dev);
+		return;
+	}
+	
+	/* Check if SKB still valid after XDP processing */
+	if (!skb) {
+		ib_device_put(&rxe->ib_dev);
+		return;
+	}
+	
+	/* Re-initialize pkt pointer in case XDP modified the packet */
+	pkt = SKB_TO_PKT(skb);
 
 	if (unlikely(skb->len < RXE_BTH_BYTES))
 		goto drop;

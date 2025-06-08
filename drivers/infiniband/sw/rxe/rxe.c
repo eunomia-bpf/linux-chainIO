@@ -8,6 +8,7 @@
 #include <net/addrconf.h>
 #include "rxe.h"
 #include "rxe_loc.h"
+#include "rxe_xdp.h"
 
 MODULE_AUTHOR("Bob Pearson, Frank Zago, John Groves, Kamal Heib");
 MODULE_DESCRIPTION("Soft RDMA transport");
@@ -33,6 +34,10 @@ void rxe_dealloc(struct ib_device *ib_dev)
 
 	if (rxe->tfm)
 		crypto_free_shash(rxe->tfm);
+
+	/* Cleanup XDP state */
+	if (rxe->xdp_state)
+		rxe_xdp_cleanup(rxe);
 
 	mutex_destroy(&rxe->usdev_lock);
 }
@@ -169,8 +174,34 @@ void rxe_set_mtu(struct rxe_dev *rxe, unsigned int ndev_mtu)
  */
 int rxe_add(struct rxe_dev *rxe, unsigned int mtu, const char *ibdev_name)
 {
+	struct bpf_prog *xdp_prog;
+	int ret;
+
 	rxe_init(rxe);
 	rxe_set_mtu(rxe, mtu);
+
+	/* Initialize XDP support */
+	ret = rxe_xdp_init(rxe);
+	if (ret) {
+		rxe_err_dev(rxe, "Failed to initialize XDP support: %d\n", ret);
+		/* Continue without XDP support */
+	}
+
+	/* Check if XDP program is already attached to the network device */
+	if (rxe->ndev) {
+		rcu_read_lock();
+		xdp_prog = rcu_dereference(rxe->ndev->xdp_prog);
+		if (xdp_prog && rxe->xdp_state) {
+			rxe_info_dev(rxe, "XDP program detected on %s, enabling RXE XDP support\n",
+				     rxe->ndev->name);
+			rcu_read_unlock();
+			ret = rxe_xdp_setup(rxe, xdp_prog);
+			if (ret)
+				rxe_err_dev(rxe, "Failed to setup XDP program: %d\n", ret);
+		} else {
+			rcu_read_unlock();
+		}
+	}
 
 	return rxe_register_device(rxe, ibdev_name);
 }
