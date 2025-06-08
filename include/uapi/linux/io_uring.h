@@ -283,6 +283,7 @@ enum io_uring_op {
 	IORING_OP_BIND,
 	IORING_OP_LISTEN,
 	IORING_OP_RECV_ZC,
+	IORING_OP_UNIFIED,
 
 	/* this goes last, obviously */
 	IORING_OP_LAST,
@@ -654,6 +655,9 @@ enum io_uring_register_op {
 
 	IORING_REGISTER_BPF			= 35,
 
+	IORING_REGISTER_UNIFIED_REGION		= 36,
+	IORING_UNREGISTER_UNIFIED_REGION	= 37,
+
 	/* this goes last */
 	IORING_REGISTER_LAST,
 
@@ -1018,6 +1022,40 @@ struct io_uring_zcrx_ifq_reg {
 	struct io_uring_zcrx_offsets offsets;
 	__u64	__resv[4];
 };
+
+/*
+ * Argument for IORING_REGISTER_UNIFIED_REGION
+ */
+struct io_uring_unified_region_reg {
+	__u32	sq_entries;
+	__u32	cq_entries;
+	__u32	region_size;
+	__u32	flags;
+	
+	/* Optional integrations */
+	__s32	nvme_fd;	/* -1 to skip */
+	__s32	net_ifindex;	/* 0 to skip */
+	__s32	net_rxq;	/* RX queue index */
+	__u32	__resv1;
+	
+	/* Region descriptor */
+	__u64	region_ptr;	/* struct io_uring_region_desc * */
+	
+	/* Offsets within the region */
+	struct {
+		__u32	sq_off;		/* SQ descriptors offset */
+		__u32	cq_off;		/* CQ descriptors offset */
+		__u32	data_off;	/* Data area offset */
+		__u32	__resv;
+	} offsets;
+	
+	__u64	__resv2[3];
+};
+
+/* Unified region operation codes */
+#define IORING_UNIFIED_OP_NVME		0x01
+#define IORING_UNIFIED_OP_NETWORK	0x02
+#define IORING_UNIFIED_OP_BPF		0x04
 
 #ifdef __cplusplus
 }

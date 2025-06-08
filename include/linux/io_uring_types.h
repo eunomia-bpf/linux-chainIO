@@ -448,10 +448,86 @@ struct io_ring_ctx {
 	struct io_mapped_region		param_region;
 	/* just one zcrx per ring for now, will move to io_zcrx_ifq eventually */
 	struct io_mapped_region		zcrx_region;
+	/* unified I/O region combining network, storage, and BPF */
+	struct io_mapped_region		unified_region;
+	struct io_unified_region	*unified;
 };
 
 struct io_tw_state {
 };
+
+/* Unified I/O region structures */
+struct io_unified_region {
+	/* Region configuration */
+	u32			flags;
+	u32			sq_entries;
+	u32			cq_entries;
+	
+	/* Ring indices - AF_XDP style */
+	struct {
+		u32 producer ____cacheline_aligned_in_smp;
+		u32 consumer ____cacheline_aligned_in_smp;
+	} sq, cq;
+	
+	/* Descriptors */
+	struct io_unified_desc	*sq_descs;
+	struct io_unified_desc	*cq_descs;
+	
+	/* Data area */
+	void			*data_area;
+	size_t			data_size;
+	
+	/* ZCRX integration */
+	struct net_iov_area	nia;
+	struct net_iov		*niovs;
+	u32			*freelist;
+	atomic_t		*user_refs;
+	u32			free_count;
+	spinlock_t		freelist_lock;
+	
+	/* NVMe integration */
+	struct file		*nvme_file;
+	struct nvme_ctrl	*nvme_ctrl;
+	
+	/* Network integration */
+	struct net_device	*dev;
+	struct page_pool	*pp;
+	int			if_rxq;
+	
+	/* BPF integration */
+	struct bpf_prog		*bpf_prog;
+	u32			bpf_prog_id;
+	
+	/* Statistics */
+	atomic64_t		nvme_ops;
+	atomic64_t		net_packets;
+	atomic64_t		bpf_ops;
+};
+
+struct io_unified_desc {
+	u64			addr;		/* Offset in data area */
+	u32			len;		/* Data length */
+	u16			flags;		/* Operation flags */
+	u16			type;		/* Operation type */
+	union {
+		struct {
+			u16	opcode;
+			u16	nsid;
+		} nvme;
+		struct {
+			u16	proto;
+			u16	port;
+		} net;
+		struct {
+			u32	prog_id;
+		} bpf;
+	};
+};
+
+/* Unified region flags */
+#define IO_UNIFIED_F_NVME	(1 << 0)
+#define IO_UNIFIED_F_NETWORK	(1 << 1)
+#define IO_UNIFIED_F_BPF	(1 << 2)
 
 enum {
 	REQ_F_FIXED_FILE_BIT	= IOSQE_FIXED_FILE_BIT,
