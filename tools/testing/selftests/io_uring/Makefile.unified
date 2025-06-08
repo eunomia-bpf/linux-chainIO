@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: GPL-2.0
+# Makefile for unified AF_XDP NVMe interface tests
+
+CC = gcc
+CFLAGS = -Wall -Wextra -O2 -g
+LDFLAGS = 
+
+TARGETS = unified-nvme-test
+
+all: $(TARGETS)
+
+unified-nvme-test: unified-nvme-test.c
+	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
+
+clean:
+	rm -f $(TARGETS)
+
+install: $(TARGETS)
+	mkdir -p $(DESTDIR)/usr/bin
+	cp $(TARGETS) $(DESTDIR)/usr/bin/
+
+.PHONY: all clean install

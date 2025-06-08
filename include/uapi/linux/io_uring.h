@@ -647,12 +647,16 @@ enum io_uring_register_op {
 	/* register a netdev hw rx queue for zerocopy */
 	IORING_REGISTER_ZCRX_IFQ		= 32,
 
+	/* register unified NVMe+zcrx interface */
+	IORING_REGISTER_UNIFIED_IFQ		= 33,
+	IORING_UNREGISTER_UNIFIED_IFQ		= 34,
+
 	/* resize CQ ring */
-	IORING_REGISTER_RESIZE_RINGS		= 33,
+	IORING_REGISTER_RESIZE_RINGS		= 35,
 
-	IORING_REGISTER_MEM_REGION		= 34,
+	IORING_REGISTER_MEM_REGION		= 36,
 
-	IORING_REGISTER_BPF			= 35,
+	IORING_REGISTER_BPF			= 37,
 
 	/* this goes last */
 	IORING_REGISTER_LAST,

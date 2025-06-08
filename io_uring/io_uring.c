@@ -98,6 +98,7 @@
 #include "msg_ring.h"
 #include "memmap.h"
 #include "zcrx.h"
+#include "unified.h"
 
 #include "timeout.h"
 #include "poll.h"
@@ -3015,6 +3016,7 @@ static __cold void io_ring_ctx_free(struct io_ring_ctx *ctx)
 	io_sqe_buffers_unregister(ctx);
 	io_sqe_files_unregister(ctx);
 	io_unregister_zcrx_ifqs(ctx);
+	io_unregister_unified_ifq(ctx);
 	io_cqring_overflow_kill(ctx);
 	io_eventfd_unregister(ctx);
 	io_alloc_cache_free(&ctx->apoll_cache, kfree);
@@ -3185,6 +3187,11 @@ static __cold void io_ring_exit_work(struct work_struct *work)
 		if (ctx->ifq) {
 			mutex_lock(&ctx->uring_lock);
 			io_shutdown_zcrx_ifqs(ctx);
+			mutex_unlock(&ctx->uring_lock);
+		}
+		if (ctx->unified_ifq) {
+			mutex_lock(&ctx->uring_lock);
+			io_shutdown_unified_ifq(ctx);
 			mutex_unlock(&ctx->uring_lock);
 		}
 

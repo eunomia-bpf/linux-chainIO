@@ -8,3 +8,12 @@ config IO_URING_ZCRX
 	depends on PAGE_POOL
 	depends on INET
 	depends on NET_RX_BUSY_POLL
+
+config IO_URING_UNIFIED
+	def_bool y
+	depends on IO_URING_ZCRX
+	depends on NVME_CORE
+	help
+	  Enable unified AF_XDP style interface for NVMe passthrough
+	  with zero-copy capabilities. This allows combining BPF zcrx
+	  regions with NVMe storage operations in a single memory area.

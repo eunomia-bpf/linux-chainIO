@@ -43,6 +43,7 @@ enum io_uring_cmd_flags {
 };
 
 struct io_zcrx_ifq;
+struct io_unified_ifq;
 
 struct io_wq_work_node {
 	struct io_wq_work_node *next;
@@ -393,6 +394,7 @@ struct io_ring_ctx {
 	struct io_restriction		restrictions;
 
 	struct io_zcrx_ifq		*ifq;
+	struct io_unified_ifq		*unified_ifq;
 
 	u32			pers_next;
 	struct xarray		personalities;
