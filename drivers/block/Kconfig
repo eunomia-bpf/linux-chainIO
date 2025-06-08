@@ -427,4 +427,25 @@ config NVME_RING_IO
 
 	  If unsure, say N.
 
+config UNIFIED_IO_REGION
+	tristate "Unified I/O Region (NVMe + ZCRX + BPF)"
+	depends on NVME_CORE && IO_URING && NET && BPF_SYSCALL
+	select PAGE_POOL
+	help
+	  This driver provides a unified memory region that can be
+	  operated by the network stack (via ZCRX), file system
+	  (via NVMe passthrough), and BPF programs.
+
+	  The unified region allows zero-copy operations across
+	  different I/O subsystems using a single shared memory
+	  area with AF_XDP-style ring buffers.
+
+	  Features:
+	  - NVMe storage operations via io_uring
+	  - Network packet processing with ZCRX
+	  - BPF program execution on shared data
+	  - Zero-copy data movement between subsystems
+
+	  If unsure, say N.
+
 endif # BLK_DEV

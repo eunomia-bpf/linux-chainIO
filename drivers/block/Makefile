@@ -43,5 +43,6 @@ obj-$(CONFIG_BLK_DEV_NULL_BLK)	+= null_blk/
 obj-$(CONFIG_BLK_DEV_UBLK)			+= ublk_drv.o
 
 obj-$(CONFIG_NVME_RING_IO)	+= nvme_ring_io.o
+obj-$(CONFIG_UNIFIED_IO_REGION)	+= unified_io_region.o
 
 swim_mod-y	:= swim.o swim_asm.o
