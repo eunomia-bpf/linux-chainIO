@@ -413,4 +413,18 @@ config BLKDEV_UBLK_LEGACY_OPCODES
 
 source "drivers/block/rnbd/Kconfig"
 
+config NVME_RING_IO
+	tristate "NVMe Ring I/O with io_uring integration"
+	depends on NVME_CORE && IO_URING
+	help
+	  This driver provides an AF_XDP style ring buffer interface
+	  integrated with io_uring fixed buffers for high-performance
+	  NVMe passthrough operations.
+
+	  The driver combines AF_XDP-style shared memory rings with
+	  io_uring's fixed buffer registration to enable zero-copy
+	  I/O operations to NVMe devices using passthrough commands.
+
+	  If unsure, say N.
+
 endif # BLK_DEV
