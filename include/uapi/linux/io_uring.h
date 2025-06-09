@@ -284,6 +284,12 @@ enum io_uring_op {
 	IORING_OP_LISTEN,
 	IORING_OP_RECV_ZC,
 
+	/* RDMA operations */
+	IORING_OP_RDMA_SEND		= 60,
+	IORING_OP_RDMA_RECV		= 61,
+	IORING_OP_RDMA_WRITE		= 62,
+	IORING_OP_RDMA_READ		= 63,
+
 	/* this goes last, obviously */
 	IORING_OP_LAST,
 };
@@ -650,6 +656,12 @@ enum io_uring_register_op {
 	/* register unified NVMe+zcrx interface */
 	IORING_REGISTER_UNIFIED_IFQ		= 33,
 	IORING_UNREGISTER_UNIFIED_IFQ		= 34,
+
+	/* register unified RDMA interface */
+	IORING_REGISTER_UNIFIED_RDMA_IFQ	= 50,
+	IORING_UNREGISTER_UNIFIED_RDMA_IFQ	= 51,
+	IORING_UNIFIED_RDMA_CONNECT		= 52,
+	IORING_UNIFIED_RDMA_DISCONNECT		= 53,
 
 	/* resize CQ ring */
 	IORING_REGISTER_RESIZE_RINGS		= 35,

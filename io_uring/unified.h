@@ -9,6 +9,7 @@
 #include <linux/workqueue.h>
 #include <linux/types.h>
 #include <linux/errno.h>
+#include <linux/blk-mq.h>
 #include <net/page_pool/types.h>
 #include <net/net_trackers.h>
 #include "zcrx.h"
@@ -147,7 +148,7 @@ int io_unified_complete_cqe(struct io_unified_ifq *ifq, struct io_unified_cqe *c
 
 /* NVMe integration */
 int io_unified_nvme_submit(struct io_unified_ifq *ifq, struct io_unified_sqe *sqe);
-void io_unified_nvme_complete(struct request *req, blk_status_t error);
+enum rq_end_io_ret io_unified_nvme_complete(struct request *req, blk_status_t error);
 
 #else
 static inline int io_register_unified_ifq(struct io_ring_ctx *ctx,

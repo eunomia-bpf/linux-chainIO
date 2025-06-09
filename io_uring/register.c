@@ -33,6 +33,7 @@
 #include "bpf.h"
 #include "zcrx.h"
 #include "unified.h"
+#include "unified-rdma.h"
 
 #define IORING_MAX_RESTRICTIONS	(IORING_RESTRICTION_LAST + \
 				 IORING_REGISTER_LAST + IORING_OP_LAST)
@@ -837,6 +838,31 @@ static int __io_uring_register(struct io_ring_ctx *ctx, unsigned opcode,
 		if (!arg)
 			break;
 		ret = io_register_bpf(ctx, arg, nr_args);
+		break;
+	case IORING_REGISTER_UNIFIED_RDMA_IFQ:
+		ret = -EINVAL;
+		if (!arg || nr_args != 1)
+			break;
+		ret = io_register_unified_rdma_ifq(ctx, arg);
+		break;
+	case IORING_UNREGISTER_UNIFIED_RDMA_IFQ:
+		ret = -EINVAL;
+		if (arg || nr_args)
+			break;
+		io_unregister_unified_rdma_ifq(ctx);
+		ret = 0;
+		break;
+	case IORING_UNIFIED_RDMA_CONNECT:
+		ret = -EINVAL;
+		if (!arg || nr_args != 1)
+			break;
+		ret = io_unified_rdma_connect(ctx, arg);
+		break;
+	case IORING_UNIFIED_RDMA_DISCONNECT:
+		ret = -EINVAL;
+		if (arg || nr_args)
+			break;
+		ret = io_unified_rdma_disconnect(ctx);
 		break;
 	default:
 		ret = -EINVAL;

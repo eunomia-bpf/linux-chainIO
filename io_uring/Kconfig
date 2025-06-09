@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: GPL-2.0
+
+config IO_URING_ZCRX
+	bool "Enable io_uring zcrx"
+	depends on IO_URING && INFINIBAND
+	help
+	  This enables support for zero-copy network receive using
+	  io_uring infrastructure.
+
+config IO_URING_UNIFIED
+	bool "Enable io_uring unified memory NVMe passthrough"
+	depends on IO_URING && INFINIBAND && IO_URING_ZCRX
+	help
+	  This enables support for using the io_uring unified memory
+	  interface for NVMe passthrough operations, combined with
+	  network zero-copy receive buffers. It provides an AF_XDP
+	  style interface for unified buffers.
+
+config IO_URING_UNIFIED_RDMA
+	bool "Enable io_uring unified RDMA interface"
+	depends on IO_URING_UNIFIED && INFINIBAND_USER_ACCESS
+	help
+	  This enables support for RDMA operations through the io_uring
+	  unified memory interface. It allows zero-copy data transfer
+	  between RDMA, NVMe storage, and network (AF_XDP) using a
+	  single unified buffer pool.

@@ -12,6 +12,7 @@
 #include <linux/spinlock.h>
 #include <linux/skbuff.h>
 #include <linux/atomic.h>
+#include <net/xdp.h>
 
 struct rxe_dev;
 struct rxe_qp;

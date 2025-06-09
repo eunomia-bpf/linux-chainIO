@@ -10,6 +10,7 @@
 #include <linux/slab.h>
 #include <linux/workqueue.h>
 #include <uapi/linux/io_uring.h>
+#include "../drivers/nvme/host/nvme.h"
 
 #include "io_uring.h"
 #include "memmap.h"
@@ -17,6 +18,12 @@
 #include "rsrc.h"
 
 static struct workqueue_struct *io_unified_wq;
+
+/* Private data structure for request tracking */
+struct io_unified_req_data {
+	struct io_unified_ifq *ifq;
+	__u64 user_data;
+};
 
 /* Buffer management functions */
 int io_unified_alloc_buffer(struct io_unified_region *region, u32 *buf_id)
@@ -108,10 +115,10 @@ int io_unified_submit_sqe(struct io_unified_ifq *ifq, struct io_unified_sqe *sqe
 	struct request_queue *q;
 	struct nvme_command nvme_cmd;
 	struct request *req;
+	struct io_unified_req_data *req_data;
 	void *data_buf;
 	dma_addr_t dma_addr;
 	u32 buf_id;
-	int ret;
 	
 	/* Allocate buffer if needed */
 	if (sqe->buf_offset != ~0ULL) {
@@ -146,16 +153,29 @@ int io_unified_submit_sqe(struct io_unified_ifq *ifq, struct io_unified_sqe *sqe
 		return PTR_ERR(req);
 	}
 	
+	/* Allocate request data */
+	req_data = kmalloc(sizeof(*req_data), GFP_KERNEL);
+	if (!req_data) {
+		blk_mq_free_request(req);
+		if (buf_id != ~0U)
+			io_unified_free_buffer(ifq->region, buf_id);
+		return -ENOMEM;
+	}
+	
+	req_data->ifq = ifq;
+	req_data->user_data = sqe->user_data;
+	
 	/* Initialize request */
-	nvme_init_request(req, &nvme_cmd);
-	nvme_req(req)->flags |= NVME_REQ_USERCMD;
+	req->timeout = 30 * HZ; /* 30 second timeout */
+	req->cmd_flags |= REQ_FAILFAST_DRIVER;
 	
 	/* Map data if present */
 	if (data_buf && sqe->nvme_cmd.data_len > 0) {
 		struct bio *bio;
 		struct page *page = virt_to_page(data_buf);
 		
-		bio = bio_alloc(GFP_KERNEL, 1);
+		bio = bio_alloc(ifq->nvme_ns ? ifq->nvme_ns->disk->part0 : NULL, 1, 
+				nvme_is_write(&nvme_cmd) ? REQ_OP_WRITE : REQ_OP_READ, GFP_KERNEL);
 		if (!bio) {
 			blk_mq_free_request(req);
 			if (buf_id != ~0U)
@@ -163,18 +183,21 @@ int io_unified_submit_sqe(struct io_unified_ifq *ifq, struct io_unified_sqe *sqe
 			return -ENOMEM;
 		}
 		
-		bio_set_dev(bio, ifq->nvme_ns ? ifq->nvme_ns->disk->part0 : NULL);
-		bio_add_page(bio, page, sqe->nvme_cmd.data_len, offset_in_page(data_buf));
+		if (!bio_add_page(bio, page, sqe->nvme_cmd.data_len, offset_in_page(data_buf))) {
+			bio_put(bio);
+			kfree(req_data);
+			blk_mq_free_request(req);
+			if (buf_id != ~0U)
+				io_unified_free_buffer(ifq->region, buf_id);
+			return -ENOMEM;
+		}
 		
-		blk_rq_bio_prep(req, bio);
+		blk_rq_bio_prep(req, bio, 1);
 	}
 	
 	/* Set completion callback */
-	req->end_io_data = ifq;
+	req->end_io_data = req_data;
 	req->end_io = io_unified_nvme_complete;
-	
-	/* Store correlation data */
-	nvme_req(req)->result.u64 = sqe->user_data;
 	
 	/* Submit request */
 	blk_execute_rq_nowait(req, false);
@@ -211,16 +234,17 @@ int io_unified_complete_cqe(struct io_unified_ifq *ifq, struct io_unified_cqe *c
 }
 
 /* NVMe completion callback */
-void io_unified_nvme_complete(struct request *req, blk_status_t error)
+enum rq_end_io_ret io_unified_nvme_complete(struct request *req, blk_status_t error)
 {
-	struct io_unified_ifq *ifq = req->end_io_data;
+	struct io_unified_req_data *req_data = req->end_io_data;
+	struct io_unified_ifq *ifq = req_data->ifq;
 	struct io_unified_cqe cqe;
 	int ret;
 	
 	/* Fill completion entry */
 	memset(&cqe, 0, sizeof(cqe));
-	cqe.user_data = nvme_req(req)->result.u64;
-	cqe.status = nvme_req(req)->status;
+	cqe.user_data = req_data->user_data;
+	cqe.status = 0; /* Will be filled based on blk_status_t */
 	cqe.result = blk_status_to_errno(error);
 	
 	if (req->bio) {
@@ -242,7 +266,9 @@ void io_unified_nvme_complete(struct request *req, blk_status_t error)
 		bio_put(req->bio);
 	}
 	
+	kfree(req_data);
 	blk_mq_free_request(req);
+	return RQ_END_IO_NONE;
 }
 
 /* NVMe submission worker */
@@ -410,11 +436,8 @@ static void io_unified_ifq_free(struct io_ring_ctx *ctx, struct io_unified_ifq *
 	/* Cancel pending work */
 	cancel_work_sync(&ifq->completion_work);
 	
-	/* Free NVMe resources */
-	if (ifq->nvme_ns)
-		nvme_put_ns(ifq->nvme_ns);
-	if (ifq->nvme_ctrl)
-		nvme_put_ctrl(ifq->nvme_ctrl);
+	/* NVMe resources are managed by file descriptors and will be 
+	 * cleaned up when userspace closes them */
 	
 	/* Free region */
 	io_unified_free_region(ctx, ifq);
@@ -428,8 +451,6 @@ int io_register_unified_ifq(struct io_ring_ctx *ctx, struct io_unified_reg __use
 	struct io_unified_reg reg;
 	struct io_uring_region_desc rd;
 	struct io_unified_ifq *ifq;
-	struct nvme_ctrl *ctrl = NULL;
-	struct nvme_ns *ns = NULL;
 	char *nvme_path;
 	struct file *nvme_file;
 	int ret;

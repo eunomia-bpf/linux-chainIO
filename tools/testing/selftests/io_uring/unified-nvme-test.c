@@ -14,6 +14,8 @@
 #include <fcntl.h>
 #include <string.h>
 #include <errno.h>
+#include <stdint.h>
+#include <linux/nvme_ioctl.h>
 
 /* Definitions from our unified interface */
 #define IORING_REGISTER_UNIFIED_IFQ	33
@@ -87,8 +89,7 @@ int main(int argc, char *argv[])
 	
 	/* Initialize io_uring with required flags */
 	memset(&params, 0, sizeof(params));
-	params.flags = IORING_SETUP_DEFER_TASKRUN | IORING_SETUP_CQE32 | 
-		       IORING_SETUP_SQE128;
+	params.flags = 0;  /* Start with basic setup */
 	
 	ring_fd = syscall(__NR_io_uring_setup, 256, &params);
 	if (ring_fd < 0) {

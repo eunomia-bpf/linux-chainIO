@@ -37,6 +37,7 @@
 #include "futex.h"
 #include "truncate.h"
 #include "zcrx.h"
+#include "rdma.h"
 
 static int io_no_issue(struct io_kiocb *req, unsigned int issue_flags)
 {
@@ -528,6 +529,40 @@ const struct io_issue_def io_issue_defs[] = {
 		.prep			= io_eopnotsupp_prep,
 #endif
 	},
+	[IORING_OP_RDMA_SEND] = {
+#if defined(CONFIG_IO_URING_UNIFIED_RDMA)
+		.prep			= io_rdma_prep,
+		.issue			= io_rdma_send,
+#else
+		.prep			= io_eopnotsupp_prep,
+#endif
+	},
+	[IORING_OP_RDMA_RECV] = {
+		.pollin			= 1,
+#if defined(CONFIG_IO_URING_UNIFIED_RDMA)
+		.prep			= io_rdma_prep,
+		.issue			= io_rdma_recv,
+#else
+		.prep			= io_eopnotsupp_prep,
+#endif
+	},
+	[IORING_OP_RDMA_WRITE] = {
+#if defined(CONFIG_IO_URING_UNIFIED_RDMA)
+		.prep			= io_rdma_prep,
+		.issue			= io_rdma_write,
+#else
+		.prep			= io_eopnotsupp_prep,
+#endif
+	},
+	[IORING_OP_RDMA_READ] = {
+		.pollin			= 1,
+#if defined(CONFIG_IO_URING_UNIFIED_RDMA)
+		.prep			= io_rdma_prep,
+		.issue			= io_rdma_read,
+#else
+		.prep			= io_eopnotsupp_prep,
+#endif
+	},
 };
 
 const struct io_cold_def io_cold_defs[] = {
@@ -759,6 +794,18 @@ const struct io_cold_def io_cold_defs[] = {
 	},
 	[IORING_OP_RECV_ZC] = {
 		.name			= "RECV_ZC",
+	},
+	[IORING_OP_RDMA_SEND] = {
+		.name			= "RDMA_SEND",
+	},
+	[IORING_OP_RDMA_RECV] = {
+		.name			= "RDMA_RECV",
+	},
+	[IORING_OP_RDMA_WRITE] = {
+		.name			= "RDMA_WRITE",
+	},
+	[IORING_OP_RDMA_READ] = {
+		.name			= "RDMA_READ",
 	},
 };
 

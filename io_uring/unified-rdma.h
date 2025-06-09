@@ -15,6 +15,7 @@
 #include <rdma/rdma_cm.h>
 #include <net/page_pool/types.h>
 #include <net/net_trackers.h>
+#include <../drivers/infiniband/core/cma_priv.h>
 #include "zcrx.h"
 #include "unified.h"
 
@@ -266,12 +267,14 @@ void io_unregister_unified_rdma_ifq(struct io_ring_ctx *ctx);
 void io_shutdown_unified_rdma_ifq(struct io_ring_ctx *ctx);
 
 /* RDMA operations */
-int io_unified_rdma_connect(struct io_unified_rdma_ifq *ifq,
-			   struct io_unified_rdma_qp_config *config);
-int io_unified_rdma_disconnect(struct io_unified_rdma_ifq *ifq);
+int io_unified_rdma_connect(struct io_ring_ctx *ctx,
+			   void __user *arg);
+int io_unified_rdma_disconnect(struct io_ring_ctx *ctx);
 int io_unified_rdma_post_send(struct io_unified_rdma_ifq *ifq,
 			     struct io_unified_rdma_wr *wr);
 int io_unified_rdma_post_recv(struct io_unified_rdma_ifq *ifq,
+			     struct io_unified_rdma_wr *wr);
+int io_unified_rdma_submit_wr(struct io_unified_rdma_ifq *ifq,
 			     struct io_unified_rdma_wr *wr);
 
 /* Memory management */
@@ -322,7 +325,34 @@ static inline void io_shutdown_unified_rdma_ifq(struct io_ring_ctx *ctx)
 {
 }
 
+static inline int io_unified_rdma_connect(struct io_ring_ctx *ctx,
+					 void __user *arg)
+{
+	return -EOPNOTSUPP;
+}
+
+static inline int io_unified_rdma_disconnect(struct io_ring_ctx *ctx)
+{
+	return -EOPNOTSUPP;
+}
+
+static inline int io_unified_rdma_submit_wr(struct io_unified_rdma_ifq *ifq,
+					   struct io_unified_rdma_wr *wr)
+{
+	return -EOPNOTSUPP;
+}
+
 #endif /* CONFIG_IO_URING_UNIFIED_RDMA */
+
+/* Connection parameters for RDMA QP */
+struct io_unified_rdma_connect_params {
+	__u32 remote_qpn;	/* Remote QP number */
+	__u32 rq_psn;		/* Starting receive packet sequence number */
+	__u32 sq_psn;		/* Starting send packet sequence number */
+	__u32 sgid_index;	/* Source GID index */
+	union ib_gid remote_gid;	/* Remote GID */
+	__u32 __resv[4];
+};
 
 /* Helper macros */
 #define IO_RDMA_WR_SEND_WITH_IMM	(1 << 0)

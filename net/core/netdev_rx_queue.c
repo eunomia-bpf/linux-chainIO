@@ -79,3 +79,4 @@ err_free_new_mem:
 
 	return err;
 }
+EXPORT_SYMBOL(netdev_rx_queue_restart);

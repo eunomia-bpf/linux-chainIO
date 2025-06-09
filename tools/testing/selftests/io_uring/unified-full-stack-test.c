@@ -156,7 +156,26 @@ struct io_unified_ring {
 	__u64 ring_mask;
 	__u64 ring_size;
 };
-
+struct nvme_uring_cmd {
+	__u8	opcode;
+	__u8	flags;
+	__u16	rsvd1;
+	__u32	nsid;
+	__u32	cdw2;
+	__u32	cdw3;
+	__u64	metadata;
+	__u64	addr;
+	__u32	metadata_len;
+	__u32	data_len;
+	__u32	cdw10;
+	__u32	cdw11;
+	__u32	cdw12;
+	__u32	cdw13;
+	__u32	cdw14;
+	__u32	cdw15;
+	__u32	timeout_ms;
+	__u32   rsvd2;
+};
 struct io_unified_sqe {
 	struct nvme_uring_cmd nvme_cmd;
 	__u64 buf_offset;
@@ -347,7 +366,7 @@ static int setup_af_xdp(void)
 	}
 	
 	/* Attach XDP program */
-	ret = bpf_set_link_xdp_fd(ctx.ifindex, ctx.xdp_prog_fd, XDP_FLAGS_DRV_MODE);
+	ret = bpf_xdp_attach(ctx.ifindex, ctx.xdp_prog_fd, XDP_FLAGS_DRV_MODE, NULL);
 	if (ret) {
 		fprintf(stderr, "Failed to attach XDP program: %d\n", ret);
 		return ret;
@@ -686,7 +705,7 @@ cleanup:
 		xsk_umem__delete(ctx.umem);
 	}
 	if (ctx.xdp_prog_fd > 0) {
-		bpf_set_link_xdp_fd(ctx.ifindex, -1, 0);
+		bpf_xdp_detach(ctx.ifindex, XDP_FLAGS_DRV_MODE, NULL);
 	}
 	if (ctx.bpf_obj) {
 		bpf_object__close(ctx.bpf_obj);
