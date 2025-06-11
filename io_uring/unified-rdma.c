@@ -965,6 +965,7 @@ int io_unified_rdma_setup_xdp(struct io_unified_rdma_ifq *ifq, struct bpf_prog *
 		
 	return 0;
 }
+EXPORT_SYMBOL_GPL(io_unified_rdma_setup_xdp);
 
 /**
  * io_unified_rdma_rxe_xdp_init - Initialize SoftRoCE XDP integration
@@ -1150,6 +1151,7 @@ void io_unified_rdma_detach_xdp(struct io_unified_rdma_ifq *ifq)
 {
 	io_unified_rdma_setup_xdp(ifq, NULL);
 }
+EXPORT_SYMBOL_GPL(io_unified_rdma_detach_xdp);
 
 /**
  * io_unified_rdma_connect - Connect RDMA queue pair  
