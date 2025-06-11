@@ -529,7 +529,9 @@ const struct io_issue_def io_issue_defs[] = {
 		.prep			= io_eopnotsupp_prep,
 #endif
 	},
-	[IORING_OP_RDMA_SEND] = {
+	/* placeholder entry for opcode 59 */
+	[59] = { .prep = io_eopnotsupp_prep },
+	[60] = {  /* IORING_OP_RDMA_SEND */
 #if defined(CONFIG_IO_URING_UNIFIED_RDMA)
 		.prep			= io_rdma_prep,
 		.issue			= io_rdma_send,
@@ -537,7 +539,7 @@ const struct io_issue_def io_issue_defs[] = {
 		.prep			= io_eopnotsupp_prep,
 #endif
 	},
-	[IORING_OP_RDMA_RECV] = {
+	[61] = {  /* IORING_OP_RDMA_RECV */
 		.pollin			= 1,
 #if defined(CONFIG_IO_URING_UNIFIED_RDMA)
 		.prep			= io_rdma_prep,
@@ -546,7 +548,7 @@ const struct io_issue_def io_issue_defs[] = {
 		.prep			= io_eopnotsupp_prep,
 #endif
 	},
-	[IORING_OP_RDMA_WRITE] = {
+	[62] = {  /* IORING_OP_RDMA_WRITE */
 #if defined(CONFIG_IO_URING_UNIFIED_RDMA)
 		.prep			= io_rdma_prep,
 		.issue			= io_rdma_write,
@@ -554,7 +556,7 @@ const struct io_issue_def io_issue_defs[] = {
 		.prep			= io_eopnotsupp_prep,
 #endif
 	},
-	[IORING_OP_RDMA_READ] = {
+	[63] = {  /* IORING_OP_RDMA_READ */
 		.pollin			= 1,
 #if defined(CONFIG_IO_URING_UNIFIED_RDMA)
 		.prep			= io_rdma_prep,
@@ -795,16 +797,18 @@ const struct io_cold_def io_cold_defs[] = {
 	[IORING_OP_RECV_ZC] = {
 		.name			= "RECV_ZC",
 	},
-	[IORING_OP_RDMA_SEND] = {
+	/* placeholder entry for opcode 59 */
+	[59] = { .name = "RESERVED_59" },
+	[60] = {  /* IORING_OP_RDMA_SEND */
 		.name			= "RDMA_SEND",
 	},
-	[IORING_OP_RDMA_RECV] = {
+	[61] = {  /* IORING_OP_RDMA_RECV */
 		.name			= "RDMA_RECV",
 	},
-	[IORING_OP_RDMA_WRITE] = {
+	[62] = {  /* IORING_OP_RDMA_WRITE */
 		.name			= "RDMA_WRITE",
 	},
-	[IORING_OP_RDMA_READ] = {
+	[63] = {  /* IORING_OP_RDMA_READ */
 		.name			= "RDMA_READ",
 	},
 };
