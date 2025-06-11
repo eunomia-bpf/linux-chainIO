@@ -38,10 +38,12 @@
 #include <time.h>
 #include <netdb.h>
 #include <stdint.h>
+#include <dirent.h>
+#include <sys/stat.h>
 
 
-#define IORING_REGISTER_UNIFIED_IFQ		33
-#define IORING_UNREGISTER_UNIFIED_IFQ		34
+#define IORING_REGISTER_UNIFIED_RDMA_IFQ	50
+#define IORING_UNREGISTER_UNIFIED_RDMA_IFQ	51
 
 /* RDMA operations */
 #define IORING_OP_RDMA_SEND		60
@@ -433,6 +435,16 @@ static int setup_unified_rdma_interface(void)
 		      &rdma_reg, 1);
 	if (ret < 0) {
 		perror("io_uring_register unified RDMA");
+		if (errno == EINVAL) {
+			fprintf(stderr, "Invalid argument - possible causes:\n");
+			fprintf(stderr, "  - CONFIG_IO_URING_UNIFIED_RDMA not enabled in kernel\n");
+			fprintf(stderr, "  - RDMA device '%s' not found or not supported\n", ctx.rdma_dev_name);
+			fprintf(stderr, "  - Invalid configuration parameters\n");
+		} else if (errno == ENODEV) {
+			fprintf(stderr, "RDMA device not found: %s\n", ctx.rdma_dev_name);
+		} else if (errno == EPERM) {
+			fprintf(stderr, "Permission denied - need CAP_SYS_ADMIN\n");
+		}
 		munmap(ctx.unified_region, ctx.region_size);
 		close(ctx.ring_fd);
 		return ret;
@@ -738,6 +750,56 @@ static void demonstrate_data_flows(void)
 	printf("Data flow demonstrations submitted\n");
 }
 
+/* Find first available RDMA device */
+static int find_rdma_device(char *dev_name, size_t dev_name_size)
+{
+	struct dirent *entry;
+	DIR *dir;
+	int found = 0;
+	
+	/* First try the default device */
+	dir = opendir("/sys/class/infiniband");
+	if (!dir) {
+		fprintf(stderr, "Warning: Cannot access /sys/class/infiniband, using default device\n");
+		strncpy(dev_name, DEFAULT_RDMA_DEV, dev_name_size - 1);
+		dev_name[dev_name_size - 1] = '\0';
+		return 0;
+	}
+	
+	/* Check if default device exists */
+	while ((entry = readdir(dir)) != NULL) {
+		if (strcmp(entry->d_name, DEFAULT_RDMA_DEV) == 0) {
+			strncpy(dev_name, DEFAULT_RDMA_DEV, dev_name_size - 1);
+			dev_name[dev_name_size - 1] = '\0';
+			found = 1;
+			break;
+		}
+	}
+	
+	/* If default not found, use first available device */
+	if (!found) {
+		rewinddir(dir);
+		while ((entry = readdir(dir)) != NULL) {
+			if (entry->d_name[0] != '.' && strlen(entry->d_name) > 0) {
+				strncpy(dev_name, entry->d_name, dev_name_size - 1);
+				dev_name[dev_name_size - 1] = '\0';
+				printf("Using available RDMA device: %s\n", dev_name);
+				found = 1;
+				break;
+			}
+		}
+	}
+	
+	closedir(dir);
+	
+	if (!found) {
+		fprintf(stderr, "No RDMA devices found in /sys/class/infiniband\n");
+		return -ENODEV;
+	}
+	
+	return 0;
+}
+
 int main(int argc, char *argv[])
 {
 	int ret;
@@ -752,7 +814,11 @@ int main(int argc, char *argv[])
 	if (argc > 2) {
 		strncpy(ctx.rdma_dev_name, argv[2], sizeof(ctx.rdma_dev_name) - 1);
 	} else {
-		strncpy(ctx.rdma_dev_name, DEFAULT_RDMA_DEV, sizeof(ctx.rdma_dev_name) - 1);
+		ret = find_rdma_device(ctx.rdma_dev_name, sizeof(ctx.rdma_dev_name));
+		if (ret < 0) {
+			fprintf(stderr, "No RDMA devices found\n");
+			return ret;
+		}
 	}
 	
 	if (argc > 3) {
