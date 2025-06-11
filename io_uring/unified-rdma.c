@@ -131,23 +131,60 @@ static int io_rdma_create_qp(struct io_unified_rdma_ifq *ifq,
 	int qp_attr_mask;
 	int ret;
 	
+	/* Validate input parameters */
+	if (!ifq || !ifq->rdma_region || !config) {
+		pr_err("io_uring: Invalid parameters for QP creation\n");
+		return -EINVAL;
+	}
+	
+	if (!ifq->rdma_region->pd || !ifq->rdma_region->send_cq || !ifq->rdma_region->recv_cq) {
+		pr_err("io_uring: RDMA resources not properly initialized\n");
+		return -EINVAL;
+	}
+	
 	/* Initialize QP attributes */
 	memset(&qp_init_attr, 0, sizeof(qp_init_attr));
 	qp_init_attr.qp_context = ifq;
 	qp_init_attr.send_cq = ifq->rdma_region->send_cq;
 	qp_init_attr.recv_cq = ifq->rdma_region->recv_cq;
-	qp_init_attr.qp_type = config->transport_type;
-	qp_init_attr.cap.max_send_wr = config->max_send_wr;
-	qp_init_attr.cap.max_recv_wr = config->max_recv_wr;
-	qp_init_attr.cap.max_send_sge = config->max_send_sge;
-	qp_init_attr.cap.max_recv_sge = config->max_recv_sge;
-	qp_init_attr.cap.max_inline_data = config->max_inline_data;
+	
+	/* Set transport type - fix the mapping */
+	switch (config->transport_type) {
+	case IO_RDMA_TRANSPORT_RC:
+		qp_init_attr.qp_type = IB_QPT_RC;
+		break;
+	case IO_RDMA_TRANSPORT_UC:
+		qp_init_attr.qp_type = IB_QPT_UC;
+		break;
+	case IO_RDMA_TRANSPORT_UD:
+		qp_init_attr.qp_type = IB_QPT_UD;
+		break;
+	case IO_RDMA_TRANSPORT_RAW_ETH:
+		qp_init_attr.qp_type = IB_QPT_RAW_PACKET;
+		break;
+	default:
+		pr_err("io_uring: Unsupported transport type: %u\n", config->transport_type);
+		return -EINVAL;
+	}
+	
+	/* Validate and set capabilities */
+	qp_init_attr.cap.max_send_wr = min_t(u32, config->max_send_wr, 16384);
+	qp_init_attr.cap.max_recv_wr = min_t(u32, config->max_recv_wr, 16384);
+	qp_init_attr.cap.max_send_sge = min_t(u32, config->max_send_sge, IO_UNIFIED_RDMA_MAX_SGE);
+	qp_init_attr.cap.max_recv_sge = min_t(u32, config->max_recv_sge, IO_UNIFIED_RDMA_MAX_SGE);
+	qp_init_attr.cap.max_inline_data = min_t(u32, config->max_inline_data, 1024);
 	qp_init_attr.sq_sig_type = IB_SIGNAL_REQ_WR;
+	
+	pr_debug("io_uring: Creating QP with type=%d, send_wr=%u, recv_wr=%u, send_sge=%u, recv_sge=%u\n",
+		 qp_init_attr.qp_type, qp_init_attr.cap.max_send_wr,
+		 qp_init_attr.cap.max_recv_wr, qp_init_attr.cap.max_send_sge,
+		 qp_init_attr.cap.max_recv_sge);
 	
 	/* Create queue pair */
 	ifq->rdma_region->qp = ib_create_qp(ifq->rdma_region->pd, &qp_init_attr);
 	if (IS_ERR(ifq->rdma_region->qp)) {
 		ret = PTR_ERR(ifq->rdma_region->qp);
+		ifq->rdma_region->qp = NULL;
 		pr_err("io_uring: Failed to create RDMA QP: %d\n", ret);
 		return ret;
 	}
@@ -166,6 +203,7 @@ static int io_rdma_create_qp(struct io_unified_rdma_ifq *ifq,
 	if (ret) {
 		pr_err("io_uring: Failed to transition QP to INIT: %d\n", ret);
 		ib_destroy_qp(ifq->rdma_region->qp);
+		ifq->rdma_region->qp = NULL;
 		return ret;
 	}
 	
@@ -692,38 +730,53 @@ static int io_unified_rdma_alloc_region(struct io_ring_ctx *ctx,
 
 static void io_unified_rdma_free_region(struct io_ring_ctx *ctx, struct io_unified_rdma_ifq *ifq)
 {
-	struct io_unified_rdma_region *region = ifq->rdma_region;
+	struct io_unified_rdma_region *region;
 	int i;
 	
-	if (!region)
+	if (!ifq || !ifq->rdma_region)
 		return;
 	
-	/* Deregister all memory regions */
-	for (i = 0; i < region->num_mrs; i++) {
-		if (region->mrs[i]) {
-			ib_dereg_mr(region->mrs[i]);
-			region->mrs[i] = NULL;
+	region = ifq->rdma_region;
+	
+	/* Deregister all memory regions first */
+	if (region->mrs && region->num_mrs > 0) {
+		for (i = 0; i < region->num_mrs; i++) {
+			if (region->mrs[i]) {
+				ib_dereg_mr(region->mrs[i]);
+				region->mrs[i] = NULL;
+			}
 		}
+		kfree(region->mrs);
+		region->mrs = NULL;
+		region->num_mrs = 0;
 	}
 	
-	/* Clean up RDMA resources */
+	/* Clean up RDMA resources in reverse creation order */
 	if (region->qp) {
-		ib_destroy_qp(region->qp);
+		if (!IS_ERR(region->qp)) {
+			ib_destroy_qp(region->qp);
+		}
 		region->qp = NULL;
 	}
 	
-	if (region->send_cq) {
-		ib_destroy_cq(region->send_cq);
-		region->send_cq = NULL;
-	}
-	
 	if (region->recv_cq) {
-		ib_destroy_cq(region->recv_cq);
+		if (!IS_ERR(region->recv_cq)) {
+			ib_destroy_cq(region->recv_cq);
+		}
 		region->recv_cq = NULL;
 	}
 	
+	if (region->send_cq) {
+		if (!IS_ERR(region->send_cq)) {
+			ib_destroy_cq(region->send_cq);
+		}
+		region->send_cq = NULL;
+	}
+	
 	if (region->pd) {
-		ib_dealloc_pd(region->pd);
+		if (!IS_ERR(region->pd)) {
+			ib_dealloc_pd(region->pd);
+		}
 		region->pd = NULL;
 	}
 	
@@ -732,14 +785,10 @@ static void io_unified_rdma_free_region(struct io_ring_ctx *ctx, struct io_unifi
 		region->ib_dev = NULL;
 	}
 	
-	if (region->mrs) {
-		kfree(region->mrs);
-		region->mrs = NULL;
+	/* TODO: Free base region properly */
+	if (ctx && ctx->zcrx_region.ptr) {
+		io_free_region(ctx, &ctx->zcrx_region);
 	}
-	
-	/* TODO: Free base region */
-	
-	/* Don't free the ifq->rdma_region itself, as it's allocated in ifq_alloc */
 }
 
 /* Interface queue management */
@@ -767,7 +816,27 @@ static struct io_unified_rdma_ifq *io_unified_rdma_ifq_alloc(struct io_ring_ctx 
 	ifq->rdma_wq = io_unified_rdma_wq;
 	ifq->connected = false;
 	
-	/* TODO: Initialize XDP integration */
+	/* Initialize RDMA region with safe defaults */
+	ifq->rdma_region->qp = NULL;
+	ifq->rdma_region->send_cq = NULL;
+	ifq->rdma_region->recv_cq = NULL;
+	ifq->rdma_region->pd = NULL;
+	ifq->rdma_region->ib_dev = NULL;
+	ifq->rdma_region->mrs = NULL;
+	ifq->rdma_region->num_mrs = 0;
+	
+	/* Initialize performance counters */
+	atomic64_set(&ifq->rdma_region->rdma_sends, 0);
+	atomic64_set(&ifq->rdma_region->rdma_recvs, 0);
+	atomic64_set(&ifq->rdma_region->rdma_writes, 0);
+	atomic64_set(&ifq->rdma_region->rdma_reads, 0);
+	atomic64_set(&ifq->rdma_region->rdma_errors, 0);
+	
+	/* Initialize XDP integration */
+	if (io_unified_rdma_rxe_xdp_init(ifq) < 0) {
+		pr_warn("io_uring: Failed to initialize XDP integration\n");
+		/* Continue without XDP - not fatal */
+	}
 	
 	return ifq;
 }
@@ -846,6 +915,33 @@ int io_register_unified_rdma_ifq(struct io_ring_ctx *ctx, struct io_unified_rdma
 		return -EINVAL;
 	}
 	
+	/* Set defaults for uninitialized QP config fields */
+	if (reg.qp_config.transport_type >= 5) {
+		pr_info("io_uring: Defaulting to RC transport\n");
+		reg.qp_config.transport_type = IO_RDMA_TRANSPORT_RC;
+	}
+	
+	if (!reg.qp_config.max_send_sge) {
+		reg.qp_config.max_send_sge = 1;
+	}
+	if (!reg.qp_config.max_recv_sge) {
+		reg.qp_config.max_recv_sge = 1;  
+	}
+	if (!reg.qp_config.max_inline_data) {
+		reg.qp_config.max_inline_data = 0; /* No inline data by default */
+	}
+	
+	/* Validate and clamp values to reasonable limits */
+	reg.qp_config.max_send_wr = min_t(u32, reg.qp_config.max_send_wr, 16384);
+	reg.qp_config.max_recv_wr = min_t(u32, reg.qp_config.max_recv_wr, 16384);
+	reg.qp_config.max_send_sge = min_t(u32, reg.qp_config.max_send_sge, IO_UNIFIED_RDMA_MAX_SGE);
+	reg.qp_config.max_recv_sge = min_t(u32, reg.qp_config.max_recv_sge, IO_UNIFIED_RDMA_MAX_SGE);
+	reg.qp_config.max_inline_data = min_t(u32, reg.qp_config.max_inline_data, 1024);
+	
+	pr_debug("io_uring: QP config: transport=%u, send_wr=%u, recv_wr=%u, send_sge=%u, recv_sge=%u, inline=%u\n",
+		 reg.qp_config.transport_type, reg.qp_config.max_send_wr, reg.qp_config.max_recv_wr,
+		 reg.qp_config.max_send_sge, reg.qp_config.max_recv_sge, reg.qp_config.max_inline_data);
+	
 	/* Allocate interface queue */
 	ifq = io_unified_rdma_ifq_alloc(ctx);
 	if (!ifq)
@@ -874,6 +970,7 @@ int io_register_unified_rdma_ifq(struct io_ring_ctx *ctx, struct io_unified_rdma
 	ifq->rdma_region->pd = ib_alloc_pd(ifq->rdma_region->ib_dev, 0);
 	if (IS_ERR(ifq->rdma_region->pd)) {
 		ret = PTR_ERR(ifq->rdma_region->pd);
+		ifq->rdma_region->pd = NULL;
 		pr_err("io_uring: Failed to allocate RDMA PD: %d\n", ret);
 		goto err_put_device;
 	}
@@ -889,6 +986,7 @@ int io_register_unified_rdma_ifq(struct io_ring_ctx *ctx, struct io_unified_rdma
 						&send_cq_attr);
 	if (IS_ERR(ifq->rdma_region->send_cq)) {
 		ret = PTR_ERR(ifq->rdma_region->send_cq);
+		ifq->rdma_region->send_cq = NULL;
 		pr_err("io_uring: Failed to create RDMA send CQ: %d\n", ret);
 		goto err_dealloc_pd;
 	}
@@ -903,6 +1001,7 @@ int io_register_unified_rdma_ifq(struct io_ring_ctx *ctx, struct io_unified_rdma
 						&recv_cq_attr);
 	if (IS_ERR(ifq->rdma_region->recv_cq)) {
 		ret = PTR_ERR(ifq->rdma_region->recv_cq);
+		ifq->rdma_region->recv_cq = NULL;
 		pr_err("io_uring: Failed to create RDMA recv CQ: %d\n", ret);
 		goto err_destroy_send_cq;
 	}

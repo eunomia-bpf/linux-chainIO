@@ -418,15 +418,21 @@ static int setup_unified_rdma_interface(void)
 	rdma_reg.rdma_port = ctx.rdma_port;
 	rdma_reg.transport_type = ctx.transport_type;
 	
-	/* QP configuration */
+	/* QP configuration with safe defaults */
 	rdma_reg.qp_config.transport_type = ctx.transport_type;
 	rdma_reg.qp_config.max_send_wr = 256;
 	rdma_reg.qp_config.max_recv_wr = 256;
-	rdma_reg.qp_config.max_send_sge = 16;
-	rdma_reg.qp_config.max_recv_sge = 16;
-	rdma_reg.qp_config.max_inline_data = 256;
+	rdma_reg.qp_config.max_send_sge = 1;  /* Start with 1 SGE */
+	rdma_reg.qp_config.max_recv_sge = 1;  /* Start with 1 SGE */
+	rdma_reg.qp_config.max_inline_data = 0; /* No inline data for safety */
 	
-	rdma_reg.num_mrs = 64;
+	/* Initialize connection parameters with zeros */
+	rdma_reg.qp_config.remote_qpn = 0;
+	rdma_reg.qp_config.rq_psn = 0;
+	rdma_reg.qp_config.sq_psn = 0;
+	rdma_reg.qp_config.dest_qp_num = 0;
+	
+	rdma_reg.num_mrs = 8;  /* Reduce from 64 to 8 */
 	rdma_reg.mr_access_flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | 
 			      IBV_ACCESS_REMOTE_READ;
 	
@@ -435,12 +441,18 @@ static int setup_unified_rdma_interface(void)
 	printf("  nvme_dev_path: 0x%llx (\"%s\")\n", rdma_reg.base.nvme_dev_path, ctx.nvme_dev);
 	printf("  rdma_dev_name: 0x%llx (\"%s\")\n", rdma_reg.rdma_dev_name, ctx.rdma_dev_name);
 	printf("  rdma_port: %u\n", rdma_reg.rdma_port);
+	printf("  transport_type: %u\n", rdma_reg.transport_type);
 	printf("  sq_entries: %u\n", rdma_reg.base.sq_entries);
 	printf("  cq_entries: %u\n", rdma_reg.base.cq_entries);
 	printf("  buffer_entries: %u\n", rdma_reg.base.buffer_entries);
 	printf("  buffer_entry_size: %u\n", rdma_reg.base.buffer_entry_size);
 	printf("  max_send_wr: %u\n", rdma_reg.qp_config.max_send_wr);
 	printf("  max_recv_wr: %u\n", rdma_reg.qp_config.max_recv_wr);
+	printf("  max_send_sge: %u\n", rdma_reg.qp_config.max_send_sge);
+	printf("  max_recv_sge: %u\n", rdma_reg.qp_config.max_recv_sge);
+	printf("  max_inline_data: %u\n", rdma_reg.qp_config.max_inline_data);
+	printf("  num_mrs: %u\n", rdma_reg.num_mrs);
+	printf("  mr_access_flags: 0x%x\n", rdma_reg.mr_access_flags);
 	
 	/* Register unified RDMA interface (includes base setup) */
 	ret = syscall(__NR_io_uring_register, ctx.ring_fd, IORING_REGISTER_UNIFIED_RDMA_IFQ,
