@@ -338,8 +338,8 @@ static int io_unified_alloc_region(struct io_ring_ctx *ctx,
 	if (!region)
 		return -ENOMEM;
 	
-	ret = io_create_region_mmap_safe(ctx, &ctx->zcrx_region, rd,
-					 IORING_MAP_OFF_ZCRX_REGION);
+	/* Pin and map the user-provided region */
+	ret = io_create_region(ctx, &ctx->zcrx_region, rd, IORING_MAP_OFF_ZCRX_REGION);
 	if (ret < 0) {
 		kfree(region);
 		return ret;
@@ -461,11 +461,21 @@ int io_register_unified_ifq(struct io_ring_ctx *ctx, struct io_unified_reg __use
 	if (ctx->unified_ifq)
 		return -EBUSY;
 	
-	if (copy_from_user(&reg, arg, sizeof(reg)))
-		return -EFAULT;
+	pr_info("io_uring: unified ifq registration starting\n");
 	
-	if (copy_from_user(&rd, u64_to_user_ptr(reg.region_ptr), sizeof(rd)))
+	if (copy_from_user(&reg, arg, sizeof(reg))) {
+		pr_err("io_uring: failed to copy reg from user\n");
 		return -EFAULT;
+	}
+	
+	pr_info("io_uring: reg copied, region_ptr=%llx\n", reg.region_ptr);
+	
+	if (copy_from_user(&rd, u64_to_user_ptr(reg.region_ptr), sizeof(rd))) {
+		pr_err("io_uring: failed to copy region desc from user\n");
+		return -EFAULT;
+	}
+	
+	pr_info("io_uring: region desc copied, user_addr=%llx size=%llu\n", rd.user_addr, rd.size);
 	
 	if (reg.flags || !reg.sq_entries || !reg.cq_entries || !reg.buffer_entries)
 		return -EINVAL;

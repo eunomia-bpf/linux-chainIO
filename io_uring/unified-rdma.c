@@ -572,36 +572,69 @@ static int io_unified_rdma_alloc_region(struct io_ring_ctx *ctx,
 	if (!region)
 		return -ENOMEM;
 	
+	/* Calculate base interface size (from unified.c logic) */
+	size_t base_ring_size = 2 * sizeof(struct io_unified_ring);
+	size_t base_entries_size = (reg->base.sq_entries * sizeof(struct io_unified_sqe)) +
+				   (reg->base.cq_entries * sizeof(struct io_unified_cqe));
+	size_t base_buffer_size = reg->base.buffer_entries * reg->base.buffer_entry_size;
+	size_t base_total_size = base_ring_size + base_entries_size + base_buffer_size;
+	
 	/* Calculate additional RDMA sizes */
 	rdma_size = 2 * sizeof(struct io_unified_ring) +		/* RDMA SQ/CQ rings */
 		    reg->qp_config.max_send_wr * sizeof(struct io_unified_rdma_wr) +  /* RDMA SQ entries */
 		    reg->qp_config.max_recv_wr * sizeof(struct io_unified_rdma_cqe) + /* RDMA CQ entries */
 		    reg->num_mrs * sizeof(struct io_unified_rdma_mr);   /* MR descriptors */
 	
-	total_size = rd->size + rdma_size;
+	total_size = base_total_size + rdma_size;
 	
-	/* Ensure base unified region is available */
-	if (!ctx->zcrx_region.ptr) {
-		pr_err("io_uring: Base unified region not initialized\n");
+	/* For RDMA registration, we set up the base unified region ourselves */
+	if (ctx->zcrx_region.ptr) {
+		pr_err("io_uring: Base unified region already initialized\n");
+		kfree(region);
+		return -EBUSY;
+	}
+	
+	/* Validate that the user region is large enough for both base and RDMA */
+	if (rd->size < total_size) {
+		pr_err("io_uring: User region too small for RDMA extension: %llu < %zu\n", rd->size, total_size);
 		kfree(region);
 		return -EINVAL;
 	}
 	
-	/* Get base region pointer and extend it */
+	/* Set up the base unified region first */
+	ret = io_create_region(ctx, &ctx->zcrx_region, rd, IORING_MAP_OFF_ZCRX_REGION);
+	if (ret < 0) {
+		pr_err("io_uring: Failed to create base region: %d\n", ret);
+		kfree(region);
+		return ret;
+	}
+	
+	/* Get base region pointer */
 	ptr = io_region_get_ptr(&ctx->zcrx_region);
 	if (!ptr) {
 		pr_err("io_uring: Failed to get base region pointer\n");
+		io_free_region(ctx, &ctx->zcrx_region);
 		kfree(region);
 		return -EINVAL;
 	}
 	
-	/* Set up RDMA-specific pointers */
-	region->rdma_sq_ring = (struct io_unified_ring *)((char *)ptr + rd->size);
-	region->rdma_cq_ring = (struct io_unified_ring *)((char *)ptr + rd->size + sizeof(struct io_unified_ring));
-	region->rdma_sq_entries = (struct io_unified_rdma_wr *)((char *)ptr + rd->size + 2 * sizeof(struct io_unified_ring));
-	region->rdma_cq_entries = (struct io_unified_rdma_cqe *)((char *)ptr + rd->size + 2 * sizeof(struct io_unified_ring) +
+	/* Set up base interface structures (similar to unified.c) */
+	struct io_unified_ring *base_sq_ring = (struct io_unified_ring *)ptr;
+	struct io_unified_ring *base_cq_ring = (struct io_unified_ring *)(ptr + sizeof(struct io_unified_ring));
+	
+	/* Initialize base rings */
+	base_sq_ring->ring_entries = reg->base.sq_entries;
+	base_sq_ring->ring_mask = reg->base.sq_entries - 1;
+	base_cq_ring->ring_entries = reg->base.cq_entries;
+	base_cq_ring->ring_mask = reg->base.cq_entries - 1;
+	
+	/* Set up RDMA-specific pointers after base structures */
+	region->rdma_sq_ring = (struct io_unified_ring *)((char *)ptr + base_total_size);
+	region->rdma_cq_ring = (struct io_unified_ring *)((char *)ptr + base_total_size + sizeof(struct io_unified_ring));
+	region->rdma_sq_entries = (struct io_unified_rdma_wr *)((char *)ptr + base_total_size + 2 * sizeof(struct io_unified_ring));
+	region->rdma_cq_entries = (struct io_unified_rdma_cqe *)((char *)ptr + base_total_size + 2 * sizeof(struct io_unified_ring) +
 								reg->qp_config.max_send_wr * sizeof(struct io_unified_rdma_wr));
-	region->memory_regions = (struct io_unified_rdma_mr *)((char *)ptr + rd->size + 2 * sizeof(struct io_unified_ring) +
+	region->memory_regions = (struct io_unified_rdma_mr *)((char *)ptr + base_total_size + 2 * sizeof(struct io_unified_ring) +
 							       reg->qp_config.max_send_wr * sizeof(struct io_unified_rdma_wr) +
 							       reg->qp_config.max_recv_wr * sizeof(struct io_unified_rdma_cqe));
 	
@@ -626,7 +659,23 @@ static int io_unified_rdma_alloc_region(struct io_ring_ctx *ctx,
 	atomic64_set(&region->rdma_reads, 0);
 	atomic64_set(&region->rdma_errors, 0);
 	
-	ifq->rdma_region = region;
+	/* Copy the allocated fields to the existing rdma_region structure */
+	ifq->rdma_region->rdma_sq_ring = region->rdma_sq_ring;
+	ifq->rdma_region->rdma_cq_ring = region->rdma_cq_ring;
+	ifq->rdma_region->rdma_sq_entries = region->rdma_sq_entries;
+	ifq->rdma_region->rdma_cq_entries = region->rdma_cq_entries;
+	ifq->rdma_region->memory_regions = region->memory_regions;
+	ifq->rdma_region->mrs = region->mrs;
+	
+	/* Copy performance counter values */
+	atomic64_set(&ifq->rdma_region->rdma_sends, 0);
+	atomic64_set(&ifq->rdma_region->rdma_recvs, 0);
+	atomic64_set(&ifq->rdma_region->rdma_writes, 0);
+	atomic64_set(&ifq->rdma_region->rdma_reads, 0);
+	atomic64_set(&ifq->rdma_region->rdma_errors, 0);
+	
+	/* Free the temporary region structure */
+	kfree(region);
 	
 	/* Set up offsets for userspace */
 	reg->rdma_offsets.rdma_sq_ring = rd->size;
@@ -690,8 +739,7 @@ static void io_unified_rdma_free_region(struct io_ring_ctx *ctx, struct io_unifi
 	
 	/* TODO: Free base region */
 	
-	kfree(region);
-	ifq->rdma_region = NULL;
+	/* Don't free the ifq->rdma_region itself, as it's allocated in ifq_alloc */
 }
 
 /* Interface queue management */
@@ -881,6 +929,17 @@ int io_register_unified_rdma_ifq(struct io_ring_ctx *ctx, struct io_unified_rdma
 	/* Complete registration */
 	ctx->rdma_ifq = ifq;
 	
+	/* Set up base interface offsets for userspace (redeclare for scope) */
+	size_t ring_size = 2 * sizeof(struct io_unified_ring);
+	size_t entries_size = (reg.base.sq_entries * sizeof(struct io_unified_sqe)) +
+			      (reg.base.cq_entries * sizeof(struct io_unified_cqe));
+	
+	reg.base.offsets.sq_ring = 0;
+	reg.base.offsets.cq_ring = sizeof(struct io_unified_ring);
+	reg.base.offsets.sq_entries = ring_size;
+	reg.base.offsets.cq_entries = ring_size + reg.base.sq_entries * sizeof(struct io_unified_sqe);
+	reg.base.offsets.buffers = ring_size + entries_size;
+	
 	if (copy_to_user(arg, &reg, sizeof(reg)) ||
 	    copy_to_user(u64_to_user_ptr(reg.base.region_ptr), &rd, sizeof(rd))) {
 		ret = -EFAULT;
@@ -894,17 +953,44 @@ err_unregister:
 	ctx->rdma_ifq = NULL;
 err_free_region:
 	io_unified_rdma_free_region(ctx, ifq);
-	goto err_free_ifq;
+	goto err_free_ifq_no_region;
 err_destroy_recv_cq:
 	ib_destroy_cq(ifq->rdma_region->recv_cq);
+	ifq->rdma_region->recv_cq = NULL;
 err_destroy_send_cq:
 	ib_destroy_cq(ifq->rdma_region->send_cq);
+	ifq->rdma_region->send_cq = NULL;
 err_dealloc_pd:
 	ib_dealloc_pd(ifq->rdma_region->pd);
+	ifq->rdma_region->pd = NULL;
 err_put_device:
 	ib_device_put(ifq->rdma_region->ib_dev);
+	ifq->rdma_region->ib_dev = NULL;
 err_free_ifq:
 	io_unified_rdma_ifq_free(ctx, ifq);
+	return ret;
+err_free_ifq_no_region:
+	/* Cancel pending work */
+	cancel_work_sync(&ifq->rdma_work);
+	
+	/* Clean up connection manager */
+	if (ifq->cm_id) {
+		rdma_destroy_id(ifq->cm_id);
+		ifq->cm_id = NULL;
+	}
+	
+	if (ifq->event_channel) {
+		/* TODO: Proper RDMA event channel cleanup */
+		ifq->event_channel = NULL;
+	}
+	
+	/* Free allocated rdma_region structure */
+	if (ifq->rdma_region) {
+		kfree(ifq->rdma_region);
+		ifq->rdma_region = NULL;
+	}
+	
+	kfree(ifq);
 	return ret;
 }
 

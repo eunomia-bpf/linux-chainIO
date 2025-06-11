@@ -21,6 +21,7 @@
 #include <linux/udp.h>
 #include <linux/bpf.h>
 #include "../../../../include/uapi/linux/io_uring.h"
+#include "../../../../include/uapi/linux/io_uring_unified.h"
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
 #include <xdp/xsk.h>
@@ -94,10 +95,6 @@ static const char *xdp_prog_src =
 "    if (data + sizeof(*eth) + sizeof(*ip) > data_end)\n"
 "        return XDP_PASS;\n"
 "    \n"
-"    /* Only process UDP packets to specific port */\n"
-"    if (ip->protocol != IPPROTO_UDP)\n"
-"        return XDP_PASS;\n"
-"    \n"
 "    udp = (struct udphdr *)(ip + 1);\n"
 "    if ((void *)(udp + 1) > data_end)\n"
 "        return XDP_PASS;\n"
@@ -126,72 +123,7 @@ static const char *xdp_prog_src =
 "\n"
 "char _license[] SEC(\"license\") = \"GPL\";\n";
 
-/* Unified interface structures */
-struct io_unified_reg {
-	__u64 region_ptr;
-	__u64 nvme_dev_path;
-	__u32 sq_entries;
-	__u32 cq_entries;
-	__u32 buffer_entries;
-	__u32 buffer_entry_size;
-	__u32 flags;
-	__u32 __resv[3];
-	
-	struct {
-		__u64 sq_ring;
-		__u64 cq_ring;
-		__u64 sq_entries;
-		__u64 cq_entries;
-		__u64 buffers;
-	} offsets;
-};
-
-struct io_unified_ring {
-	__u32 producer;
-	__u32 consumer;
-	__u32 cached_producer;
-	__u32 cached_consumer;
-	__u32 flags;
-	__u32 ring_entries;
-	__u64 ring_mask;
-	__u64 ring_size;
-};
-struct nvme_uring_cmd {
-	__u8	opcode;
-	__u8	flags;
-	__u16	rsvd1;
-	__u32	nsid;
-	__u32	cdw2;
-	__u32	cdw3;
-	__u64	metadata;
-	__u64	addr;
-	__u32	metadata_len;
-	__u32	data_len;
-	__u32	cdw10;
-	__u32	cdw11;
-	__u32	cdw12;
-	__u32	cdw13;
-	__u32	cdw14;
-	__u32	cdw15;
-	__u32	timeout_ms;
-	__u32   rsvd2;
-};
-struct io_unified_sqe {
-	struct nvme_uring_cmd nvme_cmd;
-	__u64 buf_offset;
-	__u64 user_data;
-	__u32 flags;
-	__u32 __pad;
-};
-
-struct io_unified_cqe {
-	__u64 user_data;
-	__s32 result;
-	__u32 status;
-	__u64 dma_addr;
-	__u32 len;
-	__u32 flags;
-};
+/* Structures now defined in io_uring_unified.h */
 
 /* Global state */
 struct app_context {
@@ -281,7 +213,7 @@ static int compile_and_load_bpf(void)
 	fclose(f);
 	
 	/* Compile with clang */
-	system("clang -O2 -target bpf -c /tmp/xdp_prog.c -o /tmp/xdp_prog.o");
+	system("clang -O2 -target bpf -I/usr/include -I/usr/include/x86_64-linux-gnu -c /tmp/xdp_prog.c -o /tmp/xdp_prog.o");
 	
 	/* Load BPF object */
 	ctx.bpf_obj = bpf_object__open("/tmp/xdp_prog.o");
@@ -386,7 +318,7 @@ static int setup_unified_interface(void)
 	/* Create io_uring with required flags */
 	memset(&params, 0, sizeof(params));
 	params.flags = IORING_SETUP_DEFER_TASKRUN | IORING_SETUP_CQE32 | 
-		       IORING_SETUP_SQE128;
+		       IORING_SETUP_SQE128 | IORING_SETUP_SINGLE_ISSUER;
 	
 	ctx.ring_fd = syscall(__NR_io_uring_setup, 256, &params);
 	if (ctx.ring_fd < 0) {
@@ -394,26 +326,30 @@ static int setup_unified_interface(void)
 		return ctx.ring_fd;
 	}
 	
-	/* Calculate region size */
+	/* Calculate region size - use generous allocation */
 	ctx.region_size = 
 		2 * sizeof(struct io_unified_ring) +           /* SQ + CQ rings */
 		256 * sizeof(struct io_unified_sqe) +          /* SQ entries */
 		256 * sizeof(struct io_unified_cqe) +          /* CQ entries */
 		NUM_FRAMES * FRAME_SIZE;                       /* Data buffers */
 	
-	/* Allocate unified region */
+	/* Add 50% margin for kernel structure differences */
+	ctx.region_size = ctx.region_size + (ctx.region_size / 2);
+	
+	/* Round up to page boundary */
+	ctx.region_size = (ctx.region_size + 4095) & ~4095;
+	
+	/* Allocate unified region - avoid hugepages for now */
 	ctx.unified_region = mmap(NULL, ctx.region_size, PROT_READ | PROT_WRITE,
-				  MAP_ANONYMOUS | MAP_SHARED | MAP_HUGETLB, -1, 0);
+				  MAP_ANONYMOUS | MAP_SHARED, -1, 0);
 	if (ctx.unified_region == MAP_FAILED) {
-		/* Fallback without hugepages */
-		ctx.unified_region = mmap(NULL, ctx.region_size, PROT_READ | PROT_WRITE,
-					  MAP_ANONYMOUS | MAP_SHARED, -1, 0);
-		if (ctx.unified_region == MAP_FAILED) {
-			perror("mmap");
-			close(ctx.ring_fd);
-			return -1;
-		}
+		perror("mmap");
+		close(ctx.ring_fd);
+		return -1;
 	}
+	
+	/* Initialize the region to ensure it's properly allocated */
+	memset(ctx.unified_region, 0, ctx.region_size);
 	
 	printf("Allocated %zu bytes for unified region at %p\n", 
 	       ctx.region_size, ctx.unified_region);
@@ -422,6 +358,9 @@ static int setup_unified_interface(void)
 	memset(&region_desc, 0, sizeof(region_desc));
 	region_desc.user_addr = (__u64)(uintptr_t)ctx.unified_region;
 	region_desc.size = ctx.region_size;
+	region_desc.flags = 1; /* IORING_MEM_REGION_TYPE_USER */
+	region_desc.id = 0;
+	region_desc.mmap_offset = 0;
 	
 	/* Set up registration */
 	memset(&reg, 0, sizeof(reg));

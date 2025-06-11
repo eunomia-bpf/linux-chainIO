@@ -95,7 +95,7 @@ static int compile_xdp_program(void)
 	fclose(f);
 	
 	/* Compile with clang */
-	ret = system("clang -O2 -target bpf -c /tmp/xdp_rdma_prog.c -o /tmp/xdp_rdma_prog.o");
+	ret = system("clang -O2 -target bpf -I/usr/include -I/usr/include/x86_64-linux-gnu -c /tmp/xdp_rdma_prog.c -o /tmp/xdp_rdma_prog.o");
 	if (ret != 0) {
 		fprintf(stderr, "Failed to compile XDP program\n");
 		return -1;

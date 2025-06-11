@@ -442,7 +442,7 @@ static int setup_unified_rdma_interface(void)
 	printf("  max_send_wr: %u\n", rdma_reg.qp_config.max_send_wr);
 	printf("  max_recv_wr: %u\n", rdma_reg.qp_config.max_recv_wr);
 	
-	/* Register unified RDMA interface */
+	/* Register unified RDMA interface (includes base setup) */
 	ret = syscall(__NR_io_uring_register, ctx.ring_fd, IORING_REGISTER_UNIFIED_RDMA_IFQ,
 		      &rdma_reg, 1);
 	if (ret < 0) {
