@@ -307,7 +307,7 @@ Required kernel options:
     CONFIG_IO_URING=y
     CONFIG_IO_URING_ZCRX=y
     CONFIG_IO_URING_UNIFIED=y
-    CONFIG_IO_URING_UNIFIED_RDMA=y
+    CONFIG_IO_URING_UNIFIED=y
 
 User Space Libraries
 --------------------

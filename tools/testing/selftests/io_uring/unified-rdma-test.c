@@ -73,8 +73,8 @@ struct io_unified_reg {
 };
 
 /* Configuration */
-#define DEFAULT_IFNAME "ib0"
-#define DEFAULT_RDMA_DEV "mlx5_0"
+#define DEFAULT_IFNAME "eth0"  /* Intel RDMA uses Ethernet interfaces */
+#define DEFAULT_RDMA_DEV "irdma2"  /* Use active Intel RDMA device */
 #define DEFAULT_RDMA_PORT 1
 #define DEFAULT_SERVER_PORT 9999
 #define MAX_PENDING_IOS 256
@@ -437,7 +437,7 @@ static int setup_unified_rdma_interface(void)
 		perror("io_uring_register unified RDMA");
 		if (errno == EINVAL) {
 			fprintf(stderr, "Invalid argument - possible causes:\n");
-			fprintf(stderr, "  - CONFIG_IO_URING_UNIFIED_RDMA not enabled in kernel\n");
+			fprintf(stderr, "  - CONFIG_IO_URING_UNIFIED not enabled in kernel\n");
 			fprintf(stderr, "  - RDMA device '%s' not found or not supported\n", ctx.rdma_dev_name);
 			fprintf(stderr, "  - Invalid configuration parameters\n");
 		} else if (errno == ENODEV) {
@@ -750,14 +750,37 @@ static void demonstrate_data_flows(void)
 	printf("Data flow demonstrations submitted\n");
 }
 
-/* Find first available RDMA device */
+/* Check if an RDMA device port is active */
+static int is_rdma_port_active(const char *dev_name, int port)
+{
+	char path[256];
+	char state_str[32];
+	FILE *f;
+	int state = 0;
+	
+	snprintf(path, sizeof(path), "/sys/class/infiniband/%s/ports/%d/state", dev_name, port);
+	f = fopen(path, "r");
+	if (!f)
+		return 0;
+	
+	if (fgets(state_str, sizeof(state_str), f)) {
+		/* PORT_ACTIVE is state 4 */
+		state = atoi(state_str);
+	}
+	fclose(f);
+	
+	return (state == 4); /* PORT_ACTIVE */
+}
+
+/* Find best available RDMA device (prefer active devices) */
 static int find_rdma_device(char *dev_name, size_t dev_name_size)
 {
 	struct dirent *entry;
 	DIR *dir;
-	int found = 0;
+	char first_available[64] = {0};
+	char active_device[64] = {0};
+	int found_any = 0;
 	
-	/* First try the default device */
 	dir = opendir("/sys/class/infiniband");
 	if (!dir) {
 		fprintf(stderr, "Warning: Cannot access /sys/class/infiniband, using default device\n");
@@ -766,37 +789,47 @@ static int find_rdma_device(char *dev_name, size_t dev_name_size)
 		return 0;
 	}
 	
-	/* Check if default device exists */
+	/* Scan all devices to find the best one */
 	while ((entry = readdir(dir)) != NULL) {
-		if (strcmp(entry->d_name, DEFAULT_RDMA_DEV) == 0) {
-			strncpy(dev_name, DEFAULT_RDMA_DEV, dev_name_size - 1);
-			dev_name[dev_name_size - 1] = '\0';
-			found = 1;
-			break;
-		}
-	}
-	
-	/* If default not found, use first available device */
-	if (!found) {
-		rewinddir(dir);
-		while ((entry = readdir(dir)) != NULL) {
-			if (entry->d_name[0] != '.' && strlen(entry->d_name) > 0) {
-				strncpy(dev_name, entry->d_name, dev_name_size - 1);
-				dev_name[dev_name_size - 1] = '\0';
-				printf("Using available RDMA device: %s\n", dev_name);
-				found = 1;
-				break;
+		if (entry->d_name[0] == '.' || strlen(entry->d_name) == 0)
+			continue;
+			
+		printf("Found RDMA device: %s", entry->d_name);
+		
+		/* Check if this device has an active port */
+		if (is_rdma_port_active(entry->d_name, 1)) {
+			printf(" (PORT_ACTIVE)\n");
+			if (active_device[0] == '\0') {
+				strncpy(active_device, entry->d_name, sizeof(active_device) - 1);
 			}
+		} else {
+			printf(" (PORT_DOWN)\n");
+		}
+		
+		/* Keep track of first available device as fallback */
+		if (!found_any) {
+			strncpy(first_available, entry->d_name, sizeof(first_available) - 1);
+			found_any = 1;
 		}
 	}
 	
 	closedir(dir);
 	
-	if (!found) {
+	if (!found_any) {
 		fprintf(stderr, "No RDMA devices found in /sys/class/infiniband\n");
 		return -ENODEV;
 	}
 	
+	/* Prefer active device, fallback to first available */
+	if (active_device[0] != '\0') {
+		strncpy(dev_name, active_device, dev_name_size - 1);
+		printf("Using active RDMA device: %s\n", dev_name);
+	} else {
+		strncpy(dev_name, first_available, dev_name_size - 1);
+		printf("Using RDMA device: %s (no active ports found)\n", dev_name);
+	}
+	
+	dev_name[dev_name_size - 1] = '\0';
 	return 0;
 }
 

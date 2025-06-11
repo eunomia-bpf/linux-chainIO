@@ -8,11 +8,13 @@
 struct io_unified_rdma_ifq;
 struct bpf_prog;
 
-#if IS_ENABLED(CONFIG_IO_URING_UNIFIED_RDMA)
-int io_unified_rdma_setup_xdp(struct io_unified_rdma_ifq *ifq, struct bpf_prog *prog);
+#if IS_ENABLED(CONFIG_IO_URING_UNIFIED)
+int io_unified_rdma_setup_xdp(struct io_unified_rdma_ifq *ifq,
+			      struct bpf_prog *prog);
 void io_unified_rdma_detach_xdp(struct io_unified_rdma_ifq *ifq);
 #else
-static inline int io_unified_rdma_setup_xdp(struct io_unified_rdma_ifq *ifq, struct bpf_prog *prog)
+static inline int io_unified_rdma_setup_xdp(struct io_unified_rdma_ifq *ifq,
+					    struct bpf_prog *prog)
 {
 	return -EOPNOTSUPP;
 }
