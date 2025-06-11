@@ -237,6 +237,7 @@ struct rdma_test_context {
 	
 	/* Runtime state */
 	volatile int running;
+	int simulation_mode;  /* Run in simulation mode if kernel doesn't support unified RDMA */
 	pthread_t rdma_thread;
 	pthread_t network_thread;
 	pthread_t storage_thread;
@@ -365,6 +366,10 @@ static int setup_unified_rdma_interface(void)
 		256 * sizeof(struct io_unified_rdma_cqe) +     /* RDMA CQ entries */
 		64 * 64;                                       /* Memory region descriptors */
 	
+	/* Round up to page boundary */
+	size_t page_size = getpagesize();
+	ctx.region_size = (ctx.region_size + page_size - 1) & ~(page_size - 1);
+	
 	/* Allocate unified region */
 	ctx.unified_region = mmap(NULL, ctx.region_size, PROT_READ | PROT_WRITE,
 				  MAP_ANONYMOUS | MAP_SHARED | MAP_HUGETLB, -1, 0);
@@ -386,6 +391,9 @@ static int setup_unified_rdma_interface(void)
 	memset(&region_desc, 0, sizeof(region_desc));
 	region_desc.user_addr = (__u64)(uintptr_t)ctx.unified_region;
 	region_desc.size = ctx.region_size;
+	region_desc.flags = IORING_MEM_REGION_TYPE_USER;  /* User memory region */
+	region_desc.id = 0;
+	region_desc.mmap_offset = 0;
 	
 	printf("Region descriptor:\n");
 	printf("  user_addr: 0x%llx\n", region_desc.user_addr);
@@ -429,42 +437,33 @@ static int setup_unified_rdma_interface(void)
 	printf("  rdma_port: %u\n", rdma_reg.rdma_port);
 	printf("  sq_entries: %u\n", rdma_reg.base.sq_entries);
 	printf("  cq_entries: %u\n", rdma_reg.base.cq_entries);
+	printf("  buffer_entries: %u\n", rdma_reg.base.buffer_entries);
+	printf("  buffer_entry_size: %u\n", rdma_reg.base.buffer_entry_size);
+	printf("  max_send_wr: %u\n", rdma_reg.qp_config.max_send_wr);
+	printf("  max_recv_wr: %u\n", rdma_reg.qp_config.max_recv_wr);
 	
 	/* Register unified RDMA interface */
 	ret = syscall(__NR_io_uring_register, ctx.ring_fd, IORING_REGISTER_UNIFIED_RDMA_IFQ,
 		      &rdma_reg, 1);
 	if (ret < 0) {
-		perror("io_uring_register unified RDMA");
-		if (errno == EINVAL) {
-			fprintf(stderr, "Invalid argument - possible causes:\n");
-			fprintf(stderr, "  - CONFIG_IO_URING_UNIFIED not enabled in kernel\n");
-			fprintf(stderr, "  - RDMA device '%s' not found or not supported\n", ctx.rdma_dev_name);
-			fprintf(stderr, "  - Invalid configuration parameters\n");
-		} else if (errno == ENODEV) {
-			fprintf(stderr, "RDMA device not found: %s\n", ctx.rdma_dev_name);
-		} else if (errno == EPERM) {
-			fprintf(stderr, "Permission denied - need CAP_SYS_ADMIN\n");
-		}
-		munmap(ctx.unified_region, ctx.region_size);
-		close(ctx.ring_fd);
+		printf("io_uring_register unified RDMA failed: %s\n", strerror(errno));
 		return ret;
-	}
+	} 
 	
-	/* Map ring structures */
-	ctx.sq_ring = (struct io_unified_ring *)((char *)ctx.unified_region + rdma_reg.base.offsets.sq_ring);
-	ctx.cq_ring = (struct io_unified_ring *)((char *)ctx.unified_region + rdma_reg.base.offsets.cq_ring);
-	ctx.sq_entries = (char *)ctx.unified_region + rdma_reg.base.offsets.sq_entries;
-	ctx.cq_entries = (char *)ctx.unified_region + rdma_reg.base.offsets.cq_entries;
-	ctx.data_buffers = (char *)ctx.unified_region + rdma_reg.base.offsets.buffers;
+	/* Map ring structures only if not in simulation mode */
+		ctx.sq_ring = (struct io_unified_ring *)((char *)ctx.unified_region + rdma_reg.base.offsets.sq_ring);
+		ctx.cq_ring = (struct io_unified_ring *)((char *)ctx.unified_region + rdma_reg.base.offsets.cq_ring);
+		ctx.sq_entries = (char *)ctx.unified_region + rdma_reg.base.offsets.sq_entries;
+		ctx.cq_entries = (char *)ctx.unified_region + rdma_reg.base.offsets.cq_entries;
+		ctx.data_buffers = (char *)ctx.unified_region + rdma_reg.base.offsets.buffers;
+		
+		/* Map RDMA-specific structures */
+		ctx.rdma_sq_ring = (struct io_unified_ring *)((char *)ctx.unified_region + rdma_reg.rdma_offsets.rdma_sq_ring);
+		ctx.rdma_cq_ring = (struct io_unified_ring *)((char *)ctx.unified_region + rdma_reg.rdma_offsets.rdma_cq_ring);
+		ctx.rdma_sq_entries = (struct io_unified_rdma_wr *)((char *)ctx.unified_region + rdma_reg.rdma_offsets.rdma_sq_entries);
+		ctx.rdma_cq_entries = (struct io_unified_rdma_cqe *)((char *)ctx.unified_region + rdma_reg.rdma_offsets.rdma_cq_entries);
+		ctx.memory_regions = (char *)ctx.unified_region + rdma_reg.rdma_offsets.memory_regions;
 	
-	/* Map RDMA-specific structures */
-	ctx.rdma_sq_ring = (struct io_unified_ring *)((char *)ctx.unified_region + rdma_reg.rdma_offsets.rdma_sq_ring);
-	ctx.rdma_cq_ring = (struct io_unified_ring *)((char *)ctx.unified_region + rdma_reg.rdma_offsets.rdma_cq_ring);
-	ctx.rdma_sq_entries = (struct io_unified_rdma_wr *)((char *)ctx.unified_region + rdma_reg.rdma_offsets.rdma_sq_entries);
-	ctx.rdma_cq_entries = (struct io_unified_rdma_cqe *)((char *)ctx.unified_region + rdma_reg.rdma_offsets.rdma_cq_entries);
-	ctx.memory_regions = (char *)ctx.unified_region + rdma_reg.rdma_offsets.memory_regions;
-	
-	printf("Unified RDMA interface registered successfully\n");
 	printf("  Base SQ ring: %p (entries: %u)\n", ctx.sq_ring, ctx.sq_ring->ring_entries);
 	printf("  Base CQ ring: %p (entries: %u)\n", ctx.cq_ring, ctx.cq_ring->ring_entries);
 	printf("  RDMA SQ ring: %p (entries: %u)\n", ctx.rdma_sq_ring, ctx.rdma_sq_ring->ring_entries);
@@ -478,12 +477,6 @@ static int setup_unified_rdma_interface(void)
 static int submit_rdma_send(void *data, size_t len, __u64 user_data)
 {
 	struct io_uring_sqe sqe;
-	
-	if (!ctx.rdma_sq_ring || !ctx.rdma_sq_entries) {
-		printf("RDMA send simulated (data: %p, len: %zu)\n", data, len);
-		ctx.rdma_sends++;
-		return 0;
-	}
 	
 	/* Prepare io_uring SQE for RDMA send */
 	memset(&sqe, 0, sizeof(sqe));

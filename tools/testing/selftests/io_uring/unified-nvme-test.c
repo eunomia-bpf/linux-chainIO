@@ -10,7 +10,7 @@
 #include <unistd.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
-#include <linux/io_uring.h>
+#include "../../../../include/uapi/linux/io_uring.h"
 #include <fcntl.h>
 #include <string.h>
 #include <errno.h>
@@ -99,12 +99,16 @@ int main(int argc, char *argv[])
 	
 	printf("Created io_uring with fd %d\n", ring_fd);
 	
-	/* Allocate unified memory region */
+	/* Allocate unified memory region - ensure page alignment */
 	size_t total_size = 
 		2 * sizeof(struct io_unified_ring) +      /* SQ and CQ rings */
 		256 * sizeof(struct io_unified_sqe) +     /* SQ entries */
 		256 * sizeof(struct io_unified_cqe) +     /* CQ entries */
 		1024 * 4096;                              /* 1024 4KB buffers */
+	
+	/* Round up to page boundary */
+	size_t page_size = getpagesize();
+	total_size = (total_size + page_size - 1) & ~(page_size - 1);
 	
 	ring_ptr = mmap(NULL, total_size, PROT_READ | PROT_WRITE,
 			MAP_ANONYMOUS | MAP_SHARED, -1, 0);
@@ -120,6 +124,9 @@ int main(int argc, char *argv[])
 	memset(&region_desc, 0, sizeof(region_desc));
 	region_desc.user_addr = (__u64)(uintptr_t)ring_ptr;
 	region_desc.size = total_size;
+	region_desc.flags = IORING_MEM_REGION_TYPE_USER;  /* User memory region */
+	region_desc.id = 0;
+	region_desc.mmap_offset = 0;
 	
 	/* Set up registration structure */
 	memset(&reg, 0, sizeof(reg));

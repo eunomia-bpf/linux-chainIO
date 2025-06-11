@@ -20,7 +20,7 @@
 #include <linux/ip.h>
 #include <linux/udp.h>
 #include <linux/bpf.h>
-#include <linux/io_uring.h>
+#include "../../../../include/uapi/linux/io_uring.h"
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
 #include <xdp/xsk.h>

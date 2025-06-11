@@ -580,11 +580,20 @@ static int io_unified_rdma_alloc_region(struct io_ring_ctx *ctx,
 	
 	total_size = rd->size + rdma_size;
 	
-	/* TODO: Set up base unified region - simplified for now */
-	ret = 0; /* Placeholder */
+	/* Ensure base unified region is available */
+	if (!ctx->zcrx_region.ptr) {
+		pr_err("io_uring: Base unified region not initialized\n");
+		kfree(region);
+		return -EINVAL;
+	}
 	
 	/* Get base region pointer and extend it */
 	ptr = io_region_get_ptr(&ctx->zcrx_region);
+	if (!ptr) {
+		pr_err("io_uring: Failed to get base region pointer\n");
+		kfree(region);
+		return -EINVAL;
+	}
 	
 	/* Set up RDMA-specific pointers */
 	region->rdma_sq_ring = (struct io_unified_ring *)((char *)ptr + rd->size);
@@ -694,6 +703,13 @@ static struct io_unified_rdma_ifq *io_unified_rdma_ifq_alloc(struct io_ring_ctx 
 	if (!ifq)
 		return NULL;
 	
+	/* Allocate RDMA region */
+	ifq->rdma_region = kzalloc(sizeof(*ifq->rdma_region), GFP_KERNEL);
+	if (!ifq->rdma_region) {
+		kfree(ifq);
+		return NULL;
+	}
+	
 	/* Initialize base unified interface */
 	ifq->base.zcrx_ifq.ctx = ctx;
 	ifq->base.zcrx_ifq.if_rxq = -1;
@@ -737,6 +753,12 @@ static void io_unified_rdma_ifq_free(struct io_ring_ctx *ctx, struct io_unified_
 	/* Free RDMA region */
 	io_unified_rdma_free_region(ctx, ifq);
 	
+	/* Free allocated rdma_region structure */
+	if (ifq->rdma_region) {
+		kfree(ifq->rdma_region);
+		ifq->rdma_region = NULL;
+	}
+	
 	/* TODO: Free base interface */
 	
 	kfree(ifq);
@@ -764,11 +786,17 @@ int io_register_unified_rdma_ifq(struct io_ring_ctx *ctx, struct io_unified_rdma
 		return -EFAULT;
 	
 	/* Validate parameters */
-	if (!reg.base.sq_entries || !reg.base.cq_entries || !reg.base.buffer_entries)
+	if (!reg.base.sq_entries || !reg.base.cq_entries || !reg.base.buffer_entries) {
+		pr_err("io_uring: Invalid base parameters: sq_entries=%u, cq_entries=%u, buffer_entries=%u\n",
+		       reg.base.sq_entries, reg.base.cq_entries, reg.base.buffer_entries);
 		return -EINVAL;
+	}
 	
-	if (!reg.qp_config.max_send_wr || !reg.qp_config.max_recv_wr)
+	if (!reg.qp_config.max_send_wr || !reg.qp_config.max_recv_wr) {
+		pr_err("io_uring: Invalid QP parameters: max_send_wr=%u, max_recv_wr=%u\n",
+		       reg.qp_config.max_send_wr, reg.qp_config.max_recv_wr);
 		return -EINVAL;
+	}
 	
 	/* Allocate interface queue */
 	ifq = io_unified_rdma_ifq_alloc(ctx);
