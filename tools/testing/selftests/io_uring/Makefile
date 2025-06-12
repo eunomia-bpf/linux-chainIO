@@ -2,7 +2,7 @@
 # Makefile for io_uring unified interface tests
 
 CC = gcc
-CFLAGS = -Wall -Wextra -O2 -g -I../../../../include/uapi -I../../../../include
+CFLAGS = -Wall -Wextra -O2 -g -fno-stack-protector -I../../../../include/uapi -I../../../../include
 LDFLAGS = -lrdmacm -libverbs -lbpf -lxdp -lbpf -lelf
 
 TARGETS = unified-rdma-test unified-nvme-test unified-full-stack-test

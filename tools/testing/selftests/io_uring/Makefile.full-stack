@@ -3,7 +3,7 @@
 
 CC = gcc
 CLANG = clang
-CFLAGS = -Wall -Wextra -O2 -g -std=gnu99
+CFLAGS = -Wall -Wextra -O2 -g -std=gnu99 -fno-stack-protector
 LDFLAGS = -pthread
 LIBS = -lbpf -lxdp -lelf -lz -libverbs -lrdmacm
 

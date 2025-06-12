@@ -531,13 +531,14 @@ static void io_unified_rdma_work_handler(struct work_struct *work)
 int io_unified_rdma_query_device(struct io_unified_rdma_ifq *ifq,
 				 struct io_unified_rdma_caps *caps)
 {
-	struct ib_device_attr device_attr;
-	int ret;
+		struct ib_device_attr device_attr;
+		struct ib_udata udata = {};
+		int ret;
 	
 	if (!ifq || !ifq->rdma_region->ib_dev || !caps)
 		return -EINVAL;
 	
-	ret = ifq->rdma_region->ib_dev->ops.query_device(ifq->rdma_region->ib_dev, &device_attr, NULL);
+		ret = ifq->rdma_region->ib_dev->ops.query_device(ifq->rdma_region->ib_dev, &device_attr, &udata);
 	if (ret) {
 		pr_err("io_uring: Failed to query RDMA device: %d\n", ret);
 		return ret;
@@ -715,15 +716,15 @@ static int io_unified_rdma_alloc_region(struct io_ring_ctx *ctx,
 	/* Free the temporary region structure */
 	kfree(region);
 	
-	/* Set up offsets for userspace */
-	reg->rdma_offsets.rdma_sq_ring = rd->size;
-	reg->rdma_offsets.rdma_cq_ring = rd->size + sizeof(struct io_unified_ring);
-	reg->rdma_offsets.rdma_sq_entries = rd->size + 2 * sizeof(struct io_unified_ring);
-	reg->rdma_offsets.rdma_cq_entries = rd->size + 2 * sizeof(struct io_unified_ring) +
-					   reg->qp_config.max_send_wr * sizeof(struct io_unified_rdma_wr);
-	reg->rdma_offsets.memory_regions = rd->size + 2 * sizeof(struct io_unified_ring) +
-					  reg->qp_config.max_send_wr * sizeof(struct io_unified_rdma_wr) +
-					  reg->qp_config.max_recv_wr * sizeof(struct io_unified_rdma_cqe);
+	/* Set up offsets for userspace using base_total_size */
+	reg->rdma_offsets.rdma_sq_ring = base_total_size;
+	reg->rdma_offsets.rdma_cq_ring = base_total_size + sizeof(struct io_unified_ring);
+	reg->rdma_offsets.rdma_sq_entries = base_total_size + 2 * sizeof(struct io_unified_ring);
+	reg->rdma_offsets.rdma_cq_entries = base_total_size + 2 * sizeof(struct io_unified_ring) +
+			reg->qp_config.max_send_wr * sizeof(struct io_unified_rdma_wr);
+	reg->rdma_offsets.memory_regions = base_total_size + 2 * sizeof(struct io_unified_ring) +
+			reg->qp_config.max_send_wr * sizeof(struct io_unified_rdma_wr) +
+			reg->qp_config.max_recv_wr * sizeof(struct io_unified_rdma_cqe);
 	
 	return 0;
 }
