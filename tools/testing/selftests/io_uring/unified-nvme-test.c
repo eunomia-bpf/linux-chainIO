@@ -109,9 +109,9 @@ int main(int argc, char *argv[])
 	/* Round up to page boundary */
 	size_t page_size = getpagesize();
 	total_size = (total_size + page_size - 1) & ~(page_size - 1);
-	
+	// mmap zcrx region
 	ring_ptr = mmap(NULL, total_size, PROT_READ | PROT_WRITE,
-			MAP_ANONYMOUS | MAP_SHARED, -1, 0);
+			MAP_ANONYMOUS | MAP_SHARED, ring_fd, 0);
 	if (ring_ptr == MAP_FAILED) {
 		perror("mmap");
 		close(ring_fd);
