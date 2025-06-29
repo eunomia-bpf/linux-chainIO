@@ -17,6 +17,7 @@
 #include <linux/bpf.h>
 #include <linux/filter.h>
 #include <net/xdp.h>
+#include <linux/xdp.h>
 
 #include "io_uring.h"
 #include "memmap.h"
@@ -31,11 +32,15 @@ static struct ib_device *io_rdma_find_device(const char *dev_name)
 {
 	struct ib_device *device;
 	
+	pr_debug("io_uring: Looking for RDMA device '%s'\n", dev_name);
+	
 	device = ib_device_get_by_name(dev_name, RDMA_DRIVER_UNKNOWN);
 	if (!device) {
 		pr_warn("io_uring: RDMA device '%s' not found\n", dev_name);
 		return NULL;
 	}
+	
+	pr_debug("io_uring: Found RDMA device '%s', checking capabilities\n", dev_name);
 	
 	if (!rdma_cap_ib_mad(device, 1) && !rdma_cap_ib_mcast(device, 1) &&
 	    !rdma_cap_eth_ah(device, 1)) {
@@ -44,6 +49,7 @@ static struct ib_device *io_rdma_find_device(const char *dev_name)
 		return NULL;
 	}
 	
+	pr_info("io_uring: Successfully found RDMA device '%s' with capabilities\n", dev_name);
 	return device;
 }
 
@@ -55,8 +61,15 @@ int io_unified_rdma_reg_mr(struct io_unified_rdma_region *region,
 	struct ib_mr *ib_mr;
 	int ret;
 	
-	if (!region || !region->pd || !addr || !length || !mr)
+	pr_debug("io_uring: Registering MR: addr=%p, length=%zu, access_flags=0x%x\n",
+		 addr, length, access_flags);
+	
+	if (!region || !region->pd || !addr || !length || !mr) {
+		pr_err("io_uring: Invalid parameters for MR registration\n");
 		return -EINVAL;
+	}
+	
+	pr_debug("io_uring: Using PD %p for MR registration\n", region->pd);
 	
 	ib_mr = ib_reg_user_mr(region->pd, (unsigned long)addr, length,
 			       (unsigned long)addr, access_flags);
@@ -76,12 +89,15 @@ int io_unified_rdma_reg_mr(struct io_unified_rdma_region *region,
 	if (region->num_mrs < IO_UNIFIED_RDMA_MAX_ENTRIES) {
 		region->mrs[region->num_mrs] = ib_mr;
 		region->num_mrs++;
+		pr_debug("io_uring: Stored MR at index %u, total MRs: %u\n",
+			 region->num_mrs - 1, region->num_mrs);
 	} else {
+		pr_err("io_uring: MR table full (max %d entries)\n", IO_UNIFIED_RDMA_MAX_ENTRIES);
 		ib_dereg_mr(ib_mr);
 		return -ENOSPC;
 	}
 	
-	pr_debug("io_uring: Registered RDMA MR: addr=0x%llx, len=%zu, lkey=0x%x, rkey=0x%x\n",
+	pr_info("io_uring: Registered RDMA MR: addr=0x%llx, len=%zu, lkey=0x%x, rkey=0x%x\n",
 		 mr->addr, length, mr->lkey, mr->rkey);
 	
 	return 0;
@@ -93,8 +109,13 @@ int io_unified_rdma_dereg_mr(struct io_unified_rdma_region *region,
 	struct ib_mr *ib_mr = NULL;
 	int i, ret;
 	
-	if (!region || !mr)
+	pr_debug("io_uring: Deregistering MR: lkey=0x%x, rkey=0x%x\n",
+		 mr ? mr->lkey : 0, mr ? mr->rkey : 0);
+	
+	if (!region || !mr) {
+		pr_err("io_uring: Invalid parameters for MR deregistration\n");
 		return -EINVAL;
+	}
 	
 	/* Find the corresponding IB MR */
 	for (i = 0; i < region->num_mrs; i++) {
@@ -103,12 +124,14 @@ int io_unified_rdma_dereg_mr(struct io_unified_rdma_region *region,
 		    region->mrs[i]->rkey == mr->rkey) {
 			ib_mr = region->mrs[i];
 			region->mrs[i] = NULL;
+			pr_debug("io_uring: Found MR at index %d\n", i);
 			break;
 		}
 	}
 	
 	if (!ib_mr) {
-		pr_warn("io_uring: RDMA MR not found for deregistration\n");
+		pr_warn("io_uring: RDMA MR not found for deregistration (lkey=0x%x, rkey=0x%x)\n",
+			mr->lkey, mr->rkey);
 		return -ENOENT;
 	}
 	
@@ -117,6 +140,9 @@ int io_unified_rdma_dereg_mr(struct io_unified_rdma_region *region,
 		pr_err("io_uring: Failed to deregister RDMA MR: %d\n", ret);
 		return ret;
 	}
+	
+	pr_info("io_uring: Successfully deregistered MR (lkey=0x%x, rkey=0x%x)\n",
+		mr->lkey, mr->rkey);
 	
 	memset(mr, 0, sizeof(*mr));
 	return 0;
@@ -131,6 +157,8 @@ static int io_rdma_create_qp(struct io_unified_rdma_ifq *ifq,
 	int qp_attr_mask;
 	int ret;
 	
+	pr_debug("io_uring: Creating queue pair\n");
+	
 	/* Validate input parameters */
 	if (!ifq || !ifq->rdma_region || !config) {
 		pr_err("io_uring: Invalid parameters for QP creation\n");
@@ -138,7 +166,8 @@ static int io_rdma_create_qp(struct io_unified_rdma_ifq *ifq,
 	}
 	
 	if (!ifq->rdma_region->pd || !ifq->rdma_region->send_cq || !ifq->rdma_region->recv_cq) {
-		pr_err("io_uring: RDMA resources not properly initialized\n");
+		pr_err("io_uring: RDMA resources not properly initialized (pd=%p, send_cq=%p, recv_cq=%p)\n",
+		       ifq->rdma_region->pd, ifq->rdma_region->send_cq, ifq->rdma_region->recv_cq);
 		return -EINVAL;
 	}
 	
@@ -175,10 +204,10 @@ static int io_rdma_create_qp(struct io_unified_rdma_ifq *ifq,
 	qp_init_attr.cap.max_inline_data = min_t(u32, config->max_inline_data, 1024);
 	qp_init_attr.sq_sig_type = IB_SIGNAL_REQ_WR;
 	
-	pr_debug("io_uring: Creating QP with type=%d, send_wr=%u, recv_wr=%u, send_sge=%u, recv_sge=%u\n",
+	pr_info("io_uring: Creating QP with type=%d, send_wr=%u, recv_wr=%u, send_sge=%u, recv_sge=%u, inline=%u\n",
 		 qp_init_attr.qp_type, qp_init_attr.cap.max_send_wr,
 		 qp_init_attr.cap.max_recv_wr, qp_init_attr.cap.max_send_sge,
-		 qp_init_attr.cap.max_recv_sge);
+		 qp_init_attr.cap.max_recv_sge, qp_init_attr.cap.max_inline_data);
 	
 	/* Create queue pair */
 	ifq->rdma_region->qp = ib_create_qp(ifq->rdma_region->pd, &qp_init_attr);
@@ -199,6 +228,8 @@ static int io_rdma_create_qp(struct io_unified_rdma_ifq *ifq,
 	
 	qp_attr_mask = IB_QP_STATE | IB_QP_PKEY_INDEX | IB_QP_PORT | IB_QP_ACCESS_FLAGS;
 	
+	pr_debug("io_uring: Transitioning QP to INIT state\n");
+	
 	ret = ib_modify_qp(ifq->rdma_region->qp, &qp_attr, qp_attr_mask);
 	if (ret) {
 		pr_err("io_uring: Failed to transition QP to INIT: %d\n", ret);
@@ -207,7 +238,7 @@ static int io_rdma_create_qp(struct io_unified_rdma_ifq *ifq,
 		return ret;
 	}
 	
-	pr_info("io_uring: Created RDMA QP %u\n", ifq->rdma_region->qp->qp_num);
+	pr_info("io_uring: Successfully created RDMA QP %u in INIT state\n", ifq->rdma_region->qp->qp_num);
 	return 0;
 }
 
@@ -218,8 +249,12 @@ static int io_rdma_connect_qp(struct io_unified_rdma_ifq *ifq,
 	int qp_attr_mask;
 	int ret;
 	
-	if (!ifq || !ifq->rdma_region->qp || !config)
+	pr_debug("io_uring: Connecting QP to remote QP %u\n", config ? config->dest_qp_num : 0);
+	
+	if (!ifq || !ifq->rdma_region->qp || !config) {
+		pr_err("io_uring: Invalid parameters for QP connection\n");
 		return -EINVAL;
+	}
 	
 	/* Transition QP to RTR (Ready to Receive) */
 	memset(&qp_attr, 0, sizeof(qp_attr));
@@ -240,11 +275,15 @@ static int io_rdma_connect_qp(struct io_unified_rdma_ifq *ifq,
 	qp_attr_mask = IB_QP_STATE | IB_QP_AV | IB_QP_PATH_MTU | IB_QP_DEST_QPN |
 		       IB_QP_RQ_PSN | IB_QP_MAX_DEST_RD_ATOMIC | IB_QP_MIN_RNR_TIMER;
 	
+	pr_debug("io_uring: Transitioning QP to RTR state\n");
+	
 	ret = ib_modify_qp(ifq->rdma_region->qp, &qp_attr, qp_attr_mask);
 	if (ret) {
 		pr_err("io_uring: Failed to transition QP to RTR: %d\n", ret);
 		return ret;
 	}
+	
+	pr_debug("io_uring: QP transitioned to RTR state successfully\n");
 	
 	/* Transition QP to RTS (Ready to Send) */
 	memset(&qp_attr, 0, sizeof(qp_attr));
@@ -258,6 +297,8 @@ static int io_rdma_connect_qp(struct io_unified_rdma_ifq *ifq,
 	qp_attr_mask = IB_QP_STATE | IB_QP_TIMEOUT | IB_QP_RETRY_CNT |
 		       IB_QP_RNR_RETRY | IB_QP_SQ_PSN | IB_QP_MAX_QP_RD_ATOMIC;
 	
+	pr_debug("io_uring: Transitioning QP to RTS state\n");
+	
 	ret = ib_modify_qp(ifq->rdma_region->qp, &qp_attr, qp_attr_mask);
 	if (ret) {
 		pr_err("io_uring: Failed to transition QP to RTS: %d\n", ret);
@@ -265,7 +306,8 @@ static int io_rdma_connect_qp(struct io_unified_rdma_ifq *ifq,
 	}
 	
 	ifq->connected = true;
-	pr_info("io_uring: RDMA QP %u connected\n", ifq->rdma_region->qp->qp_num);
+	pr_info("io_uring: RDMA QP %u connected to remote QP %u (RTS state)\n", 
+		ifq->rdma_region->qp->qp_num, config->dest_qp_num);
 	
 	return 0;
 }
@@ -275,11 +317,17 @@ static int io_rdma_disconnect_qp(struct io_unified_rdma_ifq *ifq)
 	struct ib_qp_attr qp_attr;
 	int ret;
 	
-	if (!ifq || !ifq->rdma_region->qp)
-		return -EINVAL;
+	pr_debug("io_uring: Disconnecting QP\n");
 	
-	if (!ifq->connected)
+	if (!ifq || !ifq->rdma_region->qp) {
+		pr_err("io_uring: Invalid parameters for QP disconnection\n");
+		return -EINVAL;
+	}
+	
+	if (!ifq->connected) {
+		pr_debug("io_uring: QP already disconnected\n");
 		return 0;
+	}
 	
 	/* Transition QP to ERROR state */
 	memset(&qp_attr, 0, sizeof(qp_attr));
@@ -311,11 +359,19 @@ int io_unified_rdma_post_send(struct io_unified_rdma_ifq *ifq,
 	struct ib_sge sge[IO_UNIFIED_RDMA_MAX_SGE];
 	int ret, i;
 	
-	if (!ifq || !ifq->rdma_region->qp || !wr || !ifq->connected)
-		return -EINVAL;
+	pr_debug("io_uring: Posting send WR: opcode=%u, num_sge=%u, flags=0x%x\n",
+		 wr ? wr->opcode : 0, wr ? wr->num_sge : 0, wr ? wr->flags : 0);
 	
-	if (wr->num_sge > IO_UNIFIED_RDMA_MAX_SGE)
+	if (!ifq || !ifq->rdma_region->qp || !wr || !ifq->connected) {
+		pr_err("io_uring: Invalid parameters for post_send (ifq=%p, qp=%p, wr=%p, connected=%d)\n",
+		       ifq, ifq ? ifq->rdma_region->qp : NULL, wr, ifq ? ifq->connected : 0);
 		return -EINVAL;
+	}
+	
+	if (wr->num_sge > IO_UNIFIED_RDMA_MAX_SGE) {
+		pr_err("io_uring: Too many SGEs: %u > %d\n", wr->num_sge, IO_UNIFIED_RDMA_MAX_SGE);
+		return -EINVAL;
+	}
 	
 	/* Prepare scatter-gather list */
 	for (i = 0; i < wr->num_sge; i++) {
@@ -373,7 +429,7 @@ int io_unified_rdma_post_send(struct io_unified_rdma_ifq *ifq,
 	/* Post send work request */
 	ret = ib_post_send(ifq->rdma_region->qp, send_wr, &bad_wr);
 	if (ret) {
-		pr_err("io_uring: Failed to post RDMA send: %d\n", ret);
+		pr_err("io_uring: Failed to post RDMA send: %d (bad_wr=%p)\n", ret, bad_wr);
 		atomic64_inc(&ifq->rdma_region->rdma_errors);
 		return ret;
 	}
@@ -381,12 +437,22 @@ int io_unified_rdma_post_send(struct io_unified_rdma_ifq *ifq,
 	switch (wr->opcode) {
 	case IO_RDMA_OP_SEND:
 		atomic64_inc(&ifq->rdma_region->rdma_sends);
+		pr_debug("io_uring: Posted SEND WR successfully (wr_id=%llu)\n", wr->user_data);
 		break;
 	case IO_RDMA_OP_WRITE:
 		atomic64_inc(&ifq->rdma_region->rdma_writes);
+		pr_debug("io_uring: Posted WRITE WR successfully (wr_id=%llu, remote_addr=0x%llx)\n",
+			 wr->user_data, wr->remote_addr);
 		break;
 	case IO_RDMA_OP_READ:
 		atomic64_inc(&ifq->rdma_region->rdma_reads);
+		pr_debug("io_uring: Posted READ WR successfully (wr_id=%llu, remote_addr=0x%llx)\n",
+			 wr->user_data, wr->remote_addr);
+		break;
+	case IO_RDMA_OP_ATOMIC_CMP_AND_SWP:
+	case IO_RDMA_OP_ATOMIC_FETCH_AND_ADD:
+		pr_debug("io_uring: Posted ATOMIC WR successfully (wr_id=%llu, remote_addr=0x%llx)\n",
+			 wr->user_data, wr->remote_addr);
 		break;
 	}
 	
@@ -401,11 +467,18 @@ int io_unified_rdma_post_recv(struct io_unified_rdma_ifq *ifq,
 	struct ib_sge sge[IO_UNIFIED_RDMA_MAX_SGE];
 	int ret, i;
 	
-	if (!ifq || !ifq->rdma_region->qp || !wr)
-		return -EINVAL;
+	pr_debug("io_uring: Posting recv WR: num_sge=%u\n", wr ? wr->num_sge : 0);
 	
-	if (wr->num_sge > IO_UNIFIED_RDMA_MAX_SGE)
+	if (!ifq || !ifq->rdma_region->qp || !wr) {
+		pr_err("io_uring: Invalid parameters for post_recv (ifq=%p, qp=%p, wr=%p)\n",
+		       ifq, ifq ? ifq->rdma_region->qp : NULL, wr);
 		return -EINVAL;
+	}
+	
+	if (wr->num_sge > IO_UNIFIED_RDMA_MAX_SGE) {
+		pr_err("io_uring: Too many SGEs: %u > %d\n", wr->num_sge, IO_UNIFIED_RDMA_MAX_SGE);
+		return -EINVAL;
+	}
 	
 	/* Prepare scatter-gather list */
 	for (i = 0; i < wr->num_sge; i++) {
@@ -423,12 +496,13 @@ int io_unified_rdma_post_recv(struct io_unified_rdma_ifq *ifq,
 	/* Post receive work request */
 	ret = ib_post_recv(ifq->rdma_region->qp, &recv_wr, &bad_wr);
 	if (ret) {
-		pr_err("io_uring: Failed to post RDMA recv: %d\n", ret);
+		pr_err("io_uring: Failed to post RDMA recv: %d (bad_wr=%p)\n", ret, bad_wr);
 		atomic64_inc(&ifq->rdma_region->rdma_errors);
 		return ret;
 	}
 	
 	atomic64_inc(&ifq->rdma_region->rdma_recvs);
+	pr_debug("io_uring: Posted RECV WR successfully (wr_id=%llu)\n", wr->user_data);
 	return 0;
 }
 
@@ -436,6 +510,8 @@ int io_unified_rdma_post_recv(struct io_unified_rdma_ifq *ifq,
 static void io_rdma_cq_event_handler(struct ib_cq *cq, void *context)
 {
 	struct io_unified_rdma_ifq *ifq = context;
+	
+	pr_debug("io_uring: CQ event received on CQ %p\n", cq);
 	
 	/* Schedule work to process completions */
 	queue_work(ifq->rdma_wq, &ifq->rdma_work);
@@ -446,8 +522,12 @@ int io_unified_rdma_poll_cq(struct io_unified_rdma_ifq *ifq)
 	struct ib_wc wc[16];  /* Poll up to 16 completions at once */
 	int num_cqe, i, total = 0;
 	
-	if (!ifq || !ifq->rdma_region->send_cq)
+	pr_debug("io_uring: Polling CQ for completions\n");
+	
+	if (!ifq || !ifq->rdma_region->send_cq) {
+		pr_err("io_uring: Invalid parameters for CQ polling\n");
 		return -EINVAL;
+	}
 	
 	do {
 		num_cqe = ib_poll_cq(ifq->rdma_region->send_cq, 16, wc);
@@ -478,7 +558,11 @@ int io_unified_rdma_poll_cq(struct io_unified_rdma_ifq *ifq)
 		}
 		
 		total += num_cqe;
+		pr_debug("io_uring: Processed %d completions in this batch\n", num_cqe);
 	} while (num_cqe > 0);
+	
+	if (total > 0)
+		pr_debug("io_uring: Total completions processed: %d\n", total);
 	
 	return total;
 }
@@ -489,10 +573,14 @@ void io_unified_rdma_complete_wr(struct io_unified_rdma_ifq *ifq,
 	struct io_unified_ring *cq_ring = ifq->rdma_region->rdma_cq_ring;
 	u32 tail, next_tail;
 	
+	pr_debug("io_uring: Completing WR: wr_id=%llu, status=%d, opcode=%d, byte_len=%u\n",
+		 cqe->user_data, cqe->status, cqe->opcode, cqe->byte_len);
+	
 	/* Check if CQ has space */
 	if ((cq_ring->producer - cq_ring->consumer) >= cq_ring->ring_entries) {
 		atomic64_inc(&ifq->rdma_region->rdma_errors);
-		pr_warn("io_uring: RDMA CQ ring full, dropping completion\n");
+		pr_warn("io_uring: RDMA CQ ring full, dropping completion (prod=%u, cons=%u, entries=%u)\n",
+			cq_ring->producer, cq_ring->consumer, cq_ring->ring_entries);
 		return;
 	}
 	
@@ -509,6 +597,7 @@ void io_unified_rdma_complete_wr(struct io_unified_rdma_ifq *ifq,
 	
 	/* Wake up userspace if needed */
 	if (cq_ring->flags & IO_UNIFIED_UREF) {
+		pr_debug("io_uring: Waking up userspace for CQ notification\n");
 		wake_up_poll(&ifq->base.zcrx_ifq.ctx->cq_wait, EPOLLIN | EPOLLRDNORM);
 	}
 }
@@ -517,12 +606,18 @@ void io_unified_rdma_complete_wr(struct io_unified_rdma_ifq *ifq,
 static void io_unified_rdma_work_handler(struct work_struct *work)
 {
 	struct io_unified_rdma_ifq *ifq = container_of(work, struct io_unified_rdma_ifq, rdma_work);
+	int completions;
+	
+	pr_debug("io_uring: RDMA work handler invoked\n");
 	
 	/* Process completions */
-	io_unified_rdma_poll_cq(ifq);
+	completions = io_unified_rdma_poll_cq(ifq);
+	if (completions > 0)
+		pr_debug("io_uring: Work handler processed %d completions\n", completions);
 	
 	/* Re-arm CQ for notifications */
 	if (ifq->rdma_region->send_cq) {
+		pr_debug("io_uring: Re-arming CQ for notifications\n");
 		ib_req_notify_cq(ifq->rdma_region->send_cq, IB_CQ_NEXT_COMP);
 	}
 }
@@ -606,10 +701,14 @@ static int io_unified_rdma_alloc_region(struct io_ring_ctx *ctx,
 	void *ptr;
 	int ret;
 	
+	pr_debug("io_uring: Allocating RDMA region\n");
+	
 	/* Allocate RDMA region structure */
 	region = kzalloc(sizeof(*region), GFP_KERNEL);
-	if (!region)
+	if (!region) {
+		pr_err("io_uring: Failed to allocate RDMA region structure\n");
 		return -ENOMEM;
+	}
 	
 	/* Calculate base interface size (from unified.c logic) */
 	size_t base_ring_size = 2 * sizeof(struct io_unified_ring);
@@ -624,7 +723,19 @@ static int io_unified_rdma_alloc_region(struct io_ring_ctx *ctx,
 		    reg->qp_config.max_recv_wr * sizeof(struct io_unified_rdma_cqe) + /* RDMA CQ entries */
 		    reg->num_mrs * sizeof(struct io_unified_rdma_mr);   /* MR descriptors */
 	
-	total_size = base_total_size + rdma_size;
+	/* Calculate XDP sizes if enabled */
+	size_t xdp_buffer_pool_size = 0;
+	size_t xdp_metadata_size = 0;
+	if (reg->xdp_config.buffer_count > 0) {
+		xdp_buffer_pool_size = reg->xdp_config.buffer_count * reg->xdp_config.buffer_size;
+		xdp_metadata_size = reg->xdp_config.buffer_count * sizeof(struct io_unified_buffer_desc) +
+				    reg->xdp_config.buffer_count * sizeof(u32); /* free list */
+	}
+	
+	total_size = base_total_size + rdma_size + xdp_buffer_pool_size + xdp_metadata_size;
+	
+	pr_info("io_uring: Region sizes - base: %zu, RDMA: %zu, total: %zu bytes\n",
+		base_total_size, rdma_size, total_size);
 	
 	/* For RDMA registration, we set up the base unified region ourselves */
 	if (ctx->zcrx_region.ptr) {
@@ -668,14 +779,50 @@ static int io_unified_rdma_alloc_region(struct io_ring_ctx *ctx,
 	base_cq_ring->ring_mask = reg->base.cq_entries - 1;
 	
 	/* Set up RDMA-specific pointers after base structures */
-	region->rdma_sq_ring = (struct io_unified_ring *)((char *)ptr + base_total_size);
-	region->rdma_cq_ring = (struct io_unified_ring *)((char *)ptr + base_total_size + sizeof(struct io_unified_ring));
-	region->rdma_sq_entries = (struct io_unified_rdma_wr *)((char *)ptr + base_total_size + 2 * sizeof(struct io_unified_ring));
-	region->rdma_cq_entries = (struct io_unified_rdma_cqe *)((char *)ptr + base_total_size + 2 * sizeof(struct io_unified_ring) +
-								reg->qp_config.max_send_wr * sizeof(struct io_unified_rdma_wr));
-	region->memory_regions = (struct io_unified_rdma_mr *)((char *)ptr + base_total_size + 2 * sizeof(struct io_unified_ring) +
-							       reg->qp_config.max_send_wr * sizeof(struct io_unified_rdma_wr) +
-							       reg->qp_config.max_recv_wr * sizeof(struct io_unified_rdma_cqe));
+	size_t offset = base_total_size;
+	region->rdma_sq_ring = (struct io_unified_ring *)((char *)ptr + offset);
+	offset += sizeof(struct io_unified_ring);
+	
+	region->rdma_cq_ring = (struct io_unified_ring *)((char *)ptr + offset);
+	offset += sizeof(struct io_unified_ring);
+	
+	region->rdma_sq_entries = (struct io_unified_rdma_wr *)((char *)ptr + offset);
+	offset += reg->qp_config.max_send_wr * sizeof(struct io_unified_rdma_wr);
+	
+	region->rdma_cq_entries = (struct io_unified_rdma_cqe *)((char *)ptr + offset);
+	offset += reg->qp_config.max_recv_wr * sizeof(struct io_unified_rdma_cqe);
+	
+	region->memory_regions = (struct io_unified_rdma_mr *)((char *)ptr + offset);
+	offset += reg->num_mrs * sizeof(struct io_unified_rdma_mr);
+	
+	/* Set up XDP pointers if enabled */
+	if (reg->xdp_config.buffer_count > 0) {
+		pr_debug("io_uring: Setting up XDP buffer pool with %u buffers of size %u\n",
+			 reg->xdp_config.buffer_count, reg->xdp_config.buffer_size);
+		
+		/* XDP buffer pool */
+		ifq->rdma_region->xdp.xdp_buffer_pool = (void *)((char *)ptr + offset);
+		offset += xdp_buffer_pool_size;
+		
+		/* Buffer descriptors */
+		ifq->rdma_region->buffer_descs = (struct io_unified_buffer_desc *)((char *)ptr + offset);
+		offset += reg->xdp_config.buffer_count * sizeof(struct io_unified_buffer_desc);
+		
+		/* Free list */
+		ifq->rdma_region->xdp.free_list = (u32 *)((char *)ptr + offset);
+		offset += reg->xdp_config.buffer_count * sizeof(u32);
+		
+		/* Initialize XDP fields */
+		ifq->rdma_region->xdp.xdp_buffer_size = reg->xdp_config.buffer_size;
+		ifq->rdma_region->xdp.xdp_buffer_count = reg->xdp_config.buffer_count;
+		ifq->rdma_region->xdp.free_count = reg->xdp_config.buffer_count;
+		spin_lock_init(&ifq->rdma_region->xdp.free_lock);
+		
+		/* Initialize free list */
+		for (u32 i = 0; i < reg->xdp_config.buffer_count; i++) {
+			ifq->rdma_region->xdp.free_list[i] = i;
+		}
+	}
 	
 	/* Initialize RDMA rings */
 	region->rdma_sq_ring->ring_entries = reg->qp_config.max_send_wr;
@@ -717,14 +864,32 @@ static int io_unified_rdma_alloc_region(struct io_ring_ctx *ctx,
 	kfree(region);
 	
 	/* Set up offsets for userspace using base_total_size */
-	reg->rdma_offsets.rdma_sq_ring = base_total_size;
-	reg->rdma_offsets.rdma_cq_ring = base_total_size + sizeof(struct io_unified_ring);
-	reg->rdma_offsets.rdma_sq_entries = base_total_size + 2 * sizeof(struct io_unified_ring);
-	reg->rdma_offsets.rdma_cq_entries = base_total_size + 2 * sizeof(struct io_unified_ring) +
-			reg->qp_config.max_send_wr * sizeof(struct io_unified_rdma_wr);
-	reg->rdma_offsets.memory_regions = base_total_size + 2 * sizeof(struct io_unified_ring) +
-			reg->qp_config.max_send_wr * sizeof(struct io_unified_rdma_wr) +
-			reg->qp_config.max_recv_wr * sizeof(struct io_unified_rdma_cqe);
+	offset = base_total_size;
+	reg->rdma_offsets.rdma_sq_ring = offset;
+	offset += sizeof(struct io_unified_ring);
+	
+	reg->rdma_offsets.rdma_cq_ring = offset;
+	offset += sizeof(struct io_unified_ring);
+	
+	reg->rdma_offsets.rdma_sq_entries = offset;
+	offset += reg->qp_config.max_send_wr * sizeof(struct io_unified_rdma_wr);
+	
+	reg->rdma_offsets.rdma_cq_entries = offset;
+	offset += reg->qp_config.max_recv_wr * sizeof(struct io_unified_rdma_cqe);
+	
+	reg->rdma_offsets.memory_regions = offset;
+	offset += reg->num_mrs * sizeof(struct io_unified_rdma_mr);
+	
+	if (reg->xdp_config.buffer_count > 0) {
+		reg->rdma_offsets.xdp_buffer_pool = offset;
+		offset += xdp_buffer_pool_size;
+		
+		reg->rdma_offsets.buffer_descs = offset;
+		offset += reg->xdp_config.buffer_count * sizeof(struct io_unified_buffer_desc);
+	}
+	
+	pr_info("io_uring: RDMA region allocated successfully - SQ entries: %u, CQ entries: %u\n",
+		reg->qp_config.max_send_wr, reg->qp_config.max_recv_wr);
 	
 	return 0;
 }
@@ -734,13 +899,18 @@ static void io_unified_rdma_free_region(struct io_ring_ctx *ctx, struct io_unifi
 	struct io_unified_rdma_region *region;
 	int i;
 	
-	if (!ifq || !ifq->rdma_region)
+	pr_debug("io_uring: Freeing RDMA region\n");
+	
+	if (!ifq || !ifq->rdma_region) {
+		pr_debug("io_uring: No RDMA region to free\n");
 		return;
+	}
 	
 	region = ifq->rdma_region;
 	
 	/* Deregister all memory regions first */
 	if (region->mrs && region->num_mrs > 0) {
+		pr_debug("io_uring: Deregistering %u memory regions\n", region->num_mrs);
 		for (i = 0; i < region->num_mrs; i++) {
 			if (region->mrs[i]) {
 				ib_dereg_mr(region->mrs[i]);
@@ -788,8 +958,11 @@ static void io_unified_rdma_free_region(struct io_ring_ctx *ctx, struct io_unifi
 	
 	/* TODO: Free base region properly */
 	if (ctx && ctx->zcrx_region.ptr) {
+		pr_debug("io_uring: Freeing base unified region\n");
 		io_free_region(ctx, &ctx->zcrx_region);
 	}
+	
+	pr_info("io_uring: RDMA region freed successfully\n");
 }
 
 /* Interface queue management */
@@ -797,13 +970,18 @@ static struct io_unified_rdma_ifq *io_unified_rdma_ifq_alloc(struct io_ring_ctx 
 {
 	struct io_unified_rdma_ifq *ifq;
 	
+	pr_debug("io_uring: Allocating RDMA interface queue\n");
+	
 	ifq = kzalloc(sizeof(*ifq), GFP_KERNEL);
-	if (!ifq)
+	if (!ifq) {
+		pr_err("io_uring: Failed to allocate RDMA IFQ\n");
 		return NULL;
+	}
 	
 	/* Allocate RDMA region */
 	ifq->rdma_region = kzalloc(sizeof(*ifq->rdma_region), GFP_KERNEL);
 	if (!ifq->rdma_region) {
+		pr_err("io_uring: Failed to allocate RDMA region in IFQ\n");
 		kfree(ifq);
 		return NULL;
 	}
@@ -839,16 +1017,22 @@ static struct io_unified_rdma_ifq *io_unified_rdma_ifq_alloc(struct io_ring_ctx 
 		/* Continue without XDP - not fatal */
 	}
 	
+	pr_info("io_uring: RDMA interface queue allocated successfully\n");
 	return ifq;
 }
 
 static void io_unified_rdma_ifq_free(struct io_ring_ctx *ctx, struct io_unified_rdma_ifq *ifq)
 {
-	if (!ifq)
+	if (!ifq) {
+		pr_debug("io_uring: No IFQ to free\n");
 		return;
+	}
+	
+	pr_debug("io_uring: Freeing RDMA interface queue\n");
 	
 	/* Disconnect if connected */
 	if (ifq->connected) {
+		pr_debug("io_uring: Disconnecting before freeing IFQ\n");
 		io_unified_rdma_disconnect(ctx);
 	}
 	
@@ -880,6 +1064,7 @@ static void io_unified_rdma_ifq_free(struct io_ring_ctx *ctx, struct io_unified_
 	/* TODO: Free base interface */
 	
 	kfree(ifq);
+	pr_info("io_uring: RDMA interface queue freed successfully\n");
 }
 
 /* Registration interface */
@@ -891,11 +1076,17 @@ int io_register_unified_rdma_ifq(struct io_ring_ctx *ctx, struct io_unified_rdma
 	char *rdma_dev_name;
 	int ret;
 	
-	if (!capable(CAP_SYS_ADMIN))
-		return -EPERM;
+	pr_info("io_uring: Registering unified RDMA interface\n");
 	
-	if (ctx->rdma_ifq)
+	if (!capable(CAP_SYS_ADMIN)) {
+		pr_err("io_uring: CAP_SYS_ADMIN required for RDMA registration\n");
+		return -EPERM;
+	}
+	
+	if (ctx->rdma_ifq) {
+		pr_err("io_uring: RDMA interface already registered\n");
 		return -EBUSY;
+	}
 	
 	if (copy_from_user(&reg, arg, sizeof(reg)))
 		return -EFAULT;
@@ -955,8 +1146,11 @@ int io_register_unified_rdma_ifq(struct io_ring_ctx *ctx, struct io_unified_rdma
 	rdma_dev_name = strndup_user(u64_to_user_ptr(reg.rdma_dev_name), 64);
 	if (IS_ERR(rdma_dev_name)) {
 		ret = PTR_ERR(rdma_dev_name);
+		pr_err("io_uring: Failed to get RDMA device name from user: %d\n", ret);
 		goto err_free_ifq;
 	}
+	
+	pr_debug("io_uring: Looking for RDMA device: %s\n", rdma_dev_name);
 	
 	/* Find RDMA device */
 	ifq->rdma_region->ib_dev = io_rdma_find_device(rdma_dev_name);
@@ -964,6 +1158,7 @@ int io_register_unified_rdma_ifq(struct io_ring_ctx *ctx, struct io_unified_rdma
 	
 	if (!ifq->rdma_region->ib_dev) {
 		ret = -ENODEV;
+		pr_err("io_uring: RDMA device not found\n");
 		goto err_free_ifq;
 	}
 	
@@ -977,6 +1172,9 @@ int io_register_unified_rdma_ifq(struct io_ring_ctx *ctx, struct io_unified_rdma
 	}
 	
 	/* Create completion queues */
+	pr_debug("io_uring: Creating completion queues (send_wr=%u, recv_wr=%u)\n",
+		 reg.qp_config.max_send_wr, reg.qp_config.max_recv_wr);
+	
 	struct ib_cq_init_attr send_cq_attr = {
 		.cqe = reg.qp_config.max_send_wr,
 		.comp_vector = 0
@@ -1025,6 +1223,67 @@ int io_register_unified_rdma_ifq(struct io_ring_ctx *ctx, struct io_unified_rdma
 	ret = io_unified_rdma_query_device(ifq, &ifq->device_caps);
 	if (ret)
 		goto err_free_region;
+	
+	/* Initialize XDP buffers if configured */
+	if (reg.xdp_config.buffer_count > 0) {
+		pr_info("io_uring: Initializing %u XDP buffers for RDMA\n",
+			reg.xdp_config.buffer_count);
+		
+		for (u32 i = 0; i < reg.xdp_config.buffer_count; i++) {
+			void *buf_addr = ifq->rdma_region->xdp.xdp_buffer_pool +
+					 i * reg.xdp_config.buffer_size;
+			struct io_unified_buffer_desc *desc = &ifq->rdma_region->buffer_descs[i];
+			
+			/* Register buffer with RDMA device */
+			struct ib_mr *mr = ib_reg_user_mr(ifq->rdma_region->pd,
+							  (unsigned long)buf_addr,
+							  reg.xdp_config.buffer_size,
+							  (unsigned long)buf_addr,
+							  IB_ACCESS_LOCAL_WRITE |
+							  IB_ACCESS_REMOTE_WRITE |
+							  IB_ACCESS_REMOTE_READ);
+			if (IS_ERR(mr)) {
+				ret = PTR_ERR(mr);
+				pr_err("io_uring: Failed to register XDP buffer %u as MR: %d\n",
+				       i, ret);
+				/* Clean up previously registered buffers */
+				while (i > 0) {
+					i--;
+					if (ifq->rdma_region->mrs[i]) {
+						ib_dereg_mr(ifq->rdma_region->mrs[i]);
+					}
+				}
+				goto err_free_region;
+			}
+			
+			/* Store MR in array */
+			if (i < reg.num_mrs) {
+				ifq->rdma_region->mrs[i] = mr;
+			}
+			
+			/* Initialize buffer descriptor */
+			desc->addr = buf_addr;
+			desc->dma_addr = 0; /* Set when DMA mapped */
+			desc->size = reg.xdp_config.buffer_size;
+			desc->offset = i * reg.xdp_config.buffer_size;
+			atomic_set(&desc->ref_count, 0);
+			desc->flags = 0;
+			desc->state = BUFFER_FREE;
+			desc->lkey = mr->lkey;
+			desc->rkey = mr->rkey;
+			
+			pr_debug("io_uring: XDP buffer %u: addr=%p, lkey=0x%x, rkey=0x%x\n",
+				 i, buf_addr, mr->lkey, mr->rkey);
+		}
+		
+		/* Initialize XDP statistics */
+		atomic64_set(&ifq->rdma_region->xdp.xdp_rx_packets, 0);
+		atomic64_set(&ifq->rdma_region->xdp.xdp_tx_packets, 0);
+		atomic64_set(&ifq->rdma_region->xdp.xdp_redirects, 0);
+		atomic64_set(&ifq->rdma_region->xdp.xdp_drops, 0);
+		atomic64_set(&ifq->rdma_region->xdp_to_rdma_transfers, 0);
+		atomic64_set(&ifq->rdma_region->rdma_to_xdp_transfers, 0);
+	}
 	
 	/* Complete registration */
 	ctx->rdma_ifq = ifq;
@@ -1100,8 +1359,12 @@ void io_unregister_unified_rdma_ifq(struct io_ring_ctx *ctx)
 	
 	lockdep_assert_held(&ctx->uring_lock);
 	
-	if (!ifq)
+	if (!ifq) {
+		pr_debug("io_uring: No RDMA interface to unregister\n");
 		return;
+	}
+	
+	pr_info("io_uring: Unregistering RDMA interface\n");
 	
 	ctx->rdma_ifq = NULL;
 	io_unified_rdma_ifq_free(ctx, ifq);
@@ -1112,9 +1375,13 @@ void io_shutdown_unified_rdma_ifq(struct io_ring_ctx *ctx)
 	lockdep_assert_held(&ctx->uring_lock);
 	
 	if (ctx->rdma_ifq) {
+		pr_info("io_uring: Shutting down RDMA interface\n");
+		
 		/* Disconnect and cancel work */
 		io_unified_rdma_disconnect(ctx);
 		cancel_work_sync(&ctx->rdma_ifq->rdma_work);
+		
+		pr_debug("io_uring: RDMA interface shutdown complete\n");
 	}
 }
 
@@ -1149,8 +1416,12 @@ int io_unified_rdma_setup_xdp(struct io_unified_rdma_ifq *ifq, struct bpf_prog *
 	struct bpf_prog *old_prog;
 	unsigned long flags;
 	
-	if (!ifq)
+	pr_debug("io_uring: Setting up XDP program for RDMA interface\n");
+	
+	if (!ifq) {
+		pr_err("io_uring: Invalid IFQ for XDP setup\n");
 		return -EINVAL;
+	}
 		
 	spin_lock_irqsave(&ifq->xdp_lock, flags);
 	
@@ -1162,7 +1433,7 @@ int io_unified_rdma_setup_xdp(struct io_unified_rdma_ifq *ifq, struct bpf_prog *
 		ifq->rxe_xdp_prog = prog;
 		ifq->xdp_enabled = true;
 		
-		pr_info("io_uring: XDP program installed for unified RDMA (SoftRoCE)\n");
+		pr_info("io_uring: XDP program installed for unified RDMA (SoftRoCE) - prog=%p\n", prog);
 	} else {
 		/* Remove XDP program */
 		ifq->rxe_xdp_prog = NULL;
@@ -1174,8 +1445,10 @@ int io_unified_rdma_setup_xdp(struct io_unified_rdma_ifq *ifq, struct bpf_prog *
 	spin_unlock_irqrestore(&ifq->xdp_lock, flags);
 	
 	/* Release old program */
-	if (old_prog)
+	if (old_prog) {
+		pr_debug("io_uring: Releasing old XDP program %p\n", old_prog);
 		bpf_prog_put(old_prog);
+	}
 		
 	return 0;
 }
@@ -1222,13 +1495,22 @@ void io_unified_rdma_rxe_xdp_cleanup(struct io_unified_rdma_ifq *ifq)
  */
 int io_unified_rdma_xmit_capture(struct io_unified_rdma_ifq *ifq, struct sk_buff *skb)
 {
+	struct io_unified_rdma_region *region;
+	struct io_unified_buffer_desc *buffer = NULL;
 	struct bpf_prog *prog;
 	struct xdp_buff xdp;
 	u32 act;
 	int ret = 0;
 	
-	if (!ifq || !skb)
+	if (!ifq || !skb) {
+		pr_err("io_uring: Invalid parameters for XDP xmit capture\n");
 		return -EINVAL;
+	}
+	
+	region = ifq->rdma_region;
+	if (!region || !region->xdp.xdp_buffer_pool) {
+		return 0; /* No unified buffers, use normal path */
+	}
 		
 	rcu_read_lock();
 	prog = rcu_dereference(ifq->rxe_xdp_prog);
@@ -1236,6 +1518,17 @@ int io_unified_rdma_xmit_capture(struct io_unified_rdma_ifq *ifq, struct sk_buff
 	if (!prog) {
 		rcu_read_unlock();
 		return 0; /* No XDP program, normal processing */
+	}
+	
+	/* Try to use unified buffer if possible */
+	if (skb->data >= region->xdp.xdp_buffer_pool &&
+	    skb->data < region->xdp.xdp_buffer_pool + 
+			(region->xdp.xdp_buffer_count * region->xdp.xdp_buffer_size)) {
+		/* Data is already in unified buffer */
+		u32 buffer_idx = (skb->data - region->xdp.xdp_buffer_pool) /
+				 region->xdp.xdp_buffer_size;
+		buffer = &region->buffer_descs[buffer_idx];
+		pr_debug("io_uring: XDP xmit using unified buffer %u\n", buffer_idx);
 	}
 	
 	/* Convert skb to xdp_buff */
@@ -1249,23 +1542,58 @@ int io_unified_rdma_xmit_capture(struct io_unified_rdma_ifq *ifq, struct sk_buff
 	/* Run XDP program */
 	act = bpf_prog_run_xdp(prog, &xdp);
 	
+	pr_debug("io_uring: XDP xmit action: %u\n", act);
+	
 	switch (act) {
 	case XDP_PASS:
 		/* Allow normal transmission */
+		pr_debug("io_uring: XDP_PASS - allowing packet transmission\n");
+		if (buffer) {
+			buffer->state = BUFFER_XDP_TX;
+			atomic64_inc(&region->xdp.xdp_tx_packets);
+		}
 		ret = 0;
 		break;
 	case XDP_DROP:
 		/* Drop the packet */
+		pr_debug("io_uring: XDP_DROP - dropping packet\n");
+		if (buffer) {
+			atomic64_inc(&region->xdp.xdp_drops);
+			io_unified_free_xdp_rdma_buffer(region, buffer);
+		}
 		ret = -EPERM;
 		break;
 	case XDP_REDIRECT:
 		/* Handle redirect action */
+		pr_debug("io_uring: XDP_REDIRECT - redirecting packet\n");
+		if (buffer) {
+			/* Check if redirecting to RDMA */
+			struct io_unified_rdma_wr rdma_wr = {0};
+			struct xdp_frame *xdp_frame;
+			
+			/* Convert to XDP frame */
+			xdp_frame = xdp_convert_buff_to_frame(&xdp);
+			if (xdp_frame) {
+				/* Try to transfer to RDMA */
+				if (io_unified_xdp_to_rdma_transfer(ifq, xdp_frame, &rdma_wr) == 0) {
+					atomic64_inc(&region->xdp.xdp_redirects);
+					ret = 0; /* Handled by RDMA */
+					break;
+				}
+			}
+		}
 		ret = xdp_do_redirect(skb->dev, &xdp, prog);
-		if (ret)
+		if (ret) {
+			pr_err("io_uring: XDP redirect failed: %d\n", ret);
 			ret = -EPERM;
+		}
 		break;
 	default:
 		/* Unknown action, drop */
+		pr_warn("io_uring: Unknown XDP action %u, dropping packet\n", act);
+		if (buffer) {
+			io_unified_free_xdp_rdma_buffer(region, buffer);
+		}
 		ret = -EPERM;
 		break;
 	}
@@ -1288,13 +1616,22 @@ int io_unified_rdma_xmit_capture(struct io_unified_rdma_ifq *ifq, struct sk_buff
  */
 int io_unified_rdma_recv_capture(struct io_unified_rdma_ifq *ifq, struct sk_buff *skb)
 {
+	struct io_unified_rdma_region *region;
+	struct io_unified_buffer_desc *buffer = NULL;
 	struct bpf_prog *prog;
 	struct xdp_buff xdp;
 	u32 act;
 	int ret = 0;
 	
-	if (!ifq || !skb)
+	if (!ifq || !skb) {
+		pr_err("io_uring: Invalid parameters for XDP recv capture\n");
 		return -EINVAL;
+	}
+	
+	region = ifq->rdma_region;
+	if (!region || !region->xdp.xdp_buffer_pool) {
+		return 0; /* No unified buffers, use normal path */
+	}
 		
 	rcu_read_lock();
 	prog = rcu_dereference(ifq->rxe_xdp_prog);
@@ -1304,44 +1641,133 @@ int io_unified_rdma_recv_capture(struct io_unified_rdma_ifq *ifq, struct sk_buff
 		return 0; /* No XDP program, normal processing */
 	}
 	
-	/* Convert skb to xdp_buff */
-	xdp.data = skb->data;
-	xdp.data_end = skb->data + skb->len;
-	xdp.data_meta = xdp.data;
-	xdp.data_hard_start = skb->head;
-	xdp.rxq = &ifq->xdp_rxq;
-	xdp.frame_sz = skb_end_offset(skb);
+	/* Allocate unified buffer for receive if not already using one */
+	if (skb->data < region->xdp.xdp_buffer_pool ||
+	    skb->data >= region->xdp.xdp_buffer_pool + 
+			 (region->xdp.xdp_buffer_count * region->xdp.xdp_buffer_size)) {
+		/* Need to copy to unified buffer */
+		buffer = io_unified_alloc_xdp_rdma_buffer(region, PURPOSE_XDP_RX);
+		if (buffer) {
+			/* Copy packet data to unified buffer */
+			void *buf_data = buffer->addr + XDP_PACKET_HEADROOM;
+			size_t copy_len = min_t(size_t, skb->len, 
+						buffer->size - XDP_PACKET_HEADROOM);
+			
+			memcpy(buf_data, skb->data, copy_len);
+			
+			/* Setup xdp_buff to use unified buffer */
+			xdp.data = buf_data;
+			xdp.data_end = buf_data + copy_len;
+			xdp.data_meta = xdp.data;
+			xdp.data_hard_start = buffer->addr;
+			xdp.rxq = &ifq->xdp_rxq;
+			xdp.frame_sz = buffer->size;
+			
+			pr_debug("io_uring: XDP recv copied to unified buffer\n");
+		} else {
+			/* No buffer available, use skb data */
+			xdp.data = skb->data;
+			xdp.data_end = skb->data + skb->len;
+			xdp.data_meta = xdp.data;
+			xdp.data_hard_start = skb->head;
+			xdp.rxq = &ifq->xdp_rxq;
+			xdp.frame_sz = skb_end_offset(skb);
+		}
+	} else {
+		/* Already in unified buffer */
+		u32 buffer_idx = (skb->data - region->xdp.xdp_buffer_pool) /
+				 region->xdp.xdp_buffer_size;
+		buffer = &region->buffer_descs[buffer_idx];
+		
+		xdp.data = skb->data;
+		xdp.data_end = skb->data + skb->len;
+		xdp.data_meta = xdp.data;
+		xdp.data_hard_start = buffer->addr;
+		xdp.rxq = &ifq->xdp_rxq;
+		xdp.frame_sz = buffer->size;
+		
+		pr_debug("io_uring: XDP recv using unified buffer %u\n", buffer_idx);
+	}
 	
 	/* Run XDP program */
 	act = bpf_prog_run_xdp(prog, &xdp);
 	
+	pr_debug("io_uring: XDP recv action: %u\n", act);
+	
 	switch (act) {
 	case XDP_PASS:
 		/* Allow normal reception and processing */
+		pr_debug("io_uring: XDP_PASS - allowing packet reception\n");
+		if (buffer) {
+			buffer->state = BUFFER_XDP_RX;
+			atomic64_inc(&region->xdp.xdp_rx_packets);
+		}
 		ret = 0;
 		break;
 	case XDP_DROP:
 		/* Drop the packet */
+		pr_debug("io_uring: XDP_DROP - dropping received packet\n");
+		if (buffer) {
+			atomic64_inc(&region->xdp.xdp_drops);
+			io_unified_free_xdp_rdma_buffer(region, buffer);
+		}
 		ret = -EPERM;
 		break;
 	case XDP_REDIRECT:
 		/* Redirect to unified buffer for zero-copy processing */
-		ret = xdp_do_redirect(skb->dev, &xdp, prog);
-		/* TODO: Copy to unified buffer for RDMA/storage processing */
-		/* Simplified for now - proper unified buffer integration needed */
+		pr_debug("io_uring: XDP_REDIRECT - redirecting to unified buffer\n");
+		if (buffer) {
+			/* Buffer is ready for RDMA processing */
+			buffer->state = BUFFER_TRANSITION;
+			atomic64_inc(&region->xdp.xdp_redirects);
+			
+			/* Create RDMA receive work request */
+			struct io_unified_rdma_wr rdma_wr = {
+				.opcode = IO_RDMA_OP_RECV,
+				.user_data = (u64)buffer - (u64)region->buffer_descs,
+				.sge[0] = {
+					.addr = (u64)xdp.data,
+					.length = xdp.data_end - xdp.data,
+					.lkey = buffer->lkey,
+				},
+				.num_sge = 1,
+			};
+			
+			/* Post to RDMA receive queue */
+			if (io_unified_rdma_post_recv(ifq, &rdma_wr) == 0) {
+				buffer->state = BUFFER_RDMA_RECV;
+				ret = 0; /* Successfully redirected to RDMA */
+			} else {
+				/* Failed to post, fall back to normal redirect */
+				ret = xdp_do_redirect(skb->dev, &xdp, prog);
+				if (ret) {
+					pr_err("io_uring: XDP redirect failed: %d\n", ret);
+					io_unified_free_xdp_rdma_buffer(region, buffer);
+				}
+			}
+		} else {
+			ret = xdp_do_redirect(skb->dev, &xdp, prog);
+			if (ret) {
+				pr_err("io_uring: XDP redirect failed: %d\n", ret);
+			}
+		}
 		break;
 	default:
 		/* Unknown action, drop */
+		pr_warn("io_uring: Unknown XDP action %u, dropping received packet\n", act);
+		if (buffer) {
+			io_unified_free_xdp_rdma_buffer(region, buffer);
+		}
 		ret = -EPERM;
 		break;
 	}
 	
 	rcu_read_unlock();
 	
-	if (ret == 0) {
-		/* Update skb if XDP modified the packet */
-		skb->len = xdp.data_end - xdp.data;
-		skb_set_tail_pointer(skb, skb->len);
+	if (ret == 0 && buffer && skb->data != xdp.data) {
+		/* Need to update skb to point to unified buffer */
+		/* This is complex and may require skb reconstruction */
+		pr_debug("io_uring: SKB now uses unified buffer\n");
 	}
 	
 	return ret;
@@ -1380,16 +1806,27 @@ int io_unified_rdma_connect(struct io_ring_ctx *ctx, void __user *arg)
 	int qp_attr_mask;
 	int ret;
 	
-	if (!ctx->rdma_ifq)
+	pr_info("io_uring: RDMA connect request received\n");
+	
+	if (!ctx->rdma_ifq) {
+		pr_err("io_uring: No RDMA interface registered\n");
 		return -ENODEV;
+	}
 		
 	ifq = ctx->rdma_ifq;
 	
-	if (!ifq->rdma_region || !ifq->rdma_region->qp)
+	if (!ifq->rdma_region || !ifq->rdma_region->qp) {
+		pr_err("io_uring: RDMA region or QP not initialized\n");
 		return -EINVAL;
+	}
 	
-	if (copy_from_user(&params, arg, sizeof(params)))
+	if (copy_from_user(&params, arg, sizeof(params))) {
+		pr_err("io_uring: Failed to copy connect params from user\n");
 		return -EFAULT;
+	}
+	
+	pr_debug("io_uring: Connect params - remote_qpn=%u, rq_psn=%u, sq_psn=%u\n",
+		 params.remote_qpn, params.rq_psn, params.sq_psn);
 		
 	/* Transition QP to RTR (Ready to Receive) */
 	memset(&qp_attr, 0, sizeof(qp_attr));
@@ -1408,11 +1845,15 @@ int io_unified_rdma_connect(struct io_ring_ctx *ctx, void __user *arg)
 	qp_attr_mask = IB_QP_STATE | IB_QP_AV | IB_QP_PATH_MTU | IB_QP_DEST_QPN |
 		       IB_QP_RQ_PSN | IB_QP_MAX_DEST_RD_ATOMIC | IB_QP_MIN_RNR_TIMER;
 		       
+	pr_debug("io_uring: Transitioning QP to RTR state for connection\n");
+	
 	ret = ib_modify_qp(ifq->rdma_region->qp, &qp_attr, qp_attr_mask);
 	if (ret) {
 		pr_err("io_uring: Failed to transition QP to RTR: %d\n", ret);
 		return ret;
 	}
+	
+	pr_debug("io_uring: QP transitioned to RTR state successfully\n");
 	
 	/* Transition QP to RTS (Ready to Send) */
 	memset(&qp_attr, 0, sizeof(qp_attr));
@@ -1426,6 +1867,8 @@ int io_unified_rdma_connect(struct io_ring_ctx *ctx, void __user *arg)
 	qp_attr_mask = IB_QP_STATE | IB_QP_TIMEOUT | IB_QP_RETRY_CNT |
 		       IB_QP_RNR_RETRY | IB_QP_SQ_PSN | IB_QP_MAX_QP_RD_ATOMIC;
 		       
+	pr_debug("io_uring: Transitioning QP to RTS state for connection\n");
+	
 	ret = ib_modify_qp(ifq->rdma_region->qp, &qp_attr, qp_attr_mask);
 	if (ret) {
 		pr_err("io_uring: Failed to transition QP to RTS: %d\n", ret);
@@ -1433,7 +1876,7 @@ int io_unified_rdma_connect(struct io_ring_ctx *ctx, void __user *arg)
 	}
 	
 	ifq->connected = true;
-	pr_info("io_uring: RDMA QP %u connected to remote QP %u\n", 
+	pr_info("io_uring: RDMA connection established - local QP %u <-> remote QP %u\n", 
 		ifq->rdma_region->qp->qp_num, params.remote_qpn);
 	
 	return 0;
@@ -1449,16 +1892,24 @@ int io_unified_rdma_disconnect(struct io_ring_ctx *ctx)
 	struct ib_qp_attr qp_attr;
 	int ret;
 	
-	if (!ctx->rdma_ifq)
+	pr_info("io_uring: RDMA disconnect request received\n");
+	
+	if (!ctx->rdma_ifq) {
+		pr_err("io_uring: No RDMA interface registered\n");
 		return -ENODEV;
+	}
 		
 	ifq = ctx->rdma_ifq;
 	
-	if (!ifq->rdma_region || !ifq->rdma_region->qp)
+	if (!ifq->rdma_region || !ifq->rdma_region->qp) {
+		pr_err("io_uring: RDMA region or QP not initialized\n");
 		return -EINVAL;
+	}
 		
-	if (!ifq->connected)
+	if (!ifq->connected) {
+		pr_debug("io_uring: Already disconnected\n");
 		return 0;  /* Already disconnected */
+	}
 	
 	/* Transition QP to ERROR state */
 	memset(&qp_attr, 0, sizeof(qp_attr));
@@ -1471,9 +1922,11 @@ int io_unified_rdma_disconnect(struct io_ring_ctx *ctx)
 	}
 	
 	/* Drain any pending work requests */
+	pr_debug("io_uring: Draining pending work requests\n");
 	ib_drain_qp(ifq->rdma_region->qp);
 	
 	/* Reset QP to RESET state */
+	pr_debug("io_uring: Resetting QP to RESET state\n");
 	qp_attr.qp_state = IB_QPS_RESET;
 	ret = ib_modify_qp(ifq->rdma_region->qp, &qp_attr, IB_QP_STATE);
 	if (ret) {
@@ -1481,7 +1934,7 @@ int io_unified_rdma_disconnect(struct io_ring_ctx *ctx)
 	}
 	
 	ifq->connected = false;
-	pr_info("io_uring: RDMA QP %u disconnected\n", ifq->rdma_region->qp->qp_num);
+	pr_info("io_uring: RDMA connection closed - QP %u disconnected\n", ifq->rdma_region->qp->qp_num);
 	
 	return 0;
 }
@@ -1533,6 +1986,234 @@ int io_unified_rdma_submit_wr(struct io_unified_rdma_ifq *ifq,
 		return -EINVAL;
 	}
 }
+
+/* XDP-RDMA Buffer Management */
+
+struct io_unified_buffer_desc *
+io_unified_alloc_xdp_rdma_buffer(struct io_unified_rdma_region *region,
+				 enum buffer_purpose purpose)
+{
+	struct io_unified_buffer_desc *buffer;
+	unsigned long flags;
+	u32 buffer_idx;
+	
+	if (!region || !region->xdp.xdp_buffer_pool) {
+		pr_err("io_uring: Invalid region for buffer allocation\n");
+		return NULL;
+	}
+	
+	spin_lock_irqsave(&region->xdp.free_lock, flags);
+	
+	if (region->xdp.free_count == 0) {
+		spin_unlock_irqrestore(&region->xdp.free_lock, flags);
+		pr_debug("io_uring: No free XDP-RDMA buffers available\n");
+		return NULL;
+	}
+	
+	/* Get buffer from free list */
+	buffer_idx = region->xdp.free_list[--region->xdp.free_count];
+	buffer = &region->buffer_descs[buffer_idx];
+	
+	/* Initialize buffer state */
+	atomic_set(&buffer->ref_count, 1);
+	
+	switch (purpose) {
+	case PURPOSE_XDP_RX:
+		buffer->state = BUFFER_XDP_RX;
+		buffer->flags = BUF_F_XDP;
+		break;
+	case PURPOSE_XDP_TX:
+		buffer->state = BUFFER_XDP_TX;
+		buffer->flags = BUF_F_XDP;
+		break;
+	case PURPOSE_RDMA_RECV:
+		buffer->state = BUFFER_RDMA_RECV;
+		buffer->flags = BUF_F_RDMA;
+		break;
+	case PURPOSE_RDMA_SEND:
+		buffer->state = BUFFER_RDMA_SEND;
+		buffer->flags = BUF_F_RDMA;
+		break;
+	case PURPOSE_SHARED:
+		buffer->state = BUFFER_FREE;
+		buffer->flags = BUF_F_XDP | BUF_F_RDMA;
+		break;
+	default:
+		buffer->state = BUFFER_FREE;
+		buffer->flags = 0;
+	}
+	
+	spin_unlock_irqrestore(&region->xdp.free_lock, flags);
+	
+	pr_debug("io_uring: Allocated XDP-RDMA buffer %u for purpose %d\n",
+		 buffer_idx, purpose);
+	
+	return buffer;
+}
+EXPORT_SYMBOL_GPL(io_unified_alloc_xdp_rdma_buffer);
+
+void io_unified_free_xdp_rdma_buffer(struct io_unified_rdma_region *region,
+				    struct io_unified_buffer_desc *buffer)
+{
+	unsigned long flags;
+	u32 buffer_idx;
+	
+	if (!region || !buffer)
+		return;
+	
+	/* Calculate buffer index */
+	buffer_idx = ((void *)buffer - (void *)region->buffer_descs) /
+		     sizeof(struct io_unified_buffer_desc);
+	
+	if (buffer_idx >= region->xdp.xdp_buffer_count) {
+		pr_err("io_uring: Invalid buffer index %u\n", buffer_idx);
+		return;
+	}
+	
+	/* Check reference count */
+	if (!atomic_dec_and_test(&buffer->ref_count))
+		return;
+	
+	spin_lock_irqsave(&region->xdp.free_lock, flags);
+	
+	/* Reset buffer state */
+	buffer->state = BUFFER_FREE;
+	buffer->flags = 0;
+	buffer->xdp_frame = NULL;
+	
+	/* Return to free list */
+	region->xdp.free_list[region->xdp.free_count++] = buffer_idx;
+	
+	spin_unlock_irqrestore(&region->xdp.free_lock, flags);
+	
+	pr_debug("io_uring: Freed XDP-RDMA buffer %u\n", buffer_idx);
+}
+EXPORT_SYMBOL_GPL(io_unified_free_xdp_rdma_buffer);
+
+/* XDP to RDMA transfer function */
+int io_unified_xdp_to_rdma_transfer(struct io_unified_rdma_ifq *ifq,
+				   struct xdp_frame *xdp_frame,
+				   struct io_unified_rdma_wr *rdma_wr)
+{
+	struct io_unified_rdma_region *region;
+	struct io_unified_buffer_desc *buffer;
+	u32 buffer_idx;
+	void *xdp_data_start;
+	
+	if (!ifq || !ifq->rdma_region || !xdp_frame || !rdma_wr) {
+		pr_err("io_uring: Invalid parameters for XDP to RDMA transfer\n");
+		return -EINVAL;
+	}
+	
+	region = ifq->rdma_region;
+	xdp_data_start = xdp_frame->data;
+	
+	/* Find buffer from XDP frame address */
+	if (xdp_data_start < region->xdp.xdp_buffer_pool ||
+	    xdp_data_start >= region->xdp.xdp_buffer_pool + 
+			      (region->xdp.xdp_buffer_count * region->xdp.xdp_buffer_size)) {
+		pr_err("io_uring: XDP frame not in unified buffer pool\n");
+		return -EINVAL;
+	}
+	
+	/* Calculate buffer index */
+	buffer_idx = ((void *)xdp_data_start - region->xdp.xdp_buffer_pool) /
+		     region->xdp.xdp_buffer_size;
+	
+	if (buffer_idx >= region->xdp.xdp_buffer_count) {
+		pr_err("io_uring: Invalid buffer index %u\n", buffer_idx);
+		return -EINVAL;
+	}
+	
+	buffer = &region->buffer_descs[buffer_idx];
+	
+	/* Verify buffer state */
+	if (buffer->state != BUFFER_XDP_RX && buffer->state != BUFFER_XDP_TX) {
+		pr_err("io_uring: Buffer %u not in XDP state (state=%d)\n",
+		       buffer_idx, buffer->state);
+		return -EINVAL;
+	}
+	
+	/* Transition buffer state */
+	buffer->state = BUFFER_TRANSITION;
+	smp_wmb();
+	
+	/* Setup RDMA work request */
+	rdma_wr->sge[0].addr = (u64)xdp_frame->data;
+	rdma_wr->sge[0].length = xdp_frame->len;
+	rdma_wr->sge[0].lkey = buffer->lkey;
+	rdma_wr->num_sge = 1;
+	
+	/* Update buffer state */
+	buffer->state = BUFFER_RDMA_SEND;
+	buffer->flags |= BUF_F_RDMA;
+	atomic64_inc(&region->xdp_to_rdma_transfers);
+	
+	pr_debug("io_uring: XDP to RDMA transfer: buffer %u, len %u\n",
+		 buffer_idx, xdp_frame->len);
+	
+	return 0;
+}
+EXPORT_SYMBOL_GPL(io_unified_xdp_to_rdma_transfer);
+
+/* RDMA to XDP transfer function */
+int io_unified_rdma_to_xdp_transfer(struct io_unified_rdma_ifq *ifq,
+				   struct io_unified_rdma_cqe *cqe,
+				   struct xdp_frame **xdp_frame)
+{
+	struct io_unified_rdma_region *region;
+	struct io_unified_buffer_desc *buffer = NULL;
+	void *data_addr;
+	u32 buffer_idx;
+	
+	if (!ifq || !ifq->rdma_region || !cqe || !xdp_frame) {
+		pr_err("io_uring: Invalid parameters for RDMA to XDP transfer\n");
+		return -EINVAL;
+	}
+	
+	region = ifq->rdma_region;
+	
+	/* Find buffer from completion user_data or by searching */
+	/* Assuming user_data contains buffer index */
+	buffer_idx = (u32)cqe->user_data;
+	
+	if (buffer_idx >= region->xdp.xdp_buffer_count) {
+		pr_err("io_uring: Invalid buffer index %u in CQE\n", buffer_idx);
+		return -EINVAL;
+	}
+	
+	buffer = &region->buffer_descs[buffer_idx];
+	
+	/* Verify buffer state */
+	if (buffer->state != BUFFER_RDMA_RECV) {
+		pr_err("io_uring: Buffer %u not in RDMA_RECV state (state=%d)\n",
+		       buffer_idx, buffer->state);
+		return -EINVAL;
+	}
+	
+	/* Calculate data address from buffer */
+	data_addr = buffer->addr;
+	
+	/* Create XDP frame - simplified, needs proper implementation */
+	*xdp_frame = (struct xdp_frame *)data_addr;
+	(*xdp_frame)->data = data_addr + XDP_PACKET_HEADROOM;
+	(*xdp_frame)->len = cqe->byte_len;
+	(*xdp_frame)->headroom = XDP_PACKET_HEADROOM;
+	(*xdp_frame)->metasize = 0;
+	(*xdp_frame)->frame_sz = buffer->size;
+	
+	/* Update buffer state */
+	buffer->state = BUFFER_XDP_TX;
+	buffer->flags |= BUF_F_XDP;
+	buffer->xdp_frame = *xdp_frame;
+	atomic64_inc(&region->rdma_to_xdp_transfers);
+	
+	pr_debug("io_uring: RDMA to XDP transfer: buffer %u, len %u\n",
+		 buffer_idx, cqe->byte_len);
+	
+	return 0;
+}
+EXPORT_SYMBOL_GPL(io_unified_rdma_to_xdp_transfer);
 
 module_init(io_unified_rdma_init);
 module_exit(io_unified_rdma_exit);

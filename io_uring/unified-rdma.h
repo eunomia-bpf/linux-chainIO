@@ -22,6 +22,16 @@
 #define IO_UNIFIED_RDMA_MAX_ENTRIES 32768
 #define IO_UNIFIED_RDMA_MAX_WR 4096
 #define IO_UNIFIED_RDMA_MAX_SGE 16
+#define XDP_PACKET_HEADROOM 256
+
+/* Buffer purpose for allocation */
+enum buffer_purpose {
+	PURPOSE_XDP_RX,
+	PURPOSE_XDP_TX,
+	PURPOSE_RDMA_SEND,
+	PURPOSE_RDMA_RECV,
+	PURPOSE_SHARED,
+};
 
 /* RDMA transport types supported */
 enum io_unified_rdma_transport {
@@ -154,6 +164,37 @@ struct io_unified_rdma_mr {
 	__u32 pd_handle; /* Protection domain handle */
 };
 
+/* Buffer descriptor for unified XDP-RDMA buffers */
+struct io_unified_buffer_desc {
+	void *addr;			/* Virtual address */
+	dma_addr_t dma_addr;		/* DMA address */
+	u32 size;			/* Buffer size */
+	u32 offset;			/* Offset in region */
+	atomic_t ref_count;		/* Reference count */
+	u32 flags;			/* Buffer flags */
+#define BUF_F_XDP	(1 << 0)	/* Used by XDP */
+#define BUF_F_RDMA	(1 << 1)	/* Used by RDMA */
+#define BUF_F_LOCKED	(1 << 2)	/* Locked buffer */
+	
+	/* Protocol state */
+	enum {
+		BUFFER_FREE,
+		BUFFER_XDP_RX,		/* XDP receive path */
+		BUFFER_XDP_TX,		/* XDP transmit path */
+		BUFFER_RDMA_SEND,	/* RDMA send operation */
+		BUFFER_RDMA_RECV,	/* RDMA receive operation */
+		BUFFER_TRANSITION	/* Transitioning between protocols */
+	} state;
+	
+	/* XDP specific */
+	struct xdp_frame *xdp_frame;
+	u32 xdp_headroom;
+	
+	/* RDMA specific */
+	u32 lkey;			/* Local key */
+	u32 rkey;			/* Remote key */
+};
+
 /* RDMA-enhanced unified region */
 struct io_unified_rdma_region {
 	struct io_unified_region base; /* Base unified region */
@@ -177,15 +218,44 @@ struct io_unified_rdma_region {
 	struct ib_mr **mrs; /* Memory region array */
 
 	/* XDP integration */
-	struct xsk_socket *rdma_xsk; /* RDMA XDP socket */
-	struct xsk_umem *rdma_umem; /* RDMA UMEM */
-
+	struct {
+		/* XDP buffer pool */
+		struct xdp_frame **frames;	/* XDP frame array */
+		void *xdp_buffer_pool;		/* XDP buffer pool base */
+		u32 xdp_buffer_size;		/* Size of each XDP buffer */
+		u32 xdp_buffer_count;		/* Number of XDP buffers */
+		
+		/* XDP rings */
+		struct xdp_ring *xdp_tx_ring;	/* XDP transmit ring */
+		struct xdp_ring *xdp_rx_ring;	/* XDP receive ring */
+		
+		/* XDP UMEM */
+		struct xdp_umem *umem;		/* XDP user memory */
+		struct xdp_umem_reg umem_reg;	/* UMEM registration */
+		
+		/* Buffer management */
+		u32 *free_list;			/* Free buffer indices */
+		u32 free_count;			/* Number of free buffers */
+		spinlock_t free_lock;		/* Free list lock */
+		
+		/* XDP statistics */
+		atomic64_t xdp_rx_packets;
+		atomic64_t xdp_tx_packets;
+		atomic64_t xdp_redirects;
+		atomic64_t xdp_drops;
+	} xdp;
+	
+	/* Shared buffer descriptors */
+	struct io_unified_buffer_desc *buffer_descs;
+	
 	/* Performance counters */
 	atomic64_t rdma_sends;
 	atomic64_t rdma_recvs;
 	atomic64_t rdma_writes;
 	atomic64_t rdma_reads;
 	atomic64_t rdma_errors;
+	atomic64_t xdp_to_rdma_transfers;
+	atomic64_t rdma_to_xdp_transfers;
 };
 
 /* RDMA-enhanced interface queue */
@@ -220,6 +290,19 @@ struct io_unified_rdma_ifq {
 	spinlock_t xdp_lock;
 };
 
+/* XDP configuration for unified region */
+struct io_unified_xdp_config {
+	__u32 buffer_count;		/* Number of XDP buffers */
+	__u32 buffer_size;		/* Size of each buffer */
+	__u32 flags;			/* XDP flags */
+#define XDP_ZEROCOPY		(1 << 0)
+#define XDP_USE_NEED_WAKEUP	(1 << 1)
+#define XDP_SHARED_UMEM		(1 << 2)
+	__u32 headroom;			/* XDP headroom size */
+	__u32 chunk_size;		/* UMEM chunk size */
+	__u32 frame_size;		/* XDP frame size */
+};
+
 /* Registration structure for RDMA-enhanced interface */
 struct io_unified_rdma_reg {
 	struct io_unified_reg base; /* Base registration */
@@ -233,6 +316,7 @@ struct io_unified_rdma_reg {
 	struct io_unified_rdma_qp_config qp_config;
 
 	/* XDP integration */
+	struct io_unified_xdp_config xdp_config; /* XDP configuration */
 	__u32 xdp_flags; /* XDP program flags */
 	__u64 xdp_prog_path; /* Path to XDP program */
 
@@ -247,6 +331,8 @@ struct io_unified_rdma_reg {
 		__u64 rdma_sq_entries; /* RDMA SQ entries offset */
 		__u64 rdma_cq_entries; /* RDMA CQ entries offset */
 		__u64 memory_regions; /* MR descriptors offset */
+		__u64 xdp_buffer_pool; /* XDP buffer pool offset */
+		__u64 buffer_descs; /* Buffer descriptors offset */
 	} rdma_offsets;
 };
 
@@ -288,6 +374,21 @@ int io_unified_rdma_setup_xdp(struct io_unified_rdma_ifq *ifq,
 			      struct bpf_prog *prog);
 int io_unified_rdma_attach_xdp(struct io_unified_rdma_ifq *ifq);
 void io_unified_rdma_detach_xdp(struct io_unified_rdma_ifq *ifq);
+
+/* XDP-RDMA buffer management */
+struct io_unified_buffer_desc *
+io_unified_alloc_xdp_rdma_buffer(struct io_unified_rdma_region *region,
+				 enum buffer_purpose purpose);
+void io_unified_free_xdp_rdma_buffer(struct io_unified_rdma_region *region,
+				    struct io_unified_buffer_desc *buffer);
+
+/* XDP-RDMA data transfer */
+int io_unified_xdp_to_rdma_transfer(struct io_unified_rdma_ifq *ifq,
+				   struct xdp_frame *xdp_frame,
+				   struct io_unified_rdma_wr *rdma_wr);
+int io_unified_rdma_to_xdp_transfer(struct io_unified_rdma_ifq *ifq,
+				   struct io_unified_rdma_cqe *cqe,
+				   struct xdp_frame **xdp_frame);
 
 /* SoftRoCE XDP program functions */
 int io_unified_rdma_rxe_xdp_init(struct io_unified_rdma_ifq *ifq);
